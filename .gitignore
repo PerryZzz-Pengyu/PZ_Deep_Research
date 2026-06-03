@@ -1,0 +1,33 @@
+# Local environment
+.env
+.DS_Store
+
+# Python generated files
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Python virtual environments
+.venv/
+venv/
+env/
+PZ Deep Research/backend/.venv/
+
+# Node / Next.js generated files
+node_modules/
+.next/
+out/
+dist/
+PZ Deep Research/frontend/node_modules/
+PZ Deep Research/frontend/.next/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Large upstream reference repo. Keep it local; do not push to the PZ product repo.
+Qwen Deep Research/
