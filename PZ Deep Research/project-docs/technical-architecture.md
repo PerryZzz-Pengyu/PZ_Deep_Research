@@ -122,7 +122,9 @@ npm 11.16.0
 - 已实现 Provider 选择。
 - 已实现进度事件展示。
 - 已实现最终报告展示。
-- 已实现来源列表展示。
+- 已实现来源卡片展示，包含引用编号、favicon、域名、标题、摘要和 URL。
+- 已实现报告正文中的 `[n]` 引用角标 hover 提示来源。
+- 已在来源区补充 APA 风格参考文献兜底展示。
 
 后续可替换点：
 
@@ -163,6 +165,9 @@ npm 11.16.0
 - 已实现模型调用失败重试，默认 `LLM_MAX_RETRIES=1`。
 - 已实现 `llm_result` 事件，用于记录模型名、输入 token、输出 token、单轮估算成本和累计用量。
 - 模型调用最终失败时 Runtime 会产出 `failed` 事件，让任务状态可以被存储层正确更新。
+- 对 OpenAI、Claude、Gemini 这类真实 Provider，Runtime 会拒绝无证据早答：没有 `search` 证据前不能输出最终报告，deep / expert 模式还需要至少一次 `visit`。
+- 工具来源会被 Runtime 去重并分配 `citation_id`，再作为可引用来源 `[1]`、`[2]` 注入给模型。
+- 最终报告会通过 `report_delta` 事件分段推送给前端，前端可以逐步显示报告内容。
 
 后续可替换点：
 
@@ -253,13 +258,15 @@ npm 11.16.0
 - 已使用 OpenAI Responses API 调用结构。
 - 已能返回模型名、输入 token 和输出 token。
 - 已通过 ProviderFactory 测试覆盖默认模型和专属模型选择。
-- 当前默认模型为 `gpt-5-mini`。
-- 尚未做真实 API Key 联调。
+- 当前默认模型为 `gpt-5.4-mini`。
+- 当前候选模型列表为 `gpt-5.4-mini`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-nano`、`gpt-5-mini`、`gpt-5-nano`。
+- 已新增 `/api/models` 返回项目配置的模型候选列表，供前端模型下拉使用。
+- 已新增 `/api/models/openai` 使用后端保存的 `OPENAI_API_KEY` 查询当前账号实际可访问的模型 ID，用于人工联调和排查模型不可用问题。
 
 后续注意：
 
-- 后续可考虑从 Chat Completions 迁移到 Responses API。
-- 需要补充流式输出、token 统计、错误重试和模型配置。
+- 需要补充真实 API Key 下的可选集成测试。
+- 需要补充流式输出和更细的 token / 成本统计。
 
 ### Anthropic Provider
 
@@ -301,28 +308,29 @@ npm 11.16.0
 
 位置：`backend/app/agent/tools/search.py`
 
-当前方案：优先使用 Serper API 做网页搜索。
+当前方案：使用 SerpAPI 的 Google Scholar API 做学术搜索。
 
 选择原因：
 
-- 和 Qwen Deep Research 原项目里的搜索工具方向接近。
-- 接口简单，适合 MVP 阶段快速接入搜索结果。
-- 返回结果可以直接转为来源列表。
+- 当前产品第一版聚焦学术资料检索，Google Scholar 比通用网页搜索更贴近论文、引用和研究来源。
+- SerpAPI 官方支持 `engine=google_scholar`，可以按 query、作者、来源、年份和引用关系做检索。
+- 返回结果可以转为来源列表，并交给 Jina Reader 继续读取正文。
 
 当前状态：
 
-- 未配置 `SERPER_API_KEY` 时返回开发模式占位结果。
-- 配置后会调用 `https://google.serper.dev/search`。
+- 未配置 `SERPAPI_API_KEY` 时返回开发模式占位结果。
+- 配置后会调用 `https://serpapi.com/search`，默认参数为 `engine=google_scholar`。
 - 已支持 query 清洗、空值过滤和重复 query 去重。
 - 已支持来源 URL 去重，并在来源中记录 title、url、snippet 和 query。
+- 已支持解析 Google Scholar 返回的发表信息和引用数。
 - 已支持 HTTP transport 注入，便于离线单元测试。
 - 上游搜索失败时返回工具失败内容，不直接抛异常中断整个 Agent Runtime。
 
 后续可替换点：
 
-- 可替换为 Tavily、Brave Search、Bing Web Search 或自建搜索服务。
+- 可补充 Semantic Scholar、Crossref、arXiv、PubMed 等更学术化的数据源。
 - 需要加入搜索结果缓存。
-- 需要加入搜索地域、语言和时间过滤。
+- 需要加入年份、语言、引用量、来源可信度等过滤和排序策略。
 
 ### visit 工具
 
@@ -396,9 +404,11 @@ npm 11.16.0
 
 - API 已提供 SSE stream。
 - 前端已实现 EventSource 连接和事件展示。
+- 前端已支持 `report_delta` 分段渲染、`tool_result` 来源卡片渲染和引用 hover。
 
 后续可替换点：
 
+- 当前 `report_delta` 是报告级分段推送，不是模型 token 级流式；后续需要在 Provider 层接入 OpenAI / Claude / Gemini 原生 streaming。
 - 如果需要双向实时控制，例如暂停、继续、人工确认，可以升级 WebSocket。
 - 如果部署平台对 SSE 支持有限，需要改成轮询或 WebSocket。
 
@@ -419,9 +429,14 @@ npm 11.16.0
 ```text
 DEFAULT_PROVIDER=mock
 OPENAI_API_KEY=
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL=gpt-5.4-mini
+OPENAI_MODEL_OPTIONS=gpt-5.4-mini,gpt-5.5,gpt-5.4,gpt-5.4-nano,gpt-5-mini,gpt-5-nano
 ANTHROPIC_API_KEY=
 GEMINI_API_KEY=
-SERPER_API_KEY=
+SEARCH_PROVIDER=serpapi
+ACADEMIC_SEARCH_ENGINE=google_scholar
+SERPAPI_API_KEY=
 JINA_API_KEY=
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```

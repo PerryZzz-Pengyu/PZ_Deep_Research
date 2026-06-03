@@ -6,8 +6,9 @@ from typing import Optional
 from app.agent.providers.base import LLMProvider
 from app.agent.providers import ProviderFactory
 from app.agent.runtime import AgentRuntime
-from app.agent.schemas import LLMMessage, LLMResult, ResearchRequest
+from app.agent.schemas import LLMMessage, LLMResult, ResearchRequest, ToolResult
 from app.agent.tools import ToolRegistry, build_default_tool_registry
+from app.agent.tools.base import AgentTool
 from app.config import Settings
 
 
@@ -63,6 +64,36 @@ class SlowProvider(LLMProvider):
     ) -> LLMResult:
         await asyncio.sleep(0.2)
         return LLMResult(content="<answer>\n不应该返回\n</answer>", model="slow-model")
+
+
+class SequenceProvider(LLMProvider):
+    name = "openai"
+
+    def __init__(self, results: list[LLMResult]) -> None:
+        self.results = results
+        self.calls = 0
+
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        *,
+        model: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+    ) -> LLMResult:
+        result = self.results[min(self.calls, len(self.results) - 1)]
+        self.calls += 1
+        return result
+
+
+class FixedTool(AgentTool):
+    def __init__(self, name: str, result: ToolResult) -> None:
+        self.name = name
+        self.description = name
+        self.result = result
+
+    async def call(self, arguments: dict[str, object]) -> ToolResult:
+        return self.result
 
 
 class FixedProviderFactory:
@@ -190,3 +221,60 @@ def test_runtime_timeout_emits_failed_event() -> None:
     assert events[-1].type == "failed"
     assert "超时" in events[-1].message
     assert events[-1].payload["round"] == 1
+
+
+def test_real_provider_must_collect_evidence_before_answering() -> None:
+    async def run_runtime():
+        provider = SequenceProvider(
+            [
+                LLMResult(content="<answer>\n过早报告\n</answer>", model="openai-test"),
+                LLMResult(
+                    content='<tool_call>\n{"name":"search","arguments":{"query":["GLP-1 obesity trial"]}}\n</tool_call>',
+                    model="openai-test",
+                ),
+                LLMResult(
+                    content='<tool_call>\n{"name":"visit","arguments":{"url":["https://example.com/paper"],"goal":"读取证据"}}\n</tool_call>',
+                    model="openai-test",
+                ),
+                LLMResult(content="<answer>\n最终报告引用来源 [1]\n</answer>", model="openai-test"),
+            ]
+        )
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry(
+                [
+                    FixedTool(
+                        "search",
+                        ToolResult(
+                            name="search",
+                            content="搜索结果",
+                            sources=[
+                                {
+                                    "title": "GLP-1 Trial",
+                                    "url": "https://example.com/paper",
+                                    "snippet": "trial evidence",
+                                }
+                            ],
+                        ),
+                    ),
+                    FixedTool(
+                        "visit",
+                        ToolResult(name="visit", content="网页正文", sources=[]),
+                    ),
+                ]
+            ),
+        )
+        request = ResearchRequest(query="GLP-1 for obesity", mode="deep", provider="openai")
+        return [event async for event in runtime.run("evidence-job", request)]
+
+    events = asyncio.run(run_runtime())
+    event_types = [event.type for event in events]
+    tool_names = [event.payload["tool"] for event in events if event.type == "tool_start"]
+    completed = events[-1]
+
+    assert "evidence_required" in event_types
+    assert tool_names == ["search", "visit"]
+    assert "report_delta" in event_types
+    assert completed.type == "completed"
+    assert completed.payload["final_report"] == "最终报告引用来源 [1]"
+    assert completed.payload["sources"][0]["citation_id"] == "1"

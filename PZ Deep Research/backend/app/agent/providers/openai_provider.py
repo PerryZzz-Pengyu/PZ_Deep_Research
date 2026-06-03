@@ -10,7 +10,12 @@ from app.agent.schemas import LLMMessage, LLMResult
 class OpenAIProvider(LLMProvider):
     name = "openai"
 
-    def __init__(self, api_key: str, base_url: str = "", default_model: str = "") -> None:
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://api.openai.com/v1",
+        default_model: str = "",
+    ) -> None:
         self.api_key = api_key
         self.base_url = base_url
         self.default_model = default_model
@@ -28,9 +33,7 @@ class OpenAIProvider(LLMProvider):
 
         from openai import AsyncOpenAI
 
-        client_kwargs = {"api_key": self.api_key}
-        if self.base_url:
-            client_kwargs["base_url"] = self.base_url
+        client_kwargs = {"api_key": self.api_key, "base_url": self.base_url or "https://api.openai.com/v1"}
         client = AsyncOpenAI(**client_kwargs)
         selected_model = model or self.default_model
         if not selected_model:

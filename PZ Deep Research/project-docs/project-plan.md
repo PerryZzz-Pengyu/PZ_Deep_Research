@@ -122,7 +122,7 @@ PZ Deep Research/
 
 ### 阶段 3：工具层
 
-- 迁移搜索能力，可优先使用 Serper 或其他搜索 API。
+- 迁移搜索能力，当前优先使用 SerpAPI Google Scholar 做学术搜索。
 - 迁移网页访问能力，可使用 Jina 或直接抓取加内容抽取。
 - 文件解析作为高级能力，先不阻塞 MVP。
 - 所有工具结果需要能被记录为来源或证据。
@@ -131,7 +131,7 @@ PZ Deep Research/
 
 完成内容：
 
-- `search` 工具支持 Serper API、开发模式占位结果、query 清洗、去重和来源记录。
+- `search` 工具支持 SerpAPI Google Scholar、开发模式占位结果、query 清洗、去重和来源记录。
 - `search` 工具遇到上游失败时返回工具失败内容，不直接抛异常中断整个研究任务。
 - `visit` 工具支持 Jina Reader、开发模式占位内容、URL 清洗、安全 scheme 过滤和来源记录。
 - `visit` 工具遇到访问失败时返回工具失败内容，不直接抛异常中断整个研究任务。

@@ -20,6 +20,8 @@
 - ProviderFactory 能正确创建多模型 Provider。
 - 配置层能提供默认模型，并识别真实 Provider 缺少的 API Key。
 - API 能返回 `/api/readiness` 配置体检信息。
+- API 能返回 `/api/models` 模型候选列表。
+- API 能在缺少 OpenAI Key 时拒绝 `/api/models/openai` 真实账号模型查询。
 - search / visit 工具能处理输入清洗、来源记录和失败兜底。
 - API 输入校验有效。
 - 前端能通过 lint 和 build。
@@ -68,13 +70,17 @@ backend/tests/
   - Runtime 会产出 `llm_result` 用量统计事件。
   - Runtime 会在模型调用失败时重试。
   - Runtime 会在模型调用超时时产出 `failed` 事件。
+  - 真实 Provider 如果在没有证据前直接输出报告，会被 Runtime 拦截并要求继续 search / visit。
 - `test_api.py`
   - `/health` 健康检查正常。
   - `/api/readiness` 可以返回 Provider 和工具配置状态。
+  - `/api/models` 可以返回 OpenAI 候选模型。
+  - `/api/models/openai` 在缺少 OpenAI Key 时返回配置错误。
   - `/api/research-jobs` 可以创建 mock 研究任务。
   - 过短 query 会被 API 校验拒绝。
 - `test_config.py`
   - 空模型环境变量会回退到项目默认模型。
+  - 中文占位符不会被误判为真实 OpenAI API Key 或模型名。
   - 真实 Provider 缺少 API Key 和搜索 Key 时会被识别。
   - 配置齐全的真实 Provider 会通过配置检查。
 - `test_provider_factory.py`
@@ -83,7 +89,7 @@ backend/tests/
   - Provider 专属模型优先级高于共享默认模型。
   - 未知 Provider 会被拒绝。
 - `test_tools.py`
-  - `search` 能解析 Serper 返回结果。
+  - `search` 能解析 SerpAPI Google Scholar 返回结果。
   - `search` 能对重复来源去重。
   - `search` 遇到上游失败时返回失败内容而不是抛异常。
   - `visit` 能读取 Jina Reader 内容并记录来源。
@@ -181,6 +187,22 @@ http://localhost:3000
    - 研究报告已生成
 6. 检查右侧是否出现最终报告和来源。
 
+如果要测试 OpenAI 模型切换：
+
+1. 在 `.env` 里填写 `OPENAI_API_KEY`、`SERPAPI_API_KEY`，建议同时填写 `JINA_API_KEY`。
+2. 重启后端服务。
+3. 页面 Provider 选择 “OpenAI”。
+4. 在模型下拉里依次选择 `gpt-5.4-mini`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-nano` 等候选模型。
+5. 每次点击“开始”，观察是否能完成研究、速度是否可接受、报告质量是否符合预期。
+
+真实 Provider 页面验收还需要检查：
+
+1. 研究进度中如果模型尝试早答，应出现“继续检索证据”的事件。
+2. deep / expert 模式下应至少看到 `search` 和 `visit` 工具调用。
+3. `tool_result` 下方应展示来源卡片，包含 favicon、引用编号和 URL。
+4. 报告正文中的 `[1]`、`[2]` 应显示为可 hover 的引用角标。
+5. 右侧来源区应展示 APA 风格参考文献兜底列表。
+
 ## API 手动测试
 
 创建 mock 任务：
@@ -208,13 +230,28 @@ tool_result
 completed
 ```
 
+查询项目候选模型：
+
+```bash
+curl -s http://127.0.0.1:8000/api/models
+```
+
+查询当前 OpenAI 账号实际可访问模型：
+
+```bash
+curl -s http://127.0.0.1:8000/api/models/openai
+```
+
+如果没有配置 `OPENAI_API_KEY`，第二个接口预期返回 400，并提示缺少 `OPENAI_API_KEY`。
+
 ## 当前还没有覆盖的测试
 
 - 真实 OpenAI Provider 联调测试。
 - 真实 Claude Provider 联调测试。
 - 真实 Gemini Provider 联调测试。
 - 真实 `/api/readiness` 带 Key 配置后的人工验收。
-- Serper 真实搜索测试。
+- 真实 `/api/models/openai` 带 Key 配置后的人工验收。
+- SerpAPI Google Scholar 真实学术搜索测试。
 - Jina 真实网页读取测试。
 - SSE 浏览器自动化测试。
 - 视觉回归测试。

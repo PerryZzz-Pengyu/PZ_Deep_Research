@@ -47,6 +47,9 @@ class AgentRuntime:
         )
 
         collected_sources: list[dict[str, str]] = []
+        seen_source_urls: set[str] = set()
+        used_tools: set[str] = set()
+        real_provider_requires_evidence = provider.name in {"openai", "anthropic", "gemini"}
         total_input_tokens = 0
         total_output_tokens = 0
         total_estimated_cost_usd = 0.0
@@ -123,6 +126,7 @@ class AgentRuntime:
                     "round": round_index,
                     "provider": provider.name,
                     "model": result.model,
+                    "content_preview": result.content.strip()[:1200],
                     "input_tokens": result.input_tokens,
                     "output_tokens": result.output_tokens,
                     "estimated_cost_usd": result.estimated_cost_usd,
@@ -132,10 +136,40 @@ class AgentRuntime:
                 },
             )
             content = result.content.strip()
-            messages.append(LLMMessage(role="assistant", content=content))
 
             answer = self._extract_answer(content)
             if answer:
+                missing_evidence = self._missing_evidence_requirements(
+                    request.mode,
+                    used_tools,
+                    real_provider_requires_evidence,
+                )
+                if missing_evidence:
+                    yield ResearchEvent(
+                        job_id=job_id,
+                        type="evidence_required",
+                        message="模型尝试直接生成报告，已要求继续检索证据",
+                        payload={
+                            "round": round_index,
+                            "missing": missing_evidence,
+                            "content_preview": answer[:1000],
+                        },
+                    )
+                    messages.append(
+                        LLMMessage(
+                            role="user",
+                            content=self._build_evidence_request(request.mode, missing_evidence, collected_sources),
+                        )
+                    )
+                    continue
+
+                for chunk in self._chunk_text(answer):
+                    yield ResearchEvent(
+                        job_id=job_id,
+                        type="report_delta",
+                        message="正在生成研究报告",
+                        payload={"delta": chunk},
+                    )
                 yield ResearchEvent(
                     job_id=job_id,
                     type="completed",
@@ -160,8 +194,11 @@ class AgentRuntime:
                 )
                 continue
 
+            messages.append(LLMMessage(role="assistant", content=content))
+
             tool_name = tool_call.get("name", "")
             arguments = tool_call.get("arguments", {})
+            used_tools.add(tool_name)
             yield ResearchEvent(
                 job_id=job_id,
                 type="tool_start",
@@ -169,7 +206,7 @@ class AgentRuntime:
                 payload={"tool": tool_name, "arguments": arguments},
             )
             tool_result = await self.tool_registry.call(tool_name, arguments)
-            collected_sources.extend(tool_result.sources)
+            new_sources = self._merge_sources(collected_sources, seen_source_urls, tool_result.sources)
             yield ResearchEvent(
                 job_id=job_id,
                 type="tool_result",
@@ -177,13 +214,15 @@ class AgentRuntime:
                 payload={
                     "tool": tool_result.name,
                     "content": tool_result.content,
-                    "sources": tool_result.sources,
+                    "sources": new_sources,
+                    "all_sources": collected_sources,
                 },
             )
+            source_context = self._format_sources_for_model(new_sources or collected_sources)
             messages.append(
                 LLMMessage(
                     role="user",
-                    content=f"<tool_response>\n{tool_result.content}\n</tool_response>",
+                    content=f"<tool_response>\n{tool_result.content}\n\n{source_context}\n</tool_response>",
                 )
             )
 
@@ -218,3 +257,75 @@ class AgentRuntime:
             return None
         answer = match.group(1).strip()
         return answer or None
+
+    @staticmethod
+    def _missing_evidence_requirements(mode: str, used_tools: set[str], enabled: bool) -> list[str]:
+        if not enabled:
+            return []
+        missing: list[str] = []
+        if "search" not in used_tools:
+            missing.append("search")
+        if mode in {"deep", "expert"} and "visit" not in used_tools:
+            missing.append("visit")
+        return missing
+
+    @staticmethod
+    def _build_evidence_request(
+        mode: str,
+        missing_evidence: list[str],
+        collected_sources: list[dict[str, str]],
+    ) -> str:
+        source_context = AgentRuntime._format_sources_for_model(collected_sources)
+        if "search" in missing_evidence:
+            return (
+                "你还不能输出 <answer>。请先调用 search 获取 Google Scholar 学术来源。"
+                "请使用 2-4 个英文检索词，覆盖疗效、安全性和适用人群。"
+            )
+        if "visit" in missing_evidence:
+            return (
+                "你还不能输出 <answer>。deep/expert 模式需要先调用 visit 阅读关键来源。"
+                "请从下面可引用来源中选择最相关的 1-3 个 URL 访问。\n"
+                f"{source_context}"
+            )
+        return f"请继续研究。当前模式：{mode}。"
+
+    @staticmethod
+    def _merge_sources(
+        collected_sources: list[dict[str, str]],
+        seen_source_urls: set[str],
+        sources: list[dict[str, str]],
+    ) -> list[dict[str, str]]:
+        new_sources: list[dict[str, str]] = []
+        for source in sources:
+            url = source.get("url", "")
+            if not url or url in seen_source_urls:
+                continue
+            seen_source_urls.add(url)
+            citation_id = str(len(collected_sources) + 1)
+            enriched = dict(source)
+            enriched["citation_id"] = citation_id
+            collected_sources.append(enriched)
+            new_sources.append(enriched)
+        return new_sources
+
+    @staticmethod
+    def _format_sources_for_model(sources: list[dict[str, str]]) -> str:
+        if not sources:
+            return "可引用来源：暂无。"
+        lines = ["可引用来源："]
+        for source in sources:
+            citation_id = source.get("citation_id", "?")
+            title = source.get("title", source.get("url", ""))
+            url = source.get("url", "")
+            snippet = source.get("snippet", "")
+            query = source.get("query", "")
+            detail_parts = [part for part in [snippet, f"检索词：{query}" if query else ""] if part]
+            detail = f" - {'；'.join(detail_parts)}" if detail_parts else ""
+            lines.append(f"[{citation_id}] {title}. {url}{detail}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _chunk_text(text: str, size: int = 180) -> list[str]:
+        if not text:
+            return []
+        return [text[index : index + size] for index in range(0, len(text), size)]

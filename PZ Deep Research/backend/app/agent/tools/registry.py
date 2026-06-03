@@ -26,7 +26,11 @@ class ToolRegistry:
 def build_default_tool_registry(settings: Settings) -> ToolRegistry:
     return ToolRegistry(
         [
-            SearchTool(api_key=settings.serper_api_key),
+            SearchTool(
+                provider=settings.search_provider,
+                serpapi_api_key=settings.serpapi_api_key,
+                academic_engine=settings.academic_search_engine,
+            ),
             VisitTool(jina_api_key=settings.jina_api_key),
         ]
     )

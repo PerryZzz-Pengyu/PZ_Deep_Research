@@ -22,3 +22,18 @@ export type ResearchEvent = {
   payload: Record<string, unknown>;
   created_at: string;
 };
+
+export type ModelOption = {
+  id: string;
+  label: string;
+};
+
+export type ModelOptionsResponse = {
+  providers: Record<ProviderName, ModelOption[]>;
+  defaults: {
+    provider: ProviderName;
+    openai?: string | null;
+    anthropic?: string | null;
+    gemini?: string | null;
+  };
+};

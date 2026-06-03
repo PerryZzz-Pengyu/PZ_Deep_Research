@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import httpx
@@ -23,7 +22,7 @@ class VisitTool(AgentTool):
         max_content_chars: int = 20000,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
-        self.jina_api_key = jina_api_key or os.getenv("JINA_API_KEY", "")
+        self.jina_api_key = jina_api_key.strip()
         self.reader_base_url = reader_base_url.rstrip("/") + "/"
         self.timeout_seconds = timeout_seconds
         self.max_content_chars = max_content_chars

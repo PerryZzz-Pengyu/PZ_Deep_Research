@@ -100,16 +100,24 @@ DEFAULT_PROVIDER=mock
 
 ```text
 一个模型 Provider 的 API Key
-SERPER_API_KEY
+SERPAPI_API_KEY
 ```
 
 项目已经内置默认模型名：
 
 ```text
-OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL=gpt-5.4-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL_OPTIONS=gpt-5.4-mini,gpt-5.5,gpt-5.4,gpt-5.4-nano,gpt-5-mini,gpt-5-nano
 ANTHROPIC_MODEL=claude-sonnet-4-6
 GEMINI_MODEL=gemini-2.5-flash
+SEARCH_PROVIDER=serpapi
+ACADEMIC_SEARCH_ENGINE=google_scholar
+SERPAPI_API_KEY=
+JINA_API_KEY=
 ```
+
+前端会显示模型下拉框，OpenAI 可以在上述候选模型中逐个测试效果。
 
 配置完成并重启后端后，可以检查：
 

@@ -10,7 +10,7 @@ from app.agent.providers import ProviderFactory
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import ResearchEvent, ResearchJob, ResearchRequest
 from app.agent.tools import build_default_tool_registry
-from app.config import missing_provider_requirements, provider_model, get_settings
+from app.config import missing_provider_requirements, missing_search_requirements, provider_model, get_settings
 from app.storage import InMemoryJobStore
 
 
@@ -53,12 +53,15 @@ async def get_readiness() -> dict[str, object]:
             "missing": missing,
             "model": provider_model(settings, provider) or None,
         }
+    search_missing = missing_search_requirements(settings)
     return {
         "providers": providers,
         "tools": {
             "search": {
-                "ready": bool(settings.serper_api_key),
-                "missing": [] if settings.serper_api_key else ["SERPER_API_KEY"],
+                "ready": not search_missing,
+                "missing": search_missing,
+                "provider": settings.search_provider,
+                "engine": settings.academic_search_engine,
             },
             "visit": {
                 "ready": True,
@@ -66,6 +69,77 @@ async def get_readiness() -> dict[str, object]:
                 "optional_missing": [] if settings.jina_api_key else ["JINA_API_KEY"],
             },
         },
+    }
+
+
+@router.get("/models")
+async def get_model_options() -> dict[str, object]:
+    return {
+        "providers": {
+            "mock": [
+                {"id": "", "label": "开发模式"},
+            ],
+            "openai": [
+                {"id": model, "label": model}
+                for model in settings.openai_model_options
+            ],
+            "anthropic": [
+                {"id": settings.anthropic_model, "label": settings.anthropic_model},
+            ],
+            "gemini": [
+                {"id": settings.gemini_model, "label": settings.gemini_model},
+            ],
+        },
+        "defaults": {
+            "provider": settings.default_provider,
+            "openai": provider_model(settings, "openai") or None,
+            "anthropic": provider_model(settings, "anthropic") or None,
+            "gemini": provider_model(settings, "gemini") or None,
+        },
+    }
+
+
+@router.get("/models/openai")
+async def get_openai_available_models() -> dict[str, object]:
+    missing = missing_provider_requirements(settings, "openai", require_real_search=False)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "OpenAI 配置不完整，请先补齐环境变量",
+                "missing": missing,
+            },
+        )
+
+    from openai import AsyncOpenAI
+
+    client_kwargs = {
+        "api_key": settings.openai_api_key,
+        "base_url": settings.openai_base_url or "https://api.openai.com/v1",
+    }
+
+    try:
+        response = await AsyncOpenAI(**client_kwargs).models.list()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "无法从 OpenAI 获取模型列表",
+                "error": str(exc),
+            },
+        ) from exc
+
+    configured = list(settings.openai_model_options)
+    available = sorted(
+        model.id
+        for model in response.data
+        if getattr(model, "id", "")
+    )
+    available_set = set(available)
+    return {
+        "configured": configured,
+        "available": available,
+        "configured_available": [model for model in configured if model in available_set],
     }
 
 

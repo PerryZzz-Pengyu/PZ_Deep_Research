@@ -16,12 +16,14 @@
 
 ```text
 一个模型 Provider 的 API Key
-SERPER_API_KEY
+SERPAPI_API_KEY
 ```
 
-`SERPER_API_KEY` 用于真实网页搜索。没有它，项目只能返回开发模式占位搜索结果，不算真正完成网页研究。
+`SERPAPI_API_KEY` 用于 Google Scholar 学术搜索。没有它，项目只能返回开发模式占位搜索结果，不算真正完成学术资料检索。
 
 `JINA_API_KEY` 不是强制必填，但建议配置。它用于 Jina Reader 网页正文读取；不配置时工具仍会尝试读取，但稳定性和额度可能受限。
+
+当前搜索链路为：SerpAPI Google Scholar 负责找论文和学术来源，Jina Reader 负责读取搜索结果 URL 的正文内容。
 
 ## 按 Provider 配置
 
@@ -31,24 +33,31 @@ SERPER_API_KEY
 
 ```text
 OPENAI_API_KEY=你的 OpenAI API Key
-SERPER_API_KEY=你的 Serper API Key
+SERPAPI_API_KEY=你的 SerpAPI API Key
 ```
 
 项目已内置默认模型：
 
 ```text
-OPENAI_MODEL=gpt-5-mini
+OPENAI_MODEL=gpt-5.4-mini
+OPENAI_BASE_URL=https://api.openai.com/v1
+OPENAI_MODEL_OPTIONS=gpt-5.4-mini,gpt-5.5,gpt-5.4,gpt-5.4-nano,gpt-5-mini,gpt-5-nano
 ```
+
+说明：OpenAI 当前官方文档建议复杂推理和 coding 从 `gpt-5.5` 开始；如果优先考虑延迟和成本，可以使用 `gpt-5.4-mini` 或 `gpt-5.4-nano`。本项目默认先使用成本更可控的 `gpt-5.4-mini`，前端提供候选列表方便逐个测试效果。
 
 可选：
 
 ```text
 OPENAI_BASE_URL=
 OPENAI_MODEL=
+OPENAI_MODEL_OPTIONS=
+SEARCH_PROVIDER=serpapi
+ACADEMIC_SEARCH_ENGINE=google_scholar
 JINA_API_KEY=
 ```
 
-`OPENAI_BASE_URL` 只在你使用代理、网关或兼容 OpenAI 协议的第三方服务时填写。
+`OPENAI_BASE_URL` 默认使用 OpenAI 官方 API 地址。只有在你使用代理、网关或兼容 OpenAI 协议的第三方服务时，才需要改成对应地址。
 
 ### Claude API
 
@@ -56,7 +65,7 @@ JINA_API_KEY=
 
 ```text
 ANTHROPIC_API_KEY=你的 Anthropic API Key
-SERPER_API_KEY=你的 Serper API Key
+SERPAPI_API_KEY=你的 SerpAPI API Key
 ```
 
 项目已内置默认模型：
@@ -78,7 +87,7 @@ JINA_API_KEY=
 
 ```text
 GEMINI_API_KEY=你的 Google Gemini API Key
-SERPER_API_KEY=你的 Serper API Key
+SERPAPI_API_KEY=你的 SerpAPI API Key
 ```
 
 项目已内置默认模型：
@@ -102,7 +111,9 @@ JINA_API_KEY=
 OPENAI_API_KEY=
 ANTHROPIC_API_KEY=
 GEMINI_API_KEY=
-SERPER_API_KEY=
+SEARCH_PROVIDER=serpapi
+ACADEMIC_SEARCH_ENGINE=google_scholar
+SERPAPI_API_KEY=
 JINA_API_KEY=
 ```
 
@@ -145,14 +156,30 @@ curl http://127.0.0.1:8000/api/readiness
 - 每个 Provider 是否 ready。
 - 缺少哪些环境变量。
 - 当前使用哪个默认模型。
-- 搜索工具是否配置了 `SERPER_API_KEY`。
+- 搜索工具是否配置了 `SERPAPI_API_KEY`，以及当前搜索 Provider / 学术搜索引擎。
 - 网页读取工具是否配置了可选的 `JINA_API_KEY`。
+
+## 模型列表接口
+
+启动后端后，可以访问项目内置候选模型列表：
+
+```bash
+curl http://127.0.0.1:8000/api/models
+```
+
+如果已经填写 `OPENAI_API_KEY`，可以查询当前账号实际可访问的 OpenAI 模型 ID：
+
+```bash
+curl http://127.0.0.1:8000/api/models/openai
+```
+
+该接口只返回模型 ID，不会输出你的 API Key。返回里的 `configured_available` 用来判断项目候选模型里哪些在当前账号下可见。
 
 ## 当前默认模型来源
 
 当前默认模型选择遵循“能用于生产、成本相对可控、适合 Agent / 深度研究”的原则：
 
-- OpenAI：`gpt-5-mini`
+- OpenAI：`gpt-5.4-mini`
 - Claude：`claude-sonnet-4-6`
 - Gemini：`gemini-2.5-flash`
 

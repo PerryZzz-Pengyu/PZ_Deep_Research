@@ -11,9 +11,20 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 load_dotenv(PROJECT_ROOT / "backend" / ".env", override=False)
 
-DEFAULT_OPENAI_MODEL = "gpt-5-mini"
+DEFAULT_OPENAI_MODEL = "gpt-5.4-mini"
+DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"
+DEFAULT_OPENAI_MODEL_OPTIONS = (
+    "gpt-5.4-mini",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-nano",
+    "gpt-5-mini",
+    "gpt-5-nano",
+)
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_SEARCH_PROVIDER = "serpapi"
+DEFAULT_ACADEMIC_SEARCH_ENGINE = "google_scholar"
 
 
 @dataclass(frozen=True)
@@ -24,13 +35,16 @@ class Settings:
     llm_max_retries: int = 1
     llm_timeout_seconds: float = 60.0
     openai_api_key: str = ""
-    openai_base_url: str = ""
+    openai_base_url: str = DEFAULT_OPENAI_BASE_URL
     openai_model: str = ""
+    openai_model_options: tuple[str, ...] = DEFAULT_OPENAI_MODEL_OPTIONS
     anthropic_api_key: str = ""
     anthropic_model: str = ""
     gemini_api_key: str = ""
     gemini_model: str = ""
-    serper_api_key: str = ""
+    search_provider: str = DEFAULT_SEARCH_PROVIDER
+    academic_search_engine: str = DEFAULT_ACADEMIC_SEARCH_ENGINE
+    serpapi_api_key: str = ""
     jina_api_key: str = ""
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
 
@@ -57,7 +71,17 @@ def _get_float_env(name: str, default: float) -> float:
 
 def _get_env(name: str, default: str = "") -> str:
     value = os.getenv(name, "").strip()
+    if value.startswith("在这里填写"):
+        return default
     return value or default
+
+
+def _get_csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    raw = _get_env(name, "")
+    if not raw:
+        return default
+    values = tuple(item.strip() for item in raw.split(",") if item.strip())
+    return values or default
 
 
 def get_settings() -> Settings:
@@ -68,16 +92,27 @@ def get_settings() -> Settings:
         llm_max_retries=_get_int_env("LLM_MAX_RETRIES", 1),
         llm_timeout_seconds=_get_float_env("LLM_TIMEOUT_SECONDS", 60.0),
         openai_api_key=_get_env("OPENAI_API_KEY", ""),
-        openai_base_url=_get_env("OPENAI_BASE_URL", ""),
+        openai_base_url=_get_env("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL),
         openai_model=_get_env("OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
+        openai_model_options=_get_csv_env("OPENAI_MODEL_OPTIONS", DEFAULT_OPENAI_MODEL_OPTIONS),
         anthropic_api_key=_get_env("ANTHROPIC_API_KEY", ""),
         anthropic_model=_get_env("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL),
         gemini_api_key=_get_env("GEMINI_API_KEY", ""),
         gemini_model=_get_env("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
-        serper_api_key=_get_env("SERPER_API_KEY", ""),
+        search_provider=_get_env("SEARCH_PROVIDER", DEFAULT_SEARCH_PROVIDER).lower(),
+        academic_search_engine=_get_env("ACADEMIC_SEARCH_ENGINE", DEFAULT_ACADEMIC_SEARCH_ENGINE),
+        serpapi_api_key=_get_env("SERPAPI_API_KEY", ""),
         jina_api_key=_get_env("JINA_API_KEY", ""),
         cors_origins=tuple(origin.strip() for origin in origins.split(",") if origin.strip()),
     )
+
+
+def missing_search_requirements(settings: Settings) -> list[str]:
+    if settings.search_provider == "serpapi":
+        return [] if settings.serpapi_api_key else ["SERPAPI_API_KEY"]
+    if settings.search_provider == "mock":
+        return []
+    return ["SUPPORTED_SEARCH_PROVIDER"]
 
 
 def provider_model(settings: Settings, provider: str, model_override: str | None = None) -> str:
@@ -119,6 +154,6 @@ def missing_provider_requirements(
     ):
         missing.append(f"{normalized.upper()}_MODEL")
 
-    if require_real_search and normalized in {"openai", "anthropic", "gemini"} and not settings.serper_api_key:
-        missing.append("SERPER_API_KEY")
+    if require_real_search and normalized in {"openai", "anthropic", "gemini"}:
+        missing.extend(missing_search_requirements(settings))
     return missing

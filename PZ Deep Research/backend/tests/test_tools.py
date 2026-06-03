@@ -9,7 +9,7 @@ from app.agent.tools.search import SearchTool
 from app.agent.tools.visit import VisitTool
 
 
-def test_search_tool_parses_serper_results_and_deduplicates_sources() -> None:
+def test_search_tool_parses_serpapi_scholar_results_and_deduplicates_sources() -> None:
     requests: list[httpx.Request] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -17,11 +17,13 @@ def test_search_tool_parses_serper_results_and_deduplicates_sources() -> None:
         return httpx.Response(
             200,
             json={
-                "organic": [
+                "organic_results": [
                     {
                         "title": "PZ Deep Research",
                         "link": "https://example.com/research",
                         "snippet": "一个面向 C 端的深度研究产品。",
+                        "publication_info": {"summary": "PZ Team - Journal of Research, 2026"},
+                        "inline_links": {"cited_by": {"total": 12}},
                     },
                     {
                         "title": "重复来源",
@@ -33,14 +35,20 @@ def test_search_tool_parses_serper_results_and_deduplicates_sources() -> None:
         )
 
     async def call_tool():
-        tool = SearchTool(api_key="serper-key", transport=httpx.MockTransport(handler))
+        tool = SearchTool(serpapi_api_key="serpapi-key", transport=httpx.MockTransport(handler))
         return await tool.call({"query": [" PZ Deep Research ", "", "PZ Deep Research"]})
 
     result = asyncio.run(call_tool())
 
     assert len(requests) == 1
+    assert requests[0].method == "GET"
+    assert requests[0].url.params["engine"] == "google_scholar"
+    assert requests[0].url.params["q"] == "PZ Deep Research"
+    assert requests[0].url.params["api_key"] == "serpapi-key"
     assert result.name == "search"
     assert "PZ Deep Research" in result.content
+    assert "PZ Team - Journal of Research, 2026" in result.content
+    assert "引用 12 次" in result.content
     assert result.sources == [
         {
             "title": "PZ Deep Research",
@@ -56,7 +64,7 @@ def test_search_tool_returns_failure_result_instead_of_raising() -> None:
         return httpx.Response(500, json={"message": "upstream failed"})
 
     async def call_tool():
-        tool = SearchTool(api_key="serper-key", transport=httpx.MockTransport(handler))
+        tool = SearchTool(serpapi_api_key="serpapi-key", transport=httpx.MockTransport(handler))
         return await tool.call({"query": "失败测试"})
 
     result = asyncio.run(call_tool())

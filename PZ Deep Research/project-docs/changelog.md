@@ -23,14 +23,22 @@
   - `test_provider_factory.py`
 - 阶段 3 新增工具层测试：
   - `test_tools.py`
-  - 覆盖 Serper 结果解析、来源去重、搜索失败兜底、Jina Reader 读取、URL scheme 过滤和未知工具。
+  - 覆盖 SerpAPI Google Scholar 结果解析、来源去重、搜索失败兜底、Jina Reader 读取、URL scheme 过滤和未知工具。
 - 新增 `backend/app/agent/tools/utils.py`，集中处理工具层字符串列表清洗、URL 安全判断和来源去重。
 - 新增 `project-docs/api-key-setup.md`，说明真实研究需要哪些 API Key、环境变量怎么填、如何检查配置是否生效。
 - 新增配置层测试 `test_config.py`：
   - 覆盖默认模型回退。
+  - 覆盖中文占位符不会被误判为真实 OpenAI API Key 或模型名。
   - 覆盖真实 Provider 缺少 API Key / 搜索 Key 的检查。
   - 覆盖配置齐全的真实 Provider 检查通过。
 - 新增 `/api/readiness` 配置体检接口，返回 Provider、模型、缺失环境变量和工具配置状态。
+- 新增 `/api/models` 模型候选列表接口，供前端 Provider / 模型下拉使用。
+- 新增 `/api/models/openai` 账号可访问模型查询接口，用后端保存的 `OPENAI_API_KEY` 获取当前账号实际可见模型 ID。
+- 前端研究工作台新增模型下拉框，OpenAI 可在 `gpt-5.4-mini`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-nano`、`gpt-5-mini`、`gpt-5-nano` 中切换测试。
+- 新增 `SEARCH_PROVIDER=serpapi`、`ACADEMIC_SEARCH_ENGINE=google_scholar`、`SERPAPI_API_KEY` 搜索配置，明确当前版本聚焦学术搜索。
+- 根布局 `<html>` 新增 `suppressHydrationWarning`，用于避免浏览器扩展向根节点注入属性时触发无业务影响的 hydration mismatch 报警。
+- 新增 `report_delta` SSE 事件，用于把最终报告分段推送给前端显示。
+- 新增 Runtime 证据门槛测试，覆盖真实 Provider 过早输出报告时必须继续 search / visit。
 
 ### 修改
 
@@ -61,11 +69,26 @@
   - 后端现在会自动读取项目根目录 `.env` 和 `backend/.env`。
   - OpenAI Provider 从 Chat Completions 调整为 Responses API，更适合当前 OpenAI 新模型。
   - `.env.example` 写入默认模型：
-    - `OPENAI_MODEL=gpt-5-mini`
+    - `OPENAI_MODEL=gpt-5.4-mini`
+    - `OPENAI_MODEL_OPTIONS=gpt-5.4-mini,gpt-5.5,gpt-5.4,gpt-5.4-nano,gpt-5-mini,gpt-5-nano`
     - `ANTHROPIC_MODEL=claude-sonnet-4-6`
     - `GEMINI_MODEL=gemini-2.5-flash`
   - 创建真实 Provider 任务前会先检查必要配置，缺少时返回 400 和缺失变量列表。
-  - 真实研究要求对应模型 Provider API Key 和 `SERPER_API_KEY`，`JINA_API_KEY` 为可选但推荐。
+  - 真实研究要求对应模型 Provider API Key 和 `SERPAPI_API_KEY`，`JINA_API_KEY` 为可选但推荐。
+- OpenAI 默认模型从 `gpt-5-mini` 调整为 `gpt-5.4-mini`，同时保留 `gpt-5.5` 等候选项用于质量测试。
+- 配置读取逻辑会忽略以“在这里填写”开头的中文占位符，避免占位内容被当成真实 API Key 发送到上游。
+- `OPENAI_BASE_URL` 默认改为 `https://api.openai.com/v1`，并在 OpenAI SDK 初始化时显式传入，避免空环境变量导致请求 URL 缺少协议。
+- `SearchTool` 和 `VisitTool` 不再直接读取系统环境变量，统一使用 `Settings` 传入的配置，避免绕过占位符过滤。
+- 搜索工具从 Serper.dev 通用网页搜索改为 SerpAPI Google Scholar 学术搜索：
+  - 移除 `SERPER_API_KEY` 配置依赖。
+  - 本地 `.env` 中原先误填在 `SERPER_API_KEY` 的 SerpAPI key 已迁移为 `SERPAPI_API_KEY`。
+  - `SearchTool` 改为调用 `https://serpapi.com/search`，默认 `engine=google_scholar`。
+  - 搜索结果解析改为读取 `organic_results`，并保留标题、URL、摘要、发表信息和引用数。
+  - `/api/readiness` 的搜索工具状态现在返回搜索 Provider 和学术搜索引擎。
+- 真实 Provider 研究流程增加证据门槛：没有 `search` 前不能生成最终报告，deep / expert 模式还需要至少一次 `visit`。
+- Runtime 会对工具来源去重并分配 `citation_id`，以 `[1]`、`[2]` 形式注入给模型，要求最终报告使用引用角标。
+- 前端来源展示从纯链接升级为来源卡片，包含 favicon、引用编号、域名、标题、摘要和 URL。
+- 前端报告正文会把 `[n]` 渲染成可 hover 的引用角标，并在来源区展示 APA 风格参考文献兜底列表。
 - 排查 GitHub 推送超过 100MB 文件的问题：
   - 确认 `PZ Deep Research/frontend/node_modules/@next/swc-darwin-arm64/next-swc.darwin-arm64.node` 为 117MB，但属于 `node_modules` 生成物，已被忽略。
   - 确认 `PZ Deep Research/frontend/.next/dev/cache/turbopack/411c455d/00000045.sst` 为 94MB，属于 Next.js 构建缓存，已被忽略。
@@ -90,6 +113,10 @@
 - `backend/tests/test_provider_factory.py`
 - `backend/tests/test_config.py`
 - `backend/tests/test_tools.py`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/src/lib/api.ts`
+- `frontend/src/lib/types.ts`
+- `frontend/src/app/globals.css`
 - `project-docs/api-key-setup.md`
 - `project-docs/project-plan.md`
 - `project-docs/technical-architecture.md`
@@ -100,15 +127,18 @@
 
 - 先补测试后实现，阶段 2 新测试在实现前失败，完成实现后通过。
 - 先补测试后实现，阶段 3 新测试在实现前失败，完成实现后通过。
-- 后端 pytest 通过：21 个用例通过，1 个 Starlette/TestClient deprecation warning，不影响当前功能。
+- 后端 pytest 通过：25 个用例通过，包含模型候选列表、OpenAI 模型查询配置错误、中文占位符过滤、默认 Base URL 检查和真实 Provider 证据门槛检查；仍有 Starlette/TestClient deprecation warning，不影响当前功能。
 - 后端 `compileall` 通过。
 - 前端 `npm run lint` 通过。
 - 前端 `npm run build` 通过。
+- 使用本地 `.env` 中的 OpenAI Key 查询模型列表成功：账号返回 118 个模型，项目配置的 `gpt-5.4-mini`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-nano`、`gpt-5-mini`、`gpt-5-nano` 均可见。
+- 使用本地 `.env` 中的 SerpAPI Key 真实调用 Google Scholar 搜索成功：`retrieval augmented generation survey` 返回 10 条学术来源。
+- 使用本地 `.env` 中的 Jina API Key 真实调用 Jina Reader 成功：`https://example.com` 可以返回 LLM 友好的网页正文。
 
 ### 备注
 
 - 阶段 2 已关闭，但真实 OpenAI、Claude、Gemini API Key 联调仍需后续作为可选集成测试补充。
-- 阶段 3 已关闭，但 Serper 和 Jina 的真实线上联调仍需配置 API Key 后再验证。
+- 阶段 3 已关闭，SerpAPI Google Scholar 和 Jina 的真实线上联调已进入后续持续验证范围。
 - 下一步建议进入阶段 4：网页端 MVP 体验增强，重点包括前端展示 `llm_result` 用量、失败/重试状态、来源质量，以及更完整的任务结果页。
 
 ## 2026-06-02

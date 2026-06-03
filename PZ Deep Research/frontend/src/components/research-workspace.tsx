@@ -4,6 +4,7 @@ import {
   ArrowRight,
   Bot,
   CheckCircle2,
+  ExternalLink,
   FileText,
   Loader2,
   PauseCircle,
@@ -13,8 +14,8 @@ import {
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 
-import { createResearchEventSource, createResearchJob } from "@/lib/api";
-import type { ProviderName, ResearchEvent, ResearchMode } from "@/lib/types";
+import { createResearchEventSource, createResearchJob, getModelOptions } from "@/lib/api";
+import type { ModelOption, ProviderName, ResearchEvent, ResearchMode } from "@/lib/types";
 
 const modes: Array<{ value: ResearchMode; label: string; detail: string }> = [
   { value: "quick", label: "快速", detail: "少量来源" },
@@ -29,6 +30,28 @@ const providers: Array<{ value: ProviderName; label: string }> = [
   { value: "gemini", label: "Gemini" },
 ];
 
+const fallbackModelOptions: Record<ProviderName, ModelOption[]> = {
+  mock: [{ id: "", label: "开发模式" }],
+  openai: [
+    { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
+    { id: "gpt-5.5", label: "gpt-5.5" },
+    { id: "gpt-5.4", label: "gpt-5.4" },
+    { id: "gpt-5.4-nano", label: "gpt-5.4-nano" },
+    { id: "gpt-5-mini", label: "gpt-5-mini" },
+    { id: "gpt-5-nano", label: "gpt-5-nano" },
+  ],
+  anthropic: [{ id: "claude-sonnet-4-6", label: "claude-sonnet-4-6" }],
+  gemini: [{ id: "gemini-2.5-flash", label: "gemini-2.5-flash" }],
+};
+
+type SourceItem = {
+  citationId: string;
+  title: string;
+  url: string;
+  snippet?: string;
+  query?: string;
+};
+
 function getEventIcon(type: string) {
   if (type === "completed") return <CheckCircle2 size={16} />;
   if (type.startsWith("tool")) return <Search size={16} />;
@@ -36,10 +59,114 @@ function getEventIcon(type: string) {
   return <Sparkles size={16} />;
 }
 
+function parseSources(rawSources: unknown): SourceItem[] {
+  if (!Array.isArray(rawSources)) return [];
+  return rawSources.flatMap((source, index) => {
+    if (!source || typeof source !== "object") return [];
+    const maybeSource = source as {
+      citation_id?: unknown;
+      title?: unknown;
+      url?: unknown;
+      snippet?: unknown;
+      query?: unknown;
+    };
+    if (typeof maybeSource.url !== "string") return [];
+    return [
+      {
+        citationId: typeof maybeSource.citation_id === "string" ? maybeSource.citation_id : String(index + 1),
+        title: typeof maybeSource.title === "string" ? maybeSource.title : maybeSource.url,
+        url: maybeSource.url,
+        snippet: typeof maybeSource.snippet === "string" ? maybeSource.snippet : undefined,
+        query: typeof maybeSource.query === "string" ? maybeSource.query : undefined,
+      },
+    ];
+  });
+}
+
+function faviconUrl(url: string) {
+  try {
+    const hostname = new URL(url).hostname;
+    return `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`;
+  } catch {
+    return "";
+  }
+}
+
+function hostname(url: string) {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
+function formatApaReference(source: SourceItem) {
+  return `${source.title}. (n.d.). Retrieved from ${source.url}`;
+}
+
+function renderReportWithCitations(report: string, sourceByCitation: Map<string, SourceItem>) {
+  const parts = report.split(/(\[(\d+)\])/g);
+  return parts.map((part, index) => {
+    const match = /^\[(\d+)\]$/.exec(part);
+    if (!match) return <span key={`${index}-${part.slice(0, 8)}`}>{part}</span>;
+    const source = sourceByCitation.get(match[1]);
+    if (!source) return <span key={`${index}-${part}`}>{part}</span>;
+    return (
+      <sup className="citation-mark" key={`${index}-${part}`} title={`${source.title}\n${source.url}`}>
+        {part}
+      </sup>
+    );
+  });
+}
+
+function SourceCard({ source }: { source: SourceItem }) {
+  const icon = faviconUrl(source.url);
+  return (
+    <a className="source-card" href={source.url} rel="noreferrer" target="_blank">
+      <div className="source-topline">
+        <span className="source-favicon" style={icon ? { backgroundImage: `url(${icon})` } : undefined} />
+        <span className="source-citation">[{source.citationId}]</span>
+        <span className="source-domain">{hostname(source.url)}</span>
+        <ExternalLink size={13} />
+      </div>
+      <strong>{source.title}</strong>
+      {source.snippet ? <small>{source.snippet}</small> : null}
+      <span className="source-url">{source.url}</span>
+    </a>
+  );
+}
+
+function EventDetail({ event }: { event: ResearchEvent }) {
+  if (event.type === "tool_result") {
+    const eventSources = parseSources(event.payload.sources);
+    return eventSources.length ? (
+      <div className="event-source-grid">
+        {eventSources.map((source) => (
+          <SourceCard key={`${event.id}-${source.citationId}-${source.url}`} source={source} />
+        ))}
+      </div>
+    ) : null;
+  }
+
+  if (event.type === "evidence_required") {
+    const missing = event.payload.missing;
+    return Array.isArray(missing) ? <p className="event-note">补充步骤：{missing.join("、")}</p> : null;
+  }
+
+  if (event.type === "llm_result") {
+    const preview = event.payload.content_preview;
+    return typeof preview === "string" && preview ? <p className="event-note">{preview}</p> : null;
+  }
+
+  return null;
+}
+
 export function ResearchWorkspace() {
   const [query, setQuery] = useState("对比 Claude、ChatGPT 和 Gemini 做深度研究产品时各自的优势与风险");
   const [mode, setMode] = useState<ResearchMode>("deep");
   const [provider, setProvider] = useState<ProviderName>("mock");
+  const [model, setModel] = useState("");
+  const [modelOptions, setModelOptions] = useState(fallbackModelOptions);
   const [events, setEvents] = useState<ResearchEvent[]>([]);
   const [report, setReport] = useState("");
   const [jobId, setJobId] = useState("");
@@ -49,27 +176,50 @@ export function ResearchWorkspace() {
 
   const sources = useMemo(() => {
     const seen = new Set<string>();
-    const items: Array<{ title: string; url: string }> = [];
+    const items: SourceItem[] = [];
     for (const event of events) {
-      const rawSources = event.payload.sources;
-      if (!Array.isArray(rawSources)) continue;
-      for (const source of rawSources) {
-        if (!source || typeof source !== "object") continue;
-        const maybeSource = source as { title?: unknown; url?: unknown };
-        if (typeof maybeSource.url !== "string" || seen.has(maybeSource.url)) continue;
-        seen.add(maybeSource.url);
-        items.push({
-          title: typeof maybeSource.title === "string" ? maybeSource.title : maybeSource.url,
-          url: maybeSource.url,
-        });
+      for (const source of parseSources(event.payload.sources)) {
+        if (seen.has(source.url)) continue;
+        seen.add(source.url);
+        items.push(source);
       }
     }
     return items;
   }, [events]);
 
+  const sourceByCitation = useMemo(() => {
+    return new Map(sources.map((source) => [source.citationId, source]));
+  }, [sources]);
+
+  const currentModelOptions = modelOptions[provider] ?? fallbackModelOptions[provider];
+  const selectedModel = currentModelOptions.some((item) => item.id === model)
+    ? model
+    : currentModelOptions[0]?.id ?? "";
+
   useEffect(() => {
     return () => {
       eventSourceRef.current?.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    let ignore = false;
+
+    getModelOptions()
+      .then((payload) => {
+        if (ignore) return;
+        setModelOptions({ ...fallbackModelOptions, ...payload.providers });
+        const defaultProvider = payload.defaults.provider;
+        if (providers.some((item) => item.value === defaultProvider)) {
+          setProvider(defaultProvider);
+        }
+      })
+      .catch(() => {
+        // 保留本地兜底列表即可，界面仍然可用。
+      });
+
+    return () => {
+      ignore = true;
     };
   }, []);
 
@@ -83,7 +233,7 @@ export function ResearchWorkspace() {
     setIsRunning(true);
 
     try {
-      const job = await createResearchJob({ query, mode, provider });
+      const job = await createResearchJob({ query, mode, provider, model: selectedModel || undefined });
       setJobId(job.id);
       eventSourceRef.current?.close();
       const eventSource = createResearchEventSource(job.id);
@@ -100,6 +250,12 @@ export function ResearchWorkspace() {
           setIsRunning(false);
           eventSource.close();
           eventSourceRef.current = null;
+        }
+        if (nextEvent.type === "report_delta") {
+          const delta = nextEvent.payload.delta;
+          if (typeof delta === "string") {
+            setReport((current) => current + delta);
+          }
         }
         if (nextEvent.type === "failed") {
           setError(nextEvent.message);
@@ -161,10 +317,25 @@ export function ResearchWorkspace() {
               <select
                 aria-label="模型 Provider"
                 value={provider}
-                onChange={(event) => setProvider(event.target.value as ProviderName)}
+                onChange={(event) => {
+                  setProvider(event.target.value as ProviderName);
+                  setModel("");
+                }}
               >
                 {providers.map((item) => (
                   <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="模型"
+                value={selectedModel}
+                disabled={provider === "mock"}
+                onChange={(event) => setModel(event.target.value)}
+              >
+                {currentModelOptions.map((item) => (
+                  <option key={`${provider}-${item.id || "default"}`} value={item.id}>
                     {item.label}
                   </option>
                 ))}
@@ -222,6 +393,7 @@ export function ResearchWorkspace() {
                 <div>
                   <strong>{event.message}</strong>
                   <span>{new Date(event.created_at).toLocaleTimeString("zh-CN")}</span>
+                  <EventDetail event={event} />
                 </div>
               </div>
             ))
@@ -235,7 +407,7 @@ export function ResearchWorkspace() {
           研究报告
         </div>
         <article className="report-body">
-          {report ? report : "报告将在研究完成后显示。"}
+          {report ? renderReportWithCitations(report, sourceByCitation) : "报告将在研究完成后显示。"}
         </article>
 
         <div className="source-list">
@@ -246,12 +418,16 @@ export function ResearchWorkspace() {
           {sources.length === 0 ? (
             <span className="muted">暂无来源</span>
           ) : (
-            sources.map((source) => (
-              <a href={source.url} key={source.url} rel="noreferrer" target="_blank">
-                {source.title}
-              </a>
-            ))
+            sources.map((source) => <SourceCard key={source.url} source={source} />)
           )}
+          {sources.length ? (
+            <div className="reference-list">
+              <div className="section-title compact-title">参考文献</div>
+              {sources.map((source) => (
+                <p key={`reference-${source.url}`}>{formatApaReference(source)}</p>
+              ))}
+            </div>
+          ) : null}
         </div>
       </aside>
     </main>
