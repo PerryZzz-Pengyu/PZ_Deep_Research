@@ -59,7 +59,15 @@ class LLMResult(BaseModel):
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
+class LLMStreamEvent(BaseModel):
+    type: Literal["delta", "done"]
+    delta: str = ""
+    result: Optional[LLMResult] = None
+
+
 class ToolResult(BaseModel):
     name: str
     content: str
     sources: list[dict[str, str]] = Field(default_factory=list)
+    # url -> 该来源的完整正文（仅供 Runtime 做证据卡片抽取，不会写入事件或前端快照）。
+    source_texts: dict[str, str] = Field(default_factory=dict)

@@ -45,7 +45,15 @@ class SearchTool(AgentTool):
             return ToolResult(
                 name=self.name,
                 content=content,
-                sources=[{"title": "开发模式占位来源", "url": "https://example.com/pz-deep-research"}],
+                sources=[
+                    {
+                        "title": "开发模式占位来源",
+                        "url": "https://example.com/pz-deep-research",
+                        "read_status": "mock",
+                        "evidence_level": "mock",
+                        "evidence_note": "开发模式占位来源，不代表真实证据。",
+                    }
+                ],
             )
 
         content = "\n".join(
@@ -55,7 +63,15 @@ class SearchTool(AgentTool):
         return ToolResult(
             name=self.name,
             content=content,
-            sources=[{"title": "开发模式占位来源", "url": "https://example.com/pz-deep-research"}],
+            sources=[
+                {
+                    "title": "开发模式占位来源",
+                    "url": "https://example.com/pz-deep-research",
+                    "read_status": "mock",
+                    "evidence_level": "mock",
+                    "evidence_note": "开发模式占位来源，不代表真实证据。",
+                }
+            ],
         )
 
     async def _call_serpapi(self, queries: list[str]) -> ToolResult:
@@ -67,7 +83,15 @@ class SearchTool(AgentTool):
             return ToolResult(
                 name=self.name,
                 content=content,
-                sources=[{"title": "开发模式占位来源", "url": "https://example.com/pz-deep-research"}],
+                sources=[
+                    {
+                        "title": "开发模式占位来源",
+                        "url": "https://example.com/pz-deep-research",
+                        "read_status": "mock",
+                        "evidence_level": "mock",
+                        "evidence_note": "开发模式占位来源，不代表真实证据。",
+                    }
+                ],
             )
 
         responses: list[str] = []
@@ -114,6 +138,9 @@ class SearchTool(AgentTool):
                         url=url,
                         snippet=snippet,
                         query=query,
+                        read_status="search_result",
+                        evidence_level="metadata",
+                        evidence_note="Google Scholar 题录和摘要，尚未阅读全文。",
                     )
                 responses.append("\n".join(lines))
 

@@ -41,6 +41,7 @@ def add_unique_source(
     url: str,
     snippet: str = "",
     query: str = "",
+    **metadata: str,
 ) -> None:
     if not url or url in seen_urls:
         return
@@ -50,4 +51,7 @@ def add_unique_source(
         source["snippet"] = snippet
     if query:
         source["query"] = query
+    for key, value in metadata.items():
+        if value:
+            source[key] = value
     sources.append(source)

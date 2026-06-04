@@ -6,14 +6,106 @@ import re
 from collections.abc import AsyncIterator
 from typing import Any, Optional
 
+from app.agent.evidence import EvidenceCard, EvidenceExtractor, render_card
 from app.agent.prompts import SYSTEM_PROMPT, build_user_prompt
 from app.agent.providers import ProviderFactory
 from app.agent.schemas import LLMMessage, ResearchEvent, ResearchRequest
+from app.agent.selection import count_full_text, select_sources, should_stop_visiting
 from app.agent.tools import ToolRegistry
 
 
 TOOL_CALL_PATTERN = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 ANSWER_PATTERN = re.compile(r"<answer>\s*(.*?)\s*</answer>", re.DOTALL)
+TOOL_CALL_START_PATTERN = re.compile(r"<tool_call>\s*", re.DOTALL)
+ANSWER_START_PATTERN = re.compile(r"<answer>\s*", re.DOTALL)
+
+# Mock provider 用来判断"该出报告了"的稳定标记，必须与 _build_report_request 中的措辞一致。
+REPORT_REQUEST_MARKER = "撰写最终研究报告"
+
+
+MODE_POLICIES = {
+    "quick": {
+        "max_rounds": 8,
+        "search_rounds": 1,
+        "search_query_count": 1,
+        "visit_source_count": 3,
+        "full_text_source_count": 1,
+        "max_report_chars": 500,
+        "report_style": "essay",
+        "search_guidance": "Use exactly 1 high-intent English search query.",
+        "visit_guidance": "Visit 3 key sources before answering.",
+        "report_guidance": "Write an essay-style report within 500 Chinese characters.",
+    },
+    "deep": {
+        "max_rounds": 18,
+        "search_rounds": 1,
+        "search_query_count": 3,
+        "visit_source_count": 10,
+        "full_text_source_count": 3,
+        "max_report_chars": 1500,
+        "report_style": "literature_review",
+        "search_guidance": "Use exactly 3 high-intent English search queries.",
+        "visit_guidance": "Visit 10 key sources before answering.",
+        "report_guidance": "Write a literature-review-style report within 1500 Chinese characters.",
+    },
+    "expert": {
+        "max_rounds": 32,
+        "search_rounds": 2,
+        "search_query_count": 5,
+        "visit_source_count": 20,
+        "full_text_source_count": 5,
+        "first_visit_source_count": 10,
+        "min_report_chars": 3000,
+        "report_style": "paper",
+        "search_guidance": "Use exactly 5 high-intent English search queries in each search stage.",
+        "visit_guidance": "Visit 20 key sources in total before the final answer.",
+        "report_guidance": "Write a paper-style final report of at least 3000 Chinese characters.",
+    },
+}
+
+
+class TagContentStream:
+    def __init__(self, start_tag: str, end_tag: str) -> None:
+        self.start_tag = start_tag
+        self.end_tag = end_tag
+        self.buffer = ""
+        self.inside = False
+        self.closed = False
+
+    def feed(self, delta: str) -> str:
+        if self.closed:
+            return ""
+        self.buffer += delta
+        output = ""
+        while self.buffer:
+            if not self.inside:
+                start_index = self.buffer.find(self.start_tag)
+                if start_index < 0:
+                    self.buffer = self.buffer[-(len(self.start_tag) - 1) :]
+                    break
+                self.buffer = self.buffer[start_index + len(self.start_tag) :]
+                self.inside = True
+
+            end_index = self.buffer.find(self.end_tag)
+            if end_index >= 0:
+                output += self.buffer[:end_index]
+                self.buffer = self.buffer[end_index + len(self.end_tag) :]
+                self.closed = True
+                break
+
+            safe_length = max(0, len(self.buffer) - (len(self.end_tag) - 1))
+            if safe_length:
+                output += self.buffer[:safe_length]
+                self.buffer = self.buffer[safe_length:]
+            break
+        return output
+
+    def flush(self) -> str:
+        if not self.inside or self.closed:
+            return ""
+        output = self.buffer
+        self.buffer = ""
+        return output
 
 
 class AgentRuntime:
@@ -24,20 +116,37 @@ class AgentRuntime:
         *,
         max_llm_retries: int = 1,
         llm_timeout_seconds: float = 60.0,
+        evidence_extraction_model: str = "gpt-5-nano",
+        evidence_extraction_concurrency: int = 5,
     ) -> None:
         self.provider_factory = provider_factory
         self.tool_registry = tool_registry
         self.max_llm_retries = max(0, max_llm_retries)
         self.llm_timeout_seconds = max(0.1, llm_timeout_seconds)
+        self.evidence_extraction_model = evidence_extraction_model
+        self.evidence_extraction_concurrency = max(1, evidence_extraction_concurrency)
 
     async def run(self, job_id: str, request: ResearchRequest) -> AsyncIterator[ResearchEvent]:
-        provider_name = request.provider
-        provider = self.provider_factory.create(provider_name)
+        provider = self.provider_factory.create(request.provider)
+        mode_policy = MODE_POLICIES[request.mode]
+        target = int(mode_policy["visit_source_count"])
+        search_query_count = int(mode_policy["search_query_count"])
+        search_stages = int(mode_policy.get("search_rounds", 1))
+        goal = request.query
+        real_provider = provider.name in {"openai", "anthropic", "gemini"}
+        # 抽取卡片用便宜模型；非 OpenAI Provider 没有 gpt-5-nano，退回主模型。
+        extraction_model = self.evidence_extraction_model if provider.name == "openai" else request.model
+        extractor = EvidenceExtractor(
+            provider,
+            model=extraction_model,
+            max_concurrency=self.evidence_extraction_concurrency,
+        )
+
         messages = [
             LLMMessage(role="system", content=SYSTEM_PROMPT),
             LLMMessage(role="user", content=build_user_prompt(request.query, request.mode)),
         ]
-        max_rounds = {"quick": 4, "deep": 8, "expert": 12}[request.mode]
+        usage = {"input": 0, "output": 0, "cost": 0.0}
 
         yield ResearchEvent(
             job_id=job_id,
@@ -46,123 +155,162 @@ class AgentRuntime:
             payload={"provider": provider.name, "mode": request.mode},
         )
 
-        collected_sources: list[dict[str, str]] = []
-        seen_source_urls: set[str] = set()
-        used_tools: set[str] = set()
-        real_provider_requires_evidence = provider.name in {"openai", "anthropic", "gemini"}
-        total_input_tokens = 0
-        total_output_tokens = 0
-        total_estimated_cost_usd = 0.0
-        for round_index in range(1, max_rounds + 1):
-            yield ResearchEvent(
-                job_id=job_id,
-                type="llm_start",
-                message=f"第 {round_index} 轮模型推理",
-                payload={"round": round_index},
-            )
-            result = None
-            for attempt in range(self.max_llm_retries + 1):
-                try:
-                    result = await asyncio.wait_for(
-                        provider.generate(messages, model=request.model),
-                        timeout=self.llm_timeout_seconds,
-                    )
-                    break
-                except TimeoutError as exc:
-                    error_message = f"模型调用超时（超过 {self.llm_timeout_seconds:g} 秒）"
-                    last_error: Exception = exc
-                except Exception as exc:
-                    error_message = f"模型调用失败：{exc}"
-                    last_error = exc
+        visited: list[dict[str, str]] = []  # 已访问来源，按访问顺序分配阿拉伯 citation_id
+        raw_by_url: dict[str, str] = {}  # url -> 完整正文，任务级内存，仅用于抽卡片
+        cards: list[EvidenceCard] = []
+        searched_urls: set[str] = set()
+        visited_urls: set[str] = set()
+        round_index = 0
 
-                if attempt < self.max_llm_retries:
-                    yield ResearchEvent(
-                        job_id=job_id,
-                        type="llm_retry",
-                        message=f"{error_message}，准备重试",
-                        payload={
-                            "round": round_index,
-                            "attempt": attempt + 1,
-                            "max_retries": self.max_llm_retries,
-                            "provider": provider.name,
-                            "error": str(last_error),
-                        },
-                    )
-                    continue
-
-                yield ResearchEvent(
-                    job_id=job_id,
-                    type="failed",
-                    message=f"研究任务失败：{error_message}",
-                    payload={
-                        "round": round_index,
-                        "attempts": attempt + 1,
-                        "provider": provider.name,
-                        "error": str(last_error),
-                    },
-                )
-                return
-
+        # ===== 检索 + 访问阶段（quick/deep 1 轮，expert 2 轮）=====
+        for stage in range(search_stages):
+            round_index += 1
+            holder: dict[str, Any] = {}
+            async for event in self._model_round(
+                provider, messages, request, job_id, round_index, usage,
+                allow_report_stream=False, holder=holder,
+            ):
+                yield event
+            result = holder.get("result")
             if result is None:
-                yield ResearchEvent(
-                    job_id=job_id,
-                    type="failed",
-                    message="研究任务失败：模型没有返回结果",
-                    payload={"round": round_index, "provider": provider.name},
-                )
                 return
+            content = result.content.strip()
+            messages.append(LLMMessage(role="assistant", content=content))
 
-            if result.input_tokens is not None:
-                total_input_tokens += result.input_tokens
-            if result.output_tokens is not None:
-                total_output_tokens += result.output_tokens
-            if result.estimated_cost_usd is not None:
-                total_estimated_cost_usd += result.estimated_cost_usd
+            queries = self._extract_search_queries(content, request.query, search_query_count)
             yield ResearchEvent(
                 job_id=job_id,
-                type="llm_result",
-                message=f"第 {round_index} 轮模型返回",
+                type="tool_start",
+                message="调用工具：search",
+                payload={"tool": "search", "arguments": {"query": queries}},
+            )
+            search_result = await self.tool_registry.call("search", {"query": queries})
+            new_candidates = self._mark_search_candidates(search_result.sources, searched_urls)
+            yield ResearchEvent(
+                job_id=job_id,
+                type="tool_result",
+                message="工具返回：search",
                 payload={
-                    "round": round_index,
-                    "provider": provider.name,
-                    "model": result.model,
-                    "content_preview": result.content.strip()[:1200],
-                    "input_tokens": result.input_tokens,
-                    "output_tokens": result.output_tokens,
-                    "estimated_cost_usd": result.estimated_cost_usd,
-                    "total_input_tokens": total_input_tokens,
-                    "total_output_tokens": total_output_tokens,
-                    "total_estimated_cost_usd": round(total_estimated_cost_usd, 8),
+                    "tool": search_result.name,
+                    "content": search_result.content,
+                    "sources": self._source_snapshot(new_candidates),
                 },
             )
-            content = result.content.strip()
-
-            answer = self._extract_answer(content)
-            if answer:
-                missing_evidence = self._missing_evidence_requirements(
-                    request.mode,
-                    used_tools,
-                    real_provider_requires_evidence,
+            # 只把精简的候选清单喂回模型（无全文），控制 token。
+            messages.append(
+                LLMMessage(
+                    role="user",
+                    content=f"<tool_response>\n{search_result.content[:3000]}\n</tool_response>",
                 )
-                if missing_evidence:
-                    yield ResearchEvent(
-                        job_id=job_id,
-                        type="evidence_required",
-                        message="模型尝试直接生成报告，已要求继续检索证据",
-                        payload={
-                            "round": round_index,
-                            "missing": missing_evidence,
-                            "content_preview": answer[:1000],
-                        },
-                    )
+            )
+
+            queue = [source for source in new_candidates if source["url"] not in visited_urls]
+            async for event in self._visit_funnel(queue, target, visited, raw_by_url, visited_urls, goal, job_id):
+                yield event
+
+            pending = [source for source in visited if source["url"] not in {card.url for card in cards}]
+            if pending:
+                new_cards = await extractor.extract_many(pending, raw_by_url, goal=goal)
+                cards.extend(new_cards)
+                yield ResearchEvent(
+                    job_id=job_id,
+                    type="evidence_ready",
+                    message="已为已访问来源抽取证据卡片",
+                    payload={"new_cards": len(new_cards), "total_cards": len(cards)},
+                )
+
+            if should_stop_visiting(count_full_text(visited), target):
+                break
+            if stage + 1 < search_stages:
+                messages.append(
+                    LLMMessage(role="user", content=self._build_supplement_search_request(search_query_count))
+                )
+
+        # ===== 选源：质量优先 → 数量补足 → 逃生降级 =====
+        selection = select_sources(visited, target)
+        yield ResearchEvent(
+            job_id=job_id,
+            type="source_selected",
+            message="已完成来源筛选",
+            payload={
+                "sources": self._source_snapshot(selection.selected),
+                "target": target,
+                "total_available": selection.total_available,
+                "full_text_count": selection.full_text_count,
+                "degraded": selection.degraded,
+                "full_text_shortfall": selection.full_text_shortfall,
+            },
+        )
+
+        selected = selection.selected
+        selected_ids = {source.get("citation_id", "") for source in selected}
+        selected_cards = [card for card in cards if card.citation_id in selected_ids]
+
+        # ===== 报告阶段 =====
+        messages.append(
+            LLMMessage(
+                role="user",
+                content=self._build_report_request(request.mode, selected_cards, selection),
+            )
+        )
+        report_attempts = 0
+        while True:
+            round_index += 1
+            holder = {}
+            async for event in self._model_round(
+                provider, messages, request, job_id, round_index, usage,
+                allow_report_stream=True, holder=holder,
+            ):
+                yield event
+            result = holder.get("result")
+            if result is None:
+                return
+            streamed_report = bool(holder.get("streamed_report"))
+            content = result.content.strip()
+            answer = self._extract_answer(content)
+
+            if not answer:
+                if report_attempts >= 2:
+                    answer = content  # 兜底：直接用模型输出，避免卡死
+                else:
+                    report_attempts += 1
+                    messages.append(LLMMessage(role="assistant", content=content))
                     messages.append(
                         LLMMessage(
                             role="user",
-                            content=self._build_evidence_request(request.mode, missing_evidence, collected_sources),
+                            content="请用 <answer>...</answer> 包裹最终研究报告，正文引用只能使用 [1]、[2] 这种阿拉伯角标。",
                         )
                     )
                     continue
 
+            missing_report_format = self._missing_report_format(answer, selected, real_provider)
+            if missing_report_format and report_attempts < 2:
+                report_attempts += 1
+                if streamed_report:
+                    yield ResearchEvent(
+                        job_id=job_id,
+                        type="report_reset",
+                        message="报告草稿格式不合格，准备重写",
+                        payload={"round": round_index},
+                    )
+                yield ResearchEvent(
+                    job_id=job_id,
+                    type="citation_required",
+                    message="研究报告缺少引用或参考文献，已要求模型重写",
+                    payload={
+                        "round": round_index,
+                        "missing": missing_report_format,
+                        "attempt": report_attempts,
+                        "content_preview": answer[:1000],
+                    },
+                )
+                messages.append(LLMMessage(role="assistant", content=content))
+                messages.append(
+                    LLMMessage(role="user", content=self._build_report_rewrite_request(missing_report_format, selected_cards))
+                )
+                continue
+
+            if not streamed_report:
                 for chunk in self._chunk_text(answer):
                     yield ResearchEvent(
                         job_id=job_id,
@@ -170,159 +318,423 @@ class AgentRuntime:
                         message="正在生成研究报告",
                         payload={"delta": chunk},
                     )
-                yield ResearchEvent(
-                    job_id=job_id,
-                    type="completed",
-                    message="研究报告已生成",
-                    payload={"final_report": answer, "sources": collected_sources},
-                )
-                return
+            yield ResearchEvent(
+                job_id=job_id,
+                type="completed",
+                message="研究报告已生成",
+                payload={"final_report": answer, "sources": self._source_snapshot(selected)},
+            )
+            return
 
-            tool_call = self._extract_tool_call(content)
-            if not tool_call:
+    async def _model_round(
+        self,
+        provider: Any,
+        messages: list[LLMMessage],
+        request: ResearchRequest,
+        job_id: str,
+        round_index: int,
+        usage: dict[str, Any],
+        *,
+        allow_report_stream: bool,
+        holder: dict[str, Any],
+    ) -> AsyncIterator[ResearchEvent]:
+        """执行一次模型流式调用，封装重试/超时/流式报告，结果写入 holder。"""
+        yield ResearchEvent(
+            job_id=job_id,
+            type="llm_start",
+            message=f"第 {round_index} 轮模型推理",
+            payload={"round": round_index},
+        )
+        result = None
+        streamed_report = False
+        answer_stream = TagContentStream("<answer>", "</answer>")
+        last_error: Exception | None = None
+        error_message = ""
+        for attempt in range(self.max_llm_retries + 1):
+            try:
+                stream = provider.stream_generate(messages, model=request.model)
+                while True:
+                    try:
+                        stream_event = await asyncio.wait_for(stream.__anext__(), timeout=self.llm_timeout_seconds)
+                    except StopAsyncIteration:
+                        break
+                    if stream_event.type == "delta" and stream_event.delta:
+                        if allow_report_stream:
+                            report_delta = answer_stream.feed(stream_event.delta)
+                            if report_delta:
+                                streamed_report = True
+                                yield ResearchEvent(
+                                    job_id=job_id,
+                                    type="report_delta",
+                                    message="正在生成研究报告",
+                                    payload={"delta": report_delta, "streaming": True},
+                                )
+                        yield ResearchEvent(
+                            job_id=job_id,
+                            type="llm_delta",
+                            message=f"第 {round_index} 轮模型流式输出",
+                            payload={
+                                "round": round_index,
+                                "attempt": attempt + 1,
+                                "provider": provider.name,
+                                "delta": stream_event.delta,
+                            },
+                        )
+                    elif stream_event.type == "done":
+                        result = stream_event.result
+                if allow_report_stream:
+                    trailing = answer_stream.flush()
+                    if trailing:
+                        streamed_report = True
+                        yield ResearchEvent(
+                            job_id=job_id,
+                            type="report_delta",
+                            message="正在生成研究报告",
+                            payload={"delta": trailing, "streaming": True},
+                        )
+                break
+            except TimeoutError as exc:
+                error_message = f"模型调用超时（超过 {self.llm_timeout_seconds:g} 秒）"
+                last_error = exc
+            except Exception as exc:
+                error_message = f"模型调用失败：{exc}"
+                last_error = exc
+
+            if attempt < self.max_llm_retries:
                 yield ResearchEvent(
                     job_id=job_id,
-                    type="warning",
-                    message="模型未返回可识别的工具调用或最终答案，继续尝试",
-                    payload={"round": round_index, "content": content[:1000]},
-                )
-                messages.append(
-                    LLMMessage(
-                        role="user",
-                        content="请继续研究。如果需要工具，请输出 <tool_call>；如果可以回答，请输出 <answer>。",
-                    )
+                    type="llm_retry",
+                    message=f"{error_message}，准备重试",
+                    payload={
+                        "round": round_index,
+                        "attempt": attempt + 1,
+                        "max_retries": self.max_llm_retries,
+                        "provider": provider.name,
+                        "error": str(last_error),
+                    },
                 )
                 continue
 
-            messages.append(LLMMessage(role="assistant", content=content))
+            yield ResearchEvent(
+                job_id=job_id,
+                type="failed",
+                message=f"研究任务失败：{error_message}",
+                payload={
+                    "round": round_index,
+                    "attempts": attempt + 1,
+                    "provider": provider.name,
+                    "error": str(last_error),
+                },
+            )
+            holder["result"] = None
+            return
 
-            tool_name = tool_call.get("name", "")
-            arguments = tool_call.get("arguments", {})
-            used_tools.add(tool_name)
+        if result is None:
+            yield ResearchEvent(
+                job_id=job_id,
+                type="failed",
+                message="研究任务失败：模型没有返回结果",
+                payload={"round": round_index, "provider": provider.name},
+            )
+            holder["result"] = None
+            return
+
+        if result.input_tokens is not None:
+            usage["input"] += result.input_tokens
+        if result.output_tokens is not None:
+            usage["output"] += result.output_tokens
+        if result.estimated_cost_usd is not None:
+            usage["cost"] += result.estimated_cost_usd
+        yield ResearchEvent(
+            job_id=job_id,
+            type="llm_result",
+            message=f"第 {round_index} 轮模型返回",
+            payload={
+                "round": round_index,
+                "provider": provider.name,
+                "model": result.model,
+                "content_preview": result.content.strip()[:1200],
+                "input_tokens": result.input_tokens,
+                "output_tokens": result.output_tokens,
+                "estimated_cost_usd": result.estimated_cost_usd,
+                "total_input_tokens": usage["input"],
+                "total_output_tokens": usage["output"],
+                "total_estimated_cost_usd": round(usage["cost"], 8),
+            },
+        )
+        holder["result"] = result
+        holder["streamed_report"] = streamed_report
+
+    async def _visit_funnel(
+        self,
+        queue: list[dict[str, str]],
+        target: int,
+        visited: list[dict[str, str]],
+        raw_by_url: dict[str, str],
+        visited_urls: set[str],
+        goal: str,
+        job_id: str,
+    ) -> AsyncIterator[ResearchEvent]:
+        """Runtime 驱动的访问漏斗：按相关性序滚动访问候选，full_text 达标即早停，否则访问完所有候选。"""
+        remaining = [source for source in queue if source["url"] not in visited_urls]
+        while remaining and not should_stop_visiting(count_full_text(visited), target):
+            needed = target - len(visited)
+            batch_size = needed if needed > 0 else target
+            batch = remaining[: max(1, batch_size)]
+            remaining = remaining[len(batch):]
+            urls = [source["url"] for source in batch]
+
             yield ResearchEvent(
                 job_id=job_id,
                 type="tool_start",
-                message=f"调用工具：{tool_name}",
-                payload={"tool": tool_name, "arguments": arguments},
+                message="调用工具：visit",
+                payload={"tool": "visit", "arguments": {"url": urls, "goal": goal}},
             )
-            tool_result = await self.tool_registry.call(tool_name, arguments)
-            new_sources = self._merge_sources(collected_sources, seen_source_urls, tool_result.sources)
+            visit_result = await self.tool_registry.call("visit", {"url": urls, "goal": goal})
+
+            new_visited: list[dict[str, str]] = []
+            for source in visit_result.sources:
+                url = source.get("url", "")
+                if not url or url in visited_urls:
+                    continue
+                visited_urls.add(url)
+                enriched = dict(source)
+                enriched["source_kind"] = "visited_source"
+                enriched["citation_id"] = str(len(visited) + 1)
+                visited.append(enriched)
+                raw_by_url[url] = visit_result.source_texts.get(url, "")
+                new_visited.append(enriched)
+
             yield ResearchEvent(
                 job_id=job_id,
                 type="tool_result",
-                message=f"工具返回：{tool_name}",
+                message="工具返回：visit",
                 payload={
-                    "tool": tool_result.name,
-                    "content": tool_result.content,
-                    "sources": new_sources,
-                    "all_sources": collected_sources,
+                    "tool": visit_result.name,
+                    "content": visit_result.content,
+                    "sources": self._source_snapshot(new_visited),
+                    "all_sources": self._source_snapshot(visited),
                 },
             )
-            source_context = self._format_sources_for_model(new_sources or collected_sources)
-            messages.append(
-                LLMMessage(
-                    role="user",
-                    content=f"<tool_response>\n{tool_result.content}\n\n{source_context}\n</tool_response>",
-                )
+            yield ResearchEvent(
+                job_id=job_id,
+                type="visit_progress",
+                message="访问进度",
+                payload={
+                    "visited": len(visited),
+                    "full_text": count_full_text(visited),
+                    "target": target,
+                    "remaining_candidates": len(remaining),
+                },
             )
 
-        yield ResearchEvent(
-            job_id=job_id,
-            type="completed",
-            message="达到最大研究轮数，生成阶段性报告",
-            payload={
-                "final_report": "已达到当前模式的最大研究轮数。请切换更深模式或调整问题后重新运行。",
-                "sources": collected_sources,
-            },
+    @staticmethod
+    def _extract_search_queries(content: str, fallback_query: str, count: int) -> list[str]:
+        tool_call = AgentRuntime._extract_tool_call(content)
+        queries: list[str] = []
+        if isinstance(tool_call, dict) and tool_call.get("name") == "search":
+            arguments = tool_call.get("arguments", {})
+            if isinstance(arguments, dict):
+                raw = arguments.get("query") or arguments.get("queries")
+                if isinstance(raw, str):
+                    queries = [raw]
+                elif isinstance(raw, list):
+                    queries = [item for item in raw if isinstance(item, str)]
+        cleaned: list[str] = []
+        seen: set[str] = set()
+        for item in queries:
+            stripped = item.strip()
+            if stripped and stripped not in seen:
+                seen.add(stripped)
+                cleaned.append(stripped)
+        if not cleaned:
+            cleaned = [fallback_query.strip()[:120] or fallback_query]
+        return cleaned[: max(1, count)]
+
+    @staticmethod
+    def _mark_search_candidates(
+        sources: list[dict[str, str]],
+        searched_urls: set[str],
+    ) -> list[dict[str, str]]:
+        candidates: list[dict[str, str]] = []
+        for source in sources:
+            url = source.get("url", "")
+            if not url or url in searched_urls:
+                continue
+            searched_urls.add(url)
+            enriched = dict(source)
+            enriched["source_kind"] = "search_result"
+            enriched["search_id"] = AgentRuntime._roman_numeral(len(searched_urls))
+            enriched.setdefault("read_status", "search_result")
+            enriched.setdefault("evidence_level", "metadata")
+            enriched.setdefault(
+                "evidence_note",
+                "Search result metadata. Visit this source before citing it in the final report.",
+            )
+            candidates.append(enriched)
+        return candidates
+
+    @staticmethod
+    def _build_supplement_search_request(search_query_count: int) -> str:
+        return (
+            "以上是第一轮检索并访问后的证据要点。请审查证据缺口，输出补充检索。"
+            f"使用 exactly {search_query_count} 个高命中英文搜索词，覆盖尚未被充分支持的方面。"
+            "只输出一个 search 工具调用：\n"
+            "<tool_call>\n{\"name\":\"search\",\"arguments\":{\"query\":[\"English search query\"]}}\n</tool_call>"
+        )
+
+    def _build_report_request(
+        self,
+        mode: str,
+        selected_cards: list[EvidenceCard],
+        selection: Any,
+    ) -> str:
+        policy = MODE_POLICIES.get(mode, MODE_POLICIES["deep"])
+        cards_text = "\n\n".join(render_card(card) for card in selected_cards) or "（无可用证据卡片）"
+        degrade_note = ""
+        if selection.degraded or selection.full_text_shortfall:
+            reasons = []
+            if selection.full_text_shortfall:
+                reasons.append(
+                    f"全文证据只有 {selection.full_text_count} 条（目标 {selection.target} 条）"
+                )
+            if selection.degraded:
+                reasons.append(
+                    f"可用来源只有 {selection.total_available} 条（目标 {selection.target} 条）"
+                )
+            degrade_note = (
+                "注意：本次可用证据有限（" + "；".join(reasons) + "）。"
+                "请在报告中明确区分哪些结论基于全文证据、哪些仅基于摘要/题录或访问受限来源，"
+                "不要夸大证据强度，并在结尾说明证据局限。\n"
+            )
+        return (
+            f"现在请基于以上证据卡片{REPORT_REQUEST_MARKER}。\n"
+            f"研究模式：{mode}。{policy['report_guidance']}\n"
+            "只能引用下面列出的来源，使用阿拉伯数字角标 [1]、[2]，禁止使用罗马编号或 [^1] 脚注，"
+            "禁止引用未列出的来源，禁止编造数据。\n"
+            f"{degrade_note}"
+            "可引用来源（证据卡片）：\n"
+            f"{cards_text}\n"
+            "输出格式：用 <answer>...</answer> 包裹最终报告，正文使用 [n] 角标，最后一节命名为 ## References（APA 风格）。"
         )
 
     @staticmethod
     def _extract_tool_call(content: str) -> Optional[dict[str, Any]]:
-        match = TOOL_CALL_PATTERN.search(content)
-        if not match:
-            return None
-        raw = match.group(1).strip()
-        try:
-            parsed = json.loads(raw)
-        except json.JSONDecodeError:
-            return None
+        tool_calls = AgentRuntime._extract_tool_calls(content)
+        return tool_calls[0] if tool_calls else None
+
+    @staticmethod
+    def _extract_tool_calls(content: str) -> list[dict[str, Any]]:
+        tool_calls: list[dict[str, Any]] = []
+        for match in TOOL_CALL_PATTERN.finditer(content):
+            parsed = AgentRuntime._parse_first_json_object(match.group(1).strip())
+            if isinstance(parsed, dict):
+                tool_calls.append(parsed)
+        if tool_calls:
+            return tool_calls
+
+        start_match = TOOL_CALL_START_PATTERN.search(content)
+        if not start_match:
+            return []
+        raw = content[start_match.end() :].strip()
+        parsed = AgentRuntime._parse_first_json_object(raw)
         if not isinstance(parsed, dict):
-            return None
-        return parsed
+            return []
+        return [parsed]
 
     @staticmethod
     def _extract_answer(content: str) -> Optional[str]:
         match = ANSWER_PATTERN.search(content)
-        if not match:
+        if match:
+            answer = match.group(1).strip()
+            return answer or None
+        start_match = ANSWER_START_PATTERN.search(content)
+        if not start_match:
             return None
-        answer = match.group(1).strip()
+        answer = content[start_match.end() :].strip()
         return answer or None
 
     @staticmethod
-    def _missing_evidence_requirements(mode: str, used_tools: set[str], enabled: bool) -> list[str]:
-        if not enabled:
+    def _parse_first_json_object(raw: str) -> Optional[Any]:
+        decoder = json.JSONDecoder()
+        start = raw.find("{")
+        if start < 0:
+            return None
+        try:
+            parsed, _ = decoder.raw_decode(raw[start:])
+        except json.JSONDecodeError:
+            return None
+        return parsed
+
+    @staticmethod
+    def _missing_report_format(answer: str, sources: list[dict[str, str]], enabled: bool) -> list[str]:
+        if not enabled or not sources:
             return []
         missing: list[str] = []
-        if "search" not in used_tools:
-            missing.append("search")
-        if mode in {"deep", "expert"} and "visit" not in used_tools:
-            missing.append("visit")
+        citation_markers = re.findall(r"\[(\d+)\]", answer)
+        if not citation_markers:
+            missing.append("citation_markers")
+        else:
+            valid_citation_ids = {source.get("citation_id", "") for source in sources}
+            if any(citation_id not in valid_citation_ids for citation_id in citation_markers):
+                missing.append("invalid_citation_markers")
+        if re.search(r"\[\^\d+\]", answer):
+            missing.append("footnote_citations")
+        if not re.search(r"(^|\n)\s*(#{1,6}\s*)?(\*\*)?(References|参考文献)(\*\*)?\s*($|\n|[:：])", answer, re.IGNORECASE):
+            missing.append("references_section")
         return missing
 
-    @staticmethod
-    def _build_evidence_request(
-        mode: str,
-        missing_evidence: list[str],
-        collected_sources: list[dict[str, str]],
+    def _build_report_rewrite_request(
+        self,
+        missing_report_format: list[str],
+        selected_cards: list[EvidenceCard],
     ) -> str:
-        source_context = AgentRuntime._format_sources_for_model(collected_sources)
-        if "search" in missing_evidence:
-            return (
-                "你还不能输出 <answer>。请先调用 search 获取 Google Scholar 学术来源。"
-                "请使用 2-4 个英文检索词，覆盖疗效、安全性和适用人群。"
-            )
-        if "visit" in missing_evidence:
-            return (
-                "你还不能输出 <answer>。deep/expert 模式需要先调用 visit 阅读关键来源。"
-                "请从下面可引用来源中选择最相关的 1-3 个 URL 访问。\n"
-                f"{source_context}"
-            )
-        return f"请继续研究。当前模式：{mode}。"
+        cards_text = "\n\n".join(render_card(card) for card in selected_cards) or "（无可用证据卡片）"
+        missing_text = "、".join(missing_report_format)
+        return (
+            f"你刚才的最终报告格式不合格，缺少：{missing_text}。请重写 <answer>。\n"
+            "硬性要求：\n"
+            "1. 关键事实、数据、疗效、安全性和适用人群结论后必须使用 [1]、[2] 这种来源角标。\n"
+            "   禁止使用 [^1]、[^2] 这种 Markdown 脚注格式。\n"
+            "2. 最后一节必须命名为 References 或 参考文献。\n"
+            "3. References 使用 APA 风格，尽量包含标题、来源和 URL。\n"
+            "4. 如果来源标记为 blocked、metadata_only 或 metadata，只能说明它是题录/摘要/受限访问证据，不能写成已阅读全文。\n"
+            "5. 只能引用下面列出的来源，不要编造来源。\n"
+            f"{cards_text}"
+        )
 
     @staticmethod
-    def _merge_sources(
-        collected_sources: list[dict[str, str]],
-        seen_source_urls: set[str],
-        sources: list[dict[str, str]],
-    ) -> list[dict[str, str]]:
-        new_sources: list[dict[str, str]] = []
-        for source in sources:
-            url = source.get("url", "")
-            if not url or url in seen_source_urls:
-                continue
-            seen_source_urls.add(url)
-            citation_id = str(len(collected_sources) + 1)
-            enriched = dict(source)
-            enriched["citation_id"] = citation_id
-            collected_sources.append(enriched)
-            new_sources.append(enriched)
-        return new_sources
+    def _visited_sources(sources: list[dict[str, str]]) -> list[dict[str, str]]:
+        return [source for source in sources if source.get("source_kind") == "visited_source" and source.get("citation_id")]
 
     @staticmethod
-    def _format_sources_for_model(sources: list[dict[str, str]]) -> str:
-        if not sources:
-            return "可引用来源：暂无。"
-        lines = ["可引用来源："]
-        for source in sources:
-            citation_id = source.get("citation_id", "?")
-            title = source.get("title", source.get("url", ""))
-            url = source.get("url", "")
-            snippet = source.get("snippet", "")
-            query = source.get("query", "")
-            detail_parts = [part for part in [snippet, f"检索词：{query}" if query else ""] if part]
-            detail = f" - {'；'.join(detail_parts)}" if detail_parts else ""
-            lines.append(f"[{citation_id}] {title}. {url}{detail}")
-        return "\n".join(lines)
+    def _source_snapshot(sources: list[dict[str, str]]) -> list[dict[str, str]]:
+        return [dict(source) for source in sources]
+
+    @staticmethod
+    def _roman_numeral(value: int) -> str:
+        numerals = [
+            (1000, "m"),
+            (900, "cm"),
+            (500, "d"),
+            (400, "cd"),
+            (100, "c"),
+            (90, "xc"),
+            (50, "l"),
+            (40, "xl"),
+            (10, "x"),
+            (9, "ix"),
+            (5, "v"),
+            (4, "iv"),
+            (1, "i"),
+        ]
+        remaining = max(1, value)
+        parts: list[str] = []
+        for number, numeral in numerals:
+            while remaining >= number:
+                parts.append(numeral)
+                remaining -= number
+        return "".join(parts)
 
     @staticmethod
     def _chunk_text(text: str, size: int = 180) -> list[str]:

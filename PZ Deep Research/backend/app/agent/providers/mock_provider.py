@@ -18,22 +18,13 @@ class MockProvider(LLMProvider):
         temperature: float = 0.3,
         max_tokens: int = 4096,
     ) -> LLMResult:
-        tool_responses = [message for message in messages if message.role == "user" and "<tool_response>" in message.content]
-        original_query = next((message.content for message in reversed(messages) if message.role == "user"), "")
+        # 新流程下访问由 Runtime 驱动，模型只负责：被要求时输出 search 查询，
+        # 或在收到「撰写最终研究报告」指令时输出 <answer>。
+        last_user = next((message.content for message in reversed(messages) if message.role == "user"), "")
 
-        if not tool_responses:
-            query = original_query[:120].replace("\n", " ")
+        if "撰写最终研究报告" not in last_user:
+            query = last_user[:120].replace("\n", " ")
             payload = {"name": "search", "arguments": {"query": [query]}}
-            return LLMResult(content=f"<tool_call>\n{json.dumps(payload, ensure_ascii=False)}\n</tool_call>", model="mock")
-
-        if len(tool_responses) == 1:
-            payload = {
-                "name": "visit",
-                "arguments": {
-                    "url": ["https://example.com/pz-deep-research"],
-                    "goal": "提取和用户研究问题相关的关键信息",
-                },
-            }
             return LLMResult(content=f"<tool_call>\n{json.dumps(payload, ensure_ascii=False)}\n</tool_call>", model="mock")
 
         return LLMResult(

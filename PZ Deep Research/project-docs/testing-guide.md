@@ -6,7 +6,7 @@
 
 只要新增测试用例、修改测试命令、调整测试范围、增加测试工具或发现测试限制，都需要同步更新本文档。
 
-每次做了实质修改，还需要同步更新 `project-docs/changelog.md`。
+每次做了实质修改，还需要同步更新 `project-docs/changelog.md`。changelog 新记录使用 `YYYY-MM-DD HH:mm 时区`，同一天多次修改也不要合并。
 
 ## 当前测试策略
 
@@ -16,7 +16,18 @@
 - Agent Runtime 能完成 mock 研究任务。
 - 工具调用顺序正确。
 - Agent Runtime 能记录 LLM 用量。
+- Agent Runtime 能把模型流式输出转为 `llm_delta` 事件。
 - Agent Runtime 能处理模型调用失败、重试和超时。
+- 真实 Provider 的最终报告必须带引用角标和 References / 参考文献章节。
+- 真实 Provider 必须按固定流程执行：先 `search`，再 `visit`，最后输出报告。
+- quick / deep / expert 都必须达到各自的搜索和访问数量门槛：quick 为 1 个搜索词和 3 个访问来源，deep 为 3 个搜索词和 10 个访问来源，expert 为两次搜索、每次 5 个搜索词、总共 20 个访问来源。
+- 英文生产提示词和中文对照提示词必须同时维护，并保持模式数字规格一致。
+- Runtime 需要识别错误工具顺序和同轮多个工具调用，并通过 `protocol_warning` 记录纠偏。
+- 真实 Provider 混合输出 `<tool_call>` 和 `<answer>` 时，证据不足阶段必须优先执行工具调用。
+- `llm_delta` 和 `report_delta` 只作为 SSE 实时事件，不写入历史事件存储。
+- Runtime 能从未闭合但内容完整的 `<tool_call>` / `<answer>` 中恢复结构化内容。
+- `visit` 工具能区分 full_text、partial_text、metadata_only / blocked 和 unavailable。
+- 前端能展示工具返回正文、来源证据强度和引用 hover 卡片。
 - ProviderFactory 能正确创建多模型 Provider。
 - 配置层能提供默认模型，并识别真实 Provider 缺少的 API Key。
 - API 能返回 `/api/readiness` 配置体检信息。
@@ -25,6 +36,7 @@
 - search / visit 工具能处理输入清洗、来源记录和失败兜底。
 - API 输入校验有效。
 - 前端能通过 lint 和 build。
+- 前端能渲染 Markdown 格式研究报告。
 - 本地手动端到端流程可以跑通。
 
 暂时不引入复杂测试体系，避免过早增加维护成本。
@@ -68,9 +80,22 @@ backend/tests/
   - mock Agent Runtime 能完成研究流程。
   - Runtime 会依次调用 `search` 和 `visit`。
   - Runtime 会产出 `llm_result` 用量统计事件。
+  - Runtime 会产出 `llm_delta` 流式输出事件。
+  - Runtime 会在最终报告生成过程中产出早于 `llm_result` 的 `report_delta`，覆盖报告真流式。
   - Runtime 会在模型调用失败时重试。
   - Runtime 会在模型调用超时时产出 `failed` 事件。
+  - `MODE_POLICIES` 覆盖 quick / deep / expert 的搜索词数量、访问来源数量和报告字数目标。
+  - 英文生产提示词和中文对照提示词存在，并且包含相同的固定流程和三种模式策略。
+  - Runtime 能接受加粗的 `**References**` 标题，避免模型只因 Markdown 加粗而耗尽重写轮次。
   - 真实 Provider 如果在没有证据前直接输出报告，会被 Runtime 拦截并要求继续 search / visit。
+  - quick 模式必须在最终报告前完成 3 个来源访问，不能只 search 或只访问 1 个来源后直接回答。
+  - quick 模式如果模型返回超过策略数量的搜索词或 URL，Runtime 会裁剪到策略上限并记录 `protocol_warning`。
+  - 真实 Provider 如果在 search 前返回 visit，会被 Runtime 纠偏，不会执行错误顺序的工具。
+  - expert 模式必须完成第二次 search，并且总共访问 20 个来源后才允许最终报告。
+  - 真实 Provider 如果同一轮返回多个工具调用，Runtime 会记录 `protocol_warning`，并只执行本轮第一个工具调用。
+  - 真实 Provider 同时输出工具调用和早答时，会优先执行工具调用。
+  - 真实 Provider 如果最终报告缺少 References / 参考文献，会被 Runtime 拦截并要求重写。
+  - 未闭合 `<tool_call>` 和未闭合 `<answer>` 的容错解析。
 - `test_api.py`
   - `/health` 健康检查正常。
   - `/api/readiness` 可以返回 Provider 和工具配置状态。
@@ -78,6 +103,7 @@ backend/tests/
   - `/api/models/openai` 在缺少 OpenAI Key 时返回配置错误。
   - `/api/research-jobs` 可以创建 mock 研究任务。
   - 过短 query 会被 API 校验拒绝。
+  - `run_research_job` 不会把 `llm_delta` 和 `report_delta` 写入历史事件存储。
 - `test_config.py`
   - 空模型环境变量会回退到项目默认模型。
   - 中文占位符不会被误判为真实 OpenAI API Key 或模型名。
@@ -90,9 +116,12 @@ backend/tests/
   - 未知 Provider 会被拒绝。
 - `test_tools.py`
   - `search` 能解析 SerpAPI Google Scholar 返回结果。
+  - `search` 返回来源会标记题录/摘要证据强度。
   - `search` 能对重复来源去重。
   - `search` 遇到上游失败时返回失败内容而不是抛异常。
   - `visit` 能读取 Jina Reader 内容并记录来源。
+  - `visit` 能把可用正文标记为 `full_text`。
+  - `visit` 能把 403 / CAPTCHA 页面标记为 `blocked` / `metadata_only`。
   - `visit` 会拒绝非 http/https URL。
   - ToolRegistry 对未知工具返回可读错误。
 
@@ -197,11 +226,18 @@ http://localhost:3000
 
 真实 Provider 页面验收还需要检查：
 
-1. 研究进度中如果模型尝试早答，应出现“继续检索证据”的事件。
-2. deep / expert 模式下应至少看到 `search` 和 `visit` 工具调用。
-3. `tool_result` 下方应展示来源卡片，包含 favicon、引用编号和 URL。
-4. 报告正文中的 `[1]`、`[2]` 应显示为可 hover 的引用角标。
-5. 右侧来源区应展示 APA 风格参考文献兜底列表。
+1. 访问由 Runtime 驱动：模型只输出 `search` 查询，进度里应出现 `visit_progress`（访问进度 n/目标）、`evidence_ready`（已抽取卡片数）和 `source_selected`（来源筛选结果）等事件；模型不应再自行发起 `visit`。
+2. quick / deep 模式下应看到先 `search` 后 `visit`（Runtime 滚动并发访问）；expert 模式应看到两轮 `search`，每轮后各有 `visit`。
+3. quick 模式应使用 1 个搜索词，目标访问 3 个来源；deep 用 3 个搜索词、目标 10 个来源；expert 每轮用 5 个搜索词、总目标 20 个来源。全文证据足够时会提前结束访问（早停）。
+4. `search` 的候选来源只出现在中间“工具返回”里（罗马编号 (i)、(ii)、(iii)），不应进入右侧来源区；只有 `visit` 后的来源（阿拉伯编号 1、2、3）才展示在右侧来源区。
+5. 模型返回过程中应能看到“模型实时输出”区域持续追加文本。
+6. 最终报告区域应在模型生成 `<answer>` 时逐步出现内容，不应只在任务完成后一次性出现。
+7. `tool_result` 事件下方应可以展开“查看工具返回”，检查 search / visit 原始内容。
+8. 报告正文应按 Markdown 渲染，标题、列表和表格不应以纯文本方式堆在一起。
+9. 报告正文中的 `[1]`、`[2]` 应显示为可 hover 的卡片式引用角标。
+10. 来源卡片应显示证据强度；访问受限来源不应被标成全文证据。全文证据是「质量优先」的早停目标而非硬门槛：全文不足时按 `full_text>相关性` 选前 N，仍不足则降级，`source_selected` 会标注 `full_text_shortfall` / `degraded`，报告应相应说明证据受限。
+11. 右侧来源区应展示 APA 风格参考文献兜底列表。
+12. 报告正文中的引用应全部使用阿拉伯数字 `[1]`、`[2]`，不应出现罗马编号或 `[^1]` 脚注；只能引用证据卡片中的来源。
 
 ## API 手动测试
 
@@ -230,6 +266,8 @@ tool_result
 completed
 ```
 
+真实 OpenAI 流式任务会通过 SSE 推送 `llm_delta` 和 `report_delta`。这两类 token 级事件不会保存在 `/events` 历史接口里，前端在线连接时分别展示在“模型实时输出”和“研究报告”区域。
+
 查询项目候选模型：
 
 ```bash
@@ -247,6 +285,7 @@ curl -s http://127.0.0.1:8000/api/models/openai
 ## 当前还没有覆盖的测试
 
 - 真实 OpenAI Provider 联调测试。
+- 真实 OpenAI Provider token streaming 联调测试。
 - 真实 Claude Provider 联调测试。
 - 真实 Gemini Provider 联调测试。
 - 真实 `/api/readiness` 带 Key 配置后的人工验收。

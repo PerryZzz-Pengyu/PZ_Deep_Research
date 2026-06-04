@@ -3,8 +3,13 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.api import routes
+from app.agent.providers import ProviderFactory
+from app.agent.runtime import AgentRuntime
+from app.agent.schemas import ResearchEvent, ResearchRequest
+from app.agent.tools import build_default_tool_registry
 from app.config import Settings
 from app.main import app
+from app.storage import InMemoryJobStore
 
 
 client = TestClient(app)
@@ -51,7 +56,17 @@ def test_openai_available_models_requires_api_key(monkeypatch) -> None:
     assert "OPENAI_API_KEY" in response.json()["detail"]["missing"]
 
 
-def test_create_mock_research_job() -> None:
+def test_create_mock_research_job(monkeypatch) -> None:
+    # 用离线 mock 搜索的 runtime，避免 BackgroundTasks 在 TestClient 内同步跑真实 SerpAPI/Jina。
+    mock_settings = Settings(default_provider="mock", search_provider="mock")
+    monkeypatch.setattr(
+        routes,
+        "runtime",
+        AgentRuntime(
+            provider_factory=ProviderFactory(mock_settings),
+            tool_registry=build_default_tool_registry(mock_settings),
+        ),
+    )
     response = client.post(
         "/api/research-jobs",
         json={
@@ -80,3 +95,43 @@ def test_research_job_validation_rejects_short_query() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_run_research_job_does_not_persist_stream_deltas(monkeypatch) -> None:
+    class DeltaRuntime:
+        async def run(self, job_id: str, request: ResearchRequest):
+            yield ResearchEvent(
+                job_id=job_id,
+                type="llm_delta",
+                message="模型流式输出",
+                payload={"delta": "token"},
+            )
+            yield ResearchEvent(
+                job_id=job_id,
+                type="report_delta",
+                message="报告流式输出",
+                payload={"delta": "报告片段"},
+            )
+            yield ResearchEvent(
+                job_id=job_id,
+                type="completed",
+                message="研究报告已生成",
+                payload={"final_report": "完成", "sources": []},
+            )
+
+    async def run_job():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="测试 delta 历史存储", mode="quick", provider="mock")
+        job = await store.create_job(request, provider="mock")
+        monkeypatch.setattr(routes, "job_store", store)
+        monkeypatch.setattr(routes, "runtime", DeltaRuntime())
+
+        await routes.run_research_job(job.id, request)
+        return await store.list_events(job.id)
+
+    import asyncio
+
+    events = asyncio.run(run_job())
+    event_types = [event.type for event in events]
+
+    assert event_types == ["completed"]

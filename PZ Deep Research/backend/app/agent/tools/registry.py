@@ -31,6 +31,9 @@ def build_default_tool_registry(settings: Settings) -> ToolRegistry:
                 serpapi_api_key=settings.serpapi_api_key,
                 academic_engine=settings.academic_search_engine,
             ),
-            VisitTool(jina_api_key=settings.jina_api_key),
+            VisitTool(
+                jina_api_key=settings.jina_api_key,
+                max_concurrency=settings.visit_max_concurrency,
+            ),
         ]
     )

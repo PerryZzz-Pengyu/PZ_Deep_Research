@@ -46,6 +46,8 @@ class Settings:
     academic_search_engine: str = DEFAULT_ACADEMIC_SEARCH_ENGINE
     serpapi_api_key: str = ""
     jina_api_key: str = ""
+    visit_max_concurrency: int = 5
+    evidence_extraction_model: str = "gpt-5-nano"
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
 
 
@@ -103,6 +105,8 @@ def get_settings() -> Settings:
         academic_search_engine=_get_env("ACADEMIC_SEARCH_ENGINE", DEFAULT_ACADEMIC_SEARCH_ENGINE),
         serpapi_api_key=_get_env("SERPAPI_API_KEY", ""),
         jina_api_key=_get_env("JINA_API_KEY", ""),
+        visit_max_concurrency=_get_int_env("VISIT_MAX_CONCURRENCY", 5),
+        evidence_extraction_model=_get_env("EVIDENCE_EXTRACTION_MODEL", "gpt-5-nano"),
         cors_origins=tuple(origin.strip() for origin in origins.split(",") if origin.strip()),
     )
 

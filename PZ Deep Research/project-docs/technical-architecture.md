@@ -6,7 +6,7 @@
 
 只要修改了后端架构、前端架构、Agent Runtime、模型 Provider、工具层、数据存储、部署方案、依赖选择或接口设计，都需要同步更新本文档。
 
-每次做了实质修改，还需要同步更新 `project-docs/changelog.md`，说明修改日期、修改内容、影响文件和修改原因。
+每次做了实质修改，还需要同步更新 `project-docs/changelog.md`，说明修改时间、修改内容、影响文件和修改原因。changelog 新记录使用 `YYYY-MM-DD HH:mm 时区`，同一天多次修改也不要合并。
 
 ## 当前总体架构
 
@@ -125,6 +125,11 @@ npm 11.16.0
 - 已实现来源卡片展示，包含引用编号、favicon、域名、标题、摘要和 URL。
 - 已实现报告正文中的 `[n]` 引用角标 hover 提示来源。
 - 已在来源区补充 APA 风格参考文献兜底展示。
+- 已使用 `react-markdown` 和 `remark-gfm` 渲染最终报告，支持 Markdown 标题、列表、表格、链接和 GFM 格式。
+- 已实现模型实时输出区域，展示后端 `llm_delta` 流式事件。
+- 已实现工具返回正文展示，`tool_result` 可展开查看 search / visit 原始内容。
+- 已实现引用 hover 卡片，展示来源标题、域名、URL 和证据强度。
+- 来源卡片已展示证据强度标签，例如全文证据、部分正文、题录摘要、访问受限。
 
 后续可替换点：
 
@@ -157,22 +162,38 @@ npm 11.16.0
   - 调用工具
   - 注入 `<tool_response>`
   - 解析 `<answer>`
-- 已按研究模式限制最大轮数：
-  - quick：4 轮
-  - deep：8 轮
-  - expert：12 轮
+- 已按研究模式限制最大轮数，并使用英文生产 Prompt 搭配三个模式策略块：
+  - quick：8 轮，给 search、visit、answer 和必要格式修复留出空间。
+  - deep：18 轮，允许 10 个来源访问在模型分批调用时仍能完成。
+  - expert：32 轮，支持两段搜索、两段访问和最终长报告。
+- 三个模式共享固定流水线，但研究强度不同：
+  - quick：1 个高命中英文搜索词，访问 3 个关键来源，500 字以内 essay 风格报告。
+  - deep：3 个高命中英文搜索词，访问 10 个关键来源，1500 字以内文献综述风格报告。
+  - expert：每次搜索 5 个高命中英文搜索词，先搜索/访问，再审查缺口后二次搜索/访问；总共访问 20 个关键来源，3000 字以上论文风格报告。
+- Runtime 对真实 Provider 的证据门槛不再只判断是否调用过工具，而是按搜索次数和已访问来源 URL 数量判断是否可以进入最终报告。
 - 已实现模型调用超时控制，默认 `LLM_TIMEOUT_SECONDS=60`。
 - 已实现模型调用失败重试，默认 `LLM_MAX_RETRIES=1`。
 - 已实现 `llm_result` 事件，用于记录模型名、输入 token、输出 token、单轮估算成本和累计用量。
+- 已实现 `llm_delta` 事件，用于把支持原生 streaming 的 Provider 输出实时推送给前端。
+- 已实现报告级真流式输出：证据门槛满足后，如果模型开始输出 `<answer>`，Runtime 会在模型仍在生成时同步发送 `report_delta`。
+- 如果流式报告草稿后续没有通过引用或参考文献格式校验，Runtime 会发送 `report_reset`，前端清空草稿并等待重写。
 - 模型调用最终失败时 Runtime 会产出 `failed` 事件，让任务状态可以被存储层正确更新。
-- 对 OpenAI、Claude、Gemini 这类真实 Provider，Runtime 会拒绝无证据早答：没有 `search` 证据前不能输出最终报告，deep / expert 模式还需要至少一次 `visit`。
-- 工具来源会被 Runtime 去重并分配 `citation_id`，再作为可引用来源 `[1]`、`[2]` 注入给模型。
-- 最终报告会通过 `report_delta` 事件分段推送给前端，前端可以逐步显示报告内容。
+- 研究流程为「Runtime 驱动的访问漏斗」：模型只负责输出 `search` 查询和最终报告，**访问由 Runtime 驱动，模型不再输出 `visit` 调用**。
+- 访问漏斗（`_visit_funnel`）：search 候选按搜索原生相关性序，用并发 `visit` 滚动访问；full_text 数达到本模式目标（quick 3 / deep 10 / expert 20）即早停，否则访问完所有候选。候选数量有限，天然有界，不会死循环。
+- 证据卡片裁剪：每条已访问来源由便宜模型（`EVIDENCE_EXTRACTION_MODEL`，默认 `gpt-5-nano`）抽成紧凑证据卡片，原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告，单轮请求 token 不随轮数膨胀。
+- 选源（`selection.select_sources`）：「质量优先 → 数量补足 → 逃生降级」。full_text 达标取前 N；不足按 `full_text > 相关性` 取前 N；总数不足则逃生降级（有多少用多少），并通过 `source_selected` 事件的 `degraded` / `full_text_shortfall` 标志要求报告标注证据受限。
+- expert 模式跑两轮 `search`（第二轮审查证据缺口补充检索），选源覆盖两轮访问的并集。
+- 搜索词按模式上限裁剪（quick 1 / deep 3 / expert 5）。
+- Runtime 可以从未闭合但 JSON 完整的 `<tool_call>` 中恢复工具调用，也可以从未闭合但内容完整的 `<answer>` 中恢复报告正文。
+- 来源分级：`search` 返回的是候选来源（`source_kind=search_result`），使用罗马编号 `(i)`、`(ii)`、`(iii)`，只在中间「工具返回」展示、不能被引用；只有经过 `visit` 的来源（`source_kind=visited_source`）才会分配阿拉伯 `citation_id`，作为可引用来源进入右侧来源区；`completed` 与 `source_selected` 事件只包含已选中的已访问来源。
+- 新增事件：`visit_progress`（访问进度 n/目标、全文证据数）、`evidence_ready`（已抽取卡片数）、`source_selected`（最终选中来源 + 降级标志）。
+- 真实 Provider 的最终报告需要包含阿拉伯 `[n]` 引用角标和 References / 参考文献章节；缺失、出现 `[^n]` 脚注、或引用了未在证据卡片中的来源时，Runtime 会产出 `citation_required` 并要求模型重写。
+- 最终报告会通过 `report_delta` 事件实时推送给前端，前端可以逐步显示报告内容；`report_delta` 不再写入历史事件存储，避免 token 级报告片段撑爆任务记录。
 
 后续可替换点：
 
 - XML 工具协议可以升级为各模型原生 tool calling。
-- Agent 轮数、搜索数量、访问数量可以改为配置化。
+- Agent 轮数、搜索数量、访问数量当前写在 `MODE_POLICIES`，后续可以改为配置化或管理员后台可调。
 - 增加任务取消、暂停、恢复。
 - 增加 token 预算和成本预算控制，目前只有用量记录和成本字段透传。
 - 增加引用生成、来源去重和证据评分。
@@ -188,6 +209,19 @@ npm 11.16.0
 {"name":"search","arguments":{"query":["搜索词"]}}
 </tool_call>
 ```
+
+提示词文件位置：
+
+```text
+backend/app/agent/prompt_templates/system_prompt.en.md      # 英文生产和测试提示词，Runtime 实际使用
+backend/app/agent/prompt_templates/system_prompt.zh-CN.md   # 中文对照提示词，仅用于人工审阅
+```
+
+选择英文生产提示词的原因：
+
+- OpenAI、Claude、Gemini 在英文工具协议和结构化约束上通常更稳定。
+- 中文对照文件方便项目协作时检查策略内容，两份文件需要保持结构和数字规格一致。
+- Runtime 中的 `build_user_prompt` 也使用英文执行说明，只保留用户原始问题不翻译。
 
 最终答案格式：
 
@@ -206,7 +240,8 @@ npm 11.16.0
 当前风险：
 
 - 文本协议依赖模型遵守格式，真实模型可能输出不标准 JSON。
-- 当前解析只支持严格 JSON，后续需要增加容错。
+- 当前已有基础容错和流程纠偏，但仍不如各家模型原生 tool calling 稳定。
+- 当前执行策略只接受每轮第一个工具调用；如果后续要支持批量工具调用，需要增加更严格的依赖判断和人工可观察性。
 - 原生 tool calling 的稳定性通常更好，后续应逐步升级。
 
 后续方向：
@@ -256,6 +291,7 @@ npm 11.16.0
 当前状态：
 
 - 已使用 OpenAI Responses API 调用结构。
+- 已接入 OpenAI Responses API 原生 streaming，使用 `response.output_text.delta` 生成 `llm_delta`，并处理 completed、failed、incomplete 和 error 事件。
 - 已能返回模型名、输入 token 和输出 token。
 - 已通过 ProviderFactory 测试覆盖默认模型和专属模型选择。
 - 当前默认模型为 `gpt-5.4-mini`。
@@ -266,7 +302,7 @@ npm 11.16.0
 后续注意：
 
 - 需要补充真实 API Key 下的可选集成测试。
-- 需要补充流式输出和更细的 token / 成本统计。
+- 需要补充更细的 token / 成本统计和长任务预算控制。
 
 ### Anthropic Provider
 
@@ -323,6 +359,7 @@ npm 11.16.0
 - 已支持 query 清洗、空值过滤和重复 query 去重。
 - 已支持来源 URL 去重，并在来源中记录 title、url、snippet 和 query。
 - 已支持解析 Google Scholar 返回的发表信息和引用数。
+- 搜索来源会标记为 `read_status=search_result`、`evidence_level=metadata`，提醒模型和前端这只是题录/摘要证据。
 - 已支持 HTTP transport 注入，便于离线单元测试。
 - 上游搜索失败时返回工具失败内容，不直接抛异常中断整个 Agent Runtime。
 
@@ -352,6 +389,8 @@ npm 11.16.0
 - 已限制只允许 `http` / `https` 网页，拒绝 `file` 等非网页 scheme。
 - 已支持 HTTP transport 注入，便于离线单元测试。
 - 上游网页读取失败时返回工具失败内容，不直接抛异常中断整个 Agent Runtime。
+- 已支持读取状态和证据强度分级：`full_text`、`partial_text`、`metadata_only`、`unavailable`。
+- 如果 Jina Reader 返回 403、Forbidden、CAPTCHA 或 `Are you a robot` 页面，来源会标记为 `blocked` / `metadata_only`，不能当作已阅读全文。
 
 后续可替换点：
 
@@ -404,11 +443,14 @@ npm 11.16.0
 
 - API 已提供 SSE stream。
 - 前端已实现 EventSource 连接和事件展示。
-- 前端已支持 `report_delta` 分段渲染、`tool_result` 来源卡片渲染和引用 hover。
+- 前端已支持 `llm_delta` 模型实时输出、`report_delta` 报告分段渲染、`tool_result` 来源卡片渲染、Markdown 报告渲染和引用 hover。
+- `llm_delta` 和 `report_delta` 使用实时队列推送给当前连接的 SSE 客户端，不写入历史事件存储，避免 token 级日志撑爆任务记录。
+- 历史事件仍保留 `llm_result`、流程纠偏、工具调用、工具结果和完成/失败状态；刷新后通过 `completed.final_report` 恢复最终报告。
+- `report_delta` 当前只承担在线连接期的打字机式报告流，不再承担历史分段回放。
 
 后续可替换点：
 
-- 当前 `report_delta` 是报告级分段推送，不是模型 token 级流式；后续需要在 Provider 层接入 OpenAI / Claude / Gemini 原生 streaming。
+- OpenAI 已接入模型 token 级 streaming；Claude 和 Gemini 当前使用兼容封装，后续需要接入各自 SDK 的原生 streaming。
 - 如果需要双向实时控制，例如暂停、继续、人工确认，可以升级 WebSocket。
 - 如果部署平台对 SSE 支持有限，需要改成轮询或 WebSocket。
 
@@ -464,7 +506,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 后端 Python 语法检查通过。
 - 后端 app 导入通过。
-- 后端 pytest 自动化测试通过。
+- 后端 pytest 自动化测试通过，当前为 32 个用例。
 - 前端 lint 通过。
 - 前端 build 通过。
 - FastAPI 本地服务启动成功。
@@ -477,7 +519,8 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 当前未完成：
 
-- 真实 OpenAI、Claude、Gemini API 联调。
+- 真实 OpenAI 完整研究任务质量联调。
+- 真实 Claude、Gemini API 联调。
 - 浏览器自动化视觉截图验证。
 - 生产数据库和任务队列验证。
 - 文件上传和文件解析验证。
@@ -493,8 +536,8 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 ## 后续技术优先级
 
-1. 真实 Provider 联调：优先 Claude 和 OpenAI，再接 Gemini。
-2. 增加 Provider 错误重试和超时控制。
+1. 真实 Provider 联调：继续验证 OpenAI 完整研究质量，再接 Claude 和 Gemini。
+2. 为 Claude 和 Gemini 接入原生 streaming。
 3. 增加真实 tool calling 或增强 XML 解析容错。
 4. 将任务存储迁移到 Postgres。
 5. 将后台任务迁移到 worker 队列。

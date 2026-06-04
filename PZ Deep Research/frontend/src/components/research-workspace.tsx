@@ -13,14 +13,17 @@ import {
   Sparkles,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import type { Components } from "react-markdown";
 
 import { createResearchEventSource, createResearchJob, getModelOptions } from "@/lib/api";
 import type { ModelOption, ProviderName, ResearchEvent, ResearchMode } from "@/lib/types";
 
 const modes: Array<{ value: ResearchMode; label: string; detail: string }> = [
-  { value: "quick", label: "快速", detail: "少量来源" },
-  { value: "deep", label: "深度", detail: "均衡研究" },
-  { value: "expert", label: "专家", detail: "更强验证" },
+  { value: "quick", label: "快速", detail: "3源短文" },
+  { value: "deep", label: "深度", detail: "10源综述" },
+  { value: "expert", label: "专家", detail: "20源论文" },
 ];
 
 const providers: Array<{ value: ProviderName; label: string }> = [
@@ -46,10 +49,16 @@ const fallbackModelOptions: Record<ProviderName, ModelOption[]> = {
 
 type SourceItem = {
   citationId: string;
+  searchId?: string;
+  sourceKind?: string;
   title: string;
   url: string;
   snippet?: string;
   query?: string;
+  readStatus?: string;
+  evidenceLevel?: string;
+  evidenceNote?: string;
+  contentPreview?: string;
 };
 
 function getEventIcon(type: string) {
@@ -65,22 +74,44 @@ function parseSources(rawSources: unknown): SourceItem[] {
     if (!source || typeof source !== "object") return [];
     const maybeSource = source as {
       citation_id?: unknown;
+      search_id?: unknown;
+      source_kind?: unknown;
       title?: unknown;
       url?: unknown;
       snippet?: unknown;
       query?: unknown;
+      read_status?: unknown;
+      evidence_level?: unknown;
+      evidence_note?: unknown;
+      content_preview?: unknown;
     };
     if (typeof maybeSource.url !== "string") return [];
     return [
       {
-        citationId: typeof maybeSource.citation_id === "string" ? maybeSource.citation_id : String(index + 1),
+        citationId:
+          typeof maybeSource.citation_id === "string"
+            ? maybeSource.citation_id
+            : typeof maybeSource.search_id === "string"
+              ? maybeSource.search_id
+              : String(index + 1),
+        searchId: typeof maybeSource.search_id === "string" ? maybeSource.search_id : undefined,
+        sourceKind: typeof maybeSource.source_kind === "string" ? maybeSource.source_kind : undefined,
         title: typeof maybeSource.title === "string" ? maybeSource.title : maybeSource.url,
         url: maybeSource.url,
         snippet: typeof maybeSource.snippet === "string" ? maybeSource.snippet : undefined,
         query: typeof maybeSource.query === "string" ? maybeSource.query : undefined,
+        readStatus: typeof maybeSource.read_status === "string" ? maybeSource.read_status : undefined,
+        evidenceLevel: typeof maybeSource.evidence_level === "string" ? maybeSource.evidence_level : undefined,
+        evidenceNote: typeof maybeSource.evidence_note === "string" ? maybeSource.evidence_note : undefined,
+        contentPreview: typeof maybeSource.content_preview === "string" ? maybeSource.content_preview : undefined,
       },
     ];
   });
+}
+
+function isVisitedSource(source: SourceItem) {
+  if (source.sourceKind === "visited_source") return true;
+  return /^\d+$/.test(source.citationId) && source.readStatus !== "search_result";
 }
 
 function faviconUrl(url: string) {
@@ -104,19 +135,74 @@ function formatApaReference(source: SourceItem) {
   return `${source.title}. (n.d.). Retrieved from ${source.url}`;
 }
 
-function renderReportWithCitations(report: string, sourceByCitation: Map<string, SourceItem>) {
-  const parts = report.split(/(\[(\d+)\])/g);
-  return parts.map((part, index) => {
-    const match = /^\[(\d+)\]$/.exec(part);
-    if (!match) return <span key={`${index}-${part.slice(0, 8)}`}>{part}</span>;
-    const source = sourceByCitation.get(match[1]);
-    if (!source) return <span key={`${index}-${part}`}>{part}</span>;
-    return (
-      <sup className="citation-mark" key={`${index}-${part}`} title={`${source.title}\n${source.url}`}>
-        {part}
-      </sup>
-    );
+function evidenceLabel(source: SourceItem) {
+  const value = source.evidenceLevel || source.readStatus;
+  if (value === "full_text") return "全文证据";
+  if (value === "partial_text") return "部分正文";
+  if (value === "metadata_only") return "访问受限";
+  if (value === "metadata") return "题录摘要";
+  if (value === "mock") return "开发占位";
+  if (value === "unavailable") return "不可用";
+  return value || "未分级";
+}
+
+function evidenceClass(source: SourceItem) {
+  const value = source.evidenceLevel || source.readStatus;
+  if (value === "full_text") return "strong";
+  if (value === "partial_text") return "medium";
+  if (value === "metadata" || value === "metadata_only") return "limited";
+  return "muted";
+}
+
+function markdownWithCitationLinks(report: string, sourceByCitation: Map<string, SourceItem>) {
+  return report.replace(/\[(\d+)\](?!\()/g, (match, citationId: string) => {
+    const source = sourceByCitation.get(citationId);
+    return source ? `[[${citationId}]](${source.url})` : match;
   });
+}
+
+function nodeText(node: unknown): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(nodeText).join("");
+  return "";
+}
+
+function markdownComponents(sourceByCitation: Map<string, SourceItem>): Components {
+  return {
+    a({ href, children }) {
+      const text = nodeText(children);
+      const match = /^\[(\d+)\]$/.exec(text);
+      if (match) {
+        const source = sourceByCitation.get(match[1]);
+        return (
+          <span className="citation-wrap">
+            <sup className="citation-mark">{text}</sup>
+            {source ? (
+              <span className="citation-popover" role="tooltip">
+                <span className="source-topline">
+                  <span
+                    className="source-favicon"
+                    style={faviconUrl(source.url) ? { backgroundImage: `url(${faviconUrl(source.url)})` } : undefined}
+                  />
+                  <span className="source-citation">[{source.citationId}]</span>
+                  <span className="source-domain">{hostname(source.url)}</span>
+                </span>
+                <strong>{source.title}</strong>
+                <span className={`evidence-badge ${evidenceClass(source)}`}>{evidenceLabel(source)}</span>
+                {source.evidenceNote ? <small>{source.evidenceNote}</small> : null}
+                <span className="source-url">{source.url}</span>
+              </span>
+            ) : null}
+          </span>
+        );
+      }
+      return (
+        <a href={href} rel="noreferrer" target="_blank">
+          {children}
+        </a>
+      );
+    },
+  };
 }
 
 function SourceCard({ source }: { source: SourceItem }) {
@@ -127,30 +213,100 @@ function SourceCard({ source }: { source: SourceItem }) {
         <span className="source-favicon" style={icon ? { backgroundImage: `url(${icon})` } : undefined} />
         <span className="source-citation">[{source.citationId}]</span>
         <span className="source-domain">{hostname(source.url)}</span>
+        <span className={`evidence-badge ${evidenceClass(source)}`}>{evidenceLabel(source)}</span>
         <ExternalLink size={13} />
       </div>
       <strong>{source.title}</strong>
       {source.snippet ? <small>{source.snippet}</small> : null}
+      {source.evidenceNote ? <small>{source.evidenceNote}</small> : null}
       <span className="source-url">{source.url}</span>
     </a>
+  );
+}
+
+function ToolOutput({ content }: { content: string }) {
+  return (
+    <details className="tool-output">
+      <summary>查看工具返回</summary>
+      <pre>{content}</pre>
+    </details>
   );
 }
 
 function EventDetail({ event }: { event: ResearchEvent }) {
   if (event.type === "tool_result") {
     const eventSources = parseSources(event.payload.sources);
-    return eventSources.length ? (
-      <div className="event-source-grid">
-        {eventSources.map((source) => (
-          <SourceCard key={`${event.id}-${source.citationId}-${source.url}`} source={source} />
-        ))}
-      </div>
-    ) : null;
+    const content = event.payload.content;
+    return (
+      <>
+        {typeof content === "string" && content ? <ToolOutput content={content} /> : null}
+        {eventSources.length ? (
+          <div className="event-source-grid">
+            {eventSources.map((source) => (
+              <SourceCard key={`${event.id}-${source.citationId}-${source.url}`} source={source} />
+            ))}
+          </div>
+        ) : null}
+      </>
+    );
   }
 
   if (event.type === "evidence_required") {
     const missing = event.payload.missing;
     return Array.isArray(missing) ? <p className="event-note">补充步骤：{missing.join("、")}</p> : null;
+  }
+
+  if (event.type === "visit_progress") {
+    const visited = event.payload.visited;
+    const fullText = event.payload.full_text;
+    const target = event.payload.target;
+    if (typeof visited === "number" && typeof target === "number") {
+      return (
+        <p className="event-note">
+          已访问 {visited}/{target} 个来源{typeof fullText === "number" ? `，其中全文证据 ${fullText} 个` : ""}
+        </p>
+      );
+    }
+    return null;
+  }
+
+  if (event.type === "evidence_ready") {
+    const total = event.payload.total_cards;
+    return typeof total === "number" ? <p className="event-note">已抽取证据卡片 {total} 张</p> : null;
+  }
+
+  if (event.type === "source_selected") {
+    const total = event.payload.total_available;
+    const fullText = event.payload.full_text_count;
+    const degraded = event.payload.degraded === true;
+    const shortfall = event.payload.full_text_shortfall === true;
+    const notes: string[] = [];
+    if (degraded) notes.push("来源数量不足目标，已降级处理");
+    if (shortfall) notes.push("全文证据不足，部分结论基于摘要/受限来源");
+    return (
+      <p className="event-note">
+        已筛选来源：共 {typeof total === "number" ? total : "?"} 个
+        {typeof fullText === "number" ? `，全文证据 ${fullText} 个` : ""}
+        {notes.length ? `（${notes.join("；")}）` : ""}
+      </p>
+    );
+  }
+
+  if (event.type === "citation_required") {
+    const missing = event.payload.missing;
+    return Array.isArray(missing) ? <p className="event-note">需要重写：{missing.join("、")}</p> : null;
+  }
+
+  if (event.type === "protocol_warning") {
+    const expectedTool = event.payload.expected_tool;
+    const actualTool = event.payload.actual_tool;
+    const toolCallCount = event.payload.tool_call_count;
+    if (typeof expectedTool === "string") {
+      return <p className="event-note">流程纠偏：当前需要 {expectedTool}，模型返回了 {String(actualTool || "其他输出")}。</p>;
+    }
+    if (typeof toolCallCount === "number") {
+      return <p className="event-note">流程纠偏：模型一次返回 {toolCallCount} 个工具调用，本轮只执行第一个。</p>;
+    }
   }
 
   if (event.type === "llm_result") {
@@ -169,6 +325,7 @@ export function ResearchWorkspace() {
   const [modelOptions, setModelOptions] = useState(fallbackModelOptions);
   const [events, setEvents] = useState<ResearchEvent[]>([]);
   const [report, setReport] = useState("");
+  const [liveModelText, setLiveModelText] = useState("");
   const [jobId, setJobId] = useState("");
   const [isRunning, setIsRunning] = useState(false);
   const [error, setError] = useState("");
@@ -179,6 +336,7 @@ export function ResearchWorkspace() {
     const items: SourceItem[] = [];
     for (const event of events) {
       for (const source of parseSources(event.payload.sources)) {
+        if (!isVisitedSource(source)) continue;
         if (seen.has(source.url)) continue;
         seen.add(source.url);
         items.push(source);
@@ -190,6 +348,8 @@ export function ResearchWorkspace() {
   const sourceByCitation = useMemo(() => {
     return new Map(sources.map((source) => [source.citationId, source]));
   }, [sources]);
+  const reportMarkdown = useMemo(() => markdownWithCitationLinks(report, sourceByCitation), [report, sourceByCitation]);
+  const reportMarkdownComponents = useMemo(() => markdownComponents(sourceByCitation), [sourceByCitation]);
 
   const currentModelOptions = modelOptions[provider] ?? fallbackModelOptions[provider];
   const selectedModel = currentModelOptions.some((item) => item.id === model)
@@ -230,6 +390,7 @@ export function ResearchWorkspace() {
     setError("");
     setEvents([]);
     setReport("");
+    setLiveModelText("");
     setIsRunning(true);
 
     try {
@@ -241,7 +402,29 @@ export function ResearchWorkspace() {
 
       eventSource.onmessage = (message) => {
         const nextEvent = JSON.parse(message.data) as ResearchEvent;
+        if (nextEvent.type === "llm_delta") {
+          const delta = nextEvent.payload.delta;
+          if (typeof delta === "string") {
+            setLiveModelText((current) => current + delta);
+          }
+          return;
+        }
+        if (nextEvent.type === "report_delta") {
+          const delta = nextEvent.payload.delta;
+          if (typeof delta === "string") {
+            setReport((current) => current + delta);
+          }
+          return;
+        }
+        if (nextEvent.type === "report_reset") {
+          setReport("");
+          setEvents((current) => [...current, nextEvent]);
+          return;
+        }
         setEvents((current) => [...current, nextEvent]);
+        if (nextEvent.type === "llm_start") {
+          setLiveModelText("");
+        }
         if (nextEvent.type === "completed") {
           const finalReport = nextEvent.payload.final_report;
           if (typeof finalReport === "string") {
@@ -250,12 +433,6 @@ export function ResearchWorkspace() {
           setIsRunning(false);
           eventSource.close();
           eventSourceRef.current = null;
-        }
-        if (nextEvent.type === "report_delta") {
-          const delta = nextEvent.payload.delta;
-          if (typeof delta === "string") {
-            setReport((current) => current + delta);
-          }
         }
         if (nextEvent.type === "failed") {
           setError(nextEvent.message);
@@ -305,7 +482,7 @@ export function ResearchWorkspace() {
 
         <div className="sidebar-block">
           <span className="block-label">当前任务</span>
-          <strong>{jobId ? jobId.slice(0, 10) : "尚未创建"}</strong>
+          <strong className="job-id-text">{jobId || "尚未创建"}</strong>
         </div>
       </aside>
 
@@ -399,6 +576,16 @@ export function ResearchWorkspace() {
             ))
           )}
         </div>
+
+        {liveModelText ? (
+          <div className="stream-panel">
+            <div className="section-title compact-title">
+              <Bot size={15} />
+              模型实时输出
+            </div>
+            <pre>{liveModelText}</pre>
+          </div>
+        ) : null}
       </section>
 
       <aside className="report-panel">
@@ -407,7 +594,13 @@ export function ResearchWorkspace() {
           研究报告
         </div>
         <article className="report-body">
-          {report ? renderReportWithCitations(report, sourceByCitation) : "报告将在研究完成后显示。"}
+          {report ? (
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={reportMarkdownComponents}>
+              {reportMarkdown}
+            </ReactMarkdown>
+          ) : (
+            "报告将在研究完成后显示。"
+          )}
         </article>
 
         <div className="source-list">

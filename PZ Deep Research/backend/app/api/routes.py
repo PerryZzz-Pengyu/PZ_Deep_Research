@@ -22,7 +22,35 @@ runtime = AgentRuntime(
     tool_registry=build_default_tool_registry(settings),
     max_llm_retries=settings.llm_max_retries,
     llm_timeout_seconds=settings.llm_timeout_seconds,
+    evidence_extraction_model=settings.evidence_extraction_model,
+    evidence_extraction_concurrency=settings.visit_max_concurrency,
 )
+live_event_queues: dict[str, set[asyncio.Queue[ResearchEvent]]] = {}
+live_event_lock = asyncio.Lock()
+
+
+async def register_live_event_queue(job_id: str) -> asyncio.Queue[ResearchEvent]:
+    queue: asyncio.Queue[ResearchEvent] = asyncio.Queue()
+    async with live_event_lock:
+        live_event_queues.setdefault(job_id, set()).add(queue)
+    return queue
+
+
+async def unregister_live_event_queue(job_id: str, queue: asyncio.Queue[ResearchEvent]) -> None:
+    async with live_event_lock:
+        queues = live_event_queues.get(job_id)
+        if not queues:
+            return
+        queues.discard(queue)
+        if not queues:
+            live_event_queues.pop(job_id, None)
+
+
+async def publish_live_event(job_id: str, event: ResearchEvent) -> None:
+    async with live_event_lock:
+        queues = list(live_event_queues.get(job_id, set()))
+    for queue in queues:
+        await queue.put(event)
 
 
 @router.post("/research-jobs", response_model=ResearchJob)
@@ -166,17 +194,32 @@ async def stream_research_events(job_id: str) -> StreamingResponse:
         raise HTTPException(status_code=404, detail="研究任务不存在")
 
     async def event_stream():
-        sent_count = 0
-        while True:
+        queue = await register_live_event_queue(job_id)
+        sent_event_ids: set[str] = set()
+        try:
             events = await job_store.list_events(job_id)
-            for event in events[sent_count:]:
+            for event in events:
+                sent_event_ids.add(event.id)
                 payload = event.model_dump(mode="json")
                 yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-            sent_count = len(events)
-            current_job = await job_store.get_job(job_id)
-            if current_job and current_job.status in {"completed", "failed", "cancelled"} and sent_count == len(events):
-                break
-            await asyncio.sleep(0.5)
+
+            while True:
+                current_job = await job_store.get_job(job_id)
+                if current_job and current_job.status in {"completed", "failed", "cancelled"} and queue.empty():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=0.5)
+                except TimeoutError:
+                    continue
+                if event.id in sent_event_ids:
+                    continue
+                sent_event_ids.add(event.id)
+                payload = event.model_dump(mode="json")
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                if event.type in {"completed", "failed"}:
+                    break
+        finally:
+            await unregister_live_event_queue(job_id, queue)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -185,13 +228,15 @@ async def run_research_job(job_id: str, request: ResearchRequest) -> None:
     await job_store.update_status(job_id, "running")
     try:
         async for event in runtime.run(job_id, request):
-            await job_store.add_event(event)
+            if event.type not in {"llm_delta", "report_delta"}:
+                await job_store.add_event(event)
+            await publish_live_event(job_id, event)
     except Exception as exc:
-        await job_store.add_event(
-            ResearchEvent(
-                job_id=job_id,
-                type="failed",
-                message=f"研究任务失败：{exc}",
-                payload={"error": str(exc)},
-            )
+        failed_event = ResearchEvent(
+            job_id=job_id,
+            type="failed",
+            message=f"研究任务失败：{exc}",
+            payload={"error": str(exc)},
         )
+        await job_store.add_event(failed_event)
+        await publish_live_event(job_id, failed_event)
