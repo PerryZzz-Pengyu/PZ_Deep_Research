@@ -25,6 +25,7 @@ DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_SEARCH_PROVIDER = "serpapi"
 DEFAULT_ACADEMIC_SEARCH_ENGINE = "google_scholar"
+DEFAULT_DATABASE_URL = f"sqlite+aiosqlite:///{PROJECT_ROOT / 'data' / 'pz_deep_research.db'}"
 LOCAL_FRONTEND_ORIGINS = (
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -53,6 +54,7 @@ class Settings:
     jina_api_key: str = ""
     visit_max_concurrency: int = 5
     evidence_extraction_model: str = "gpt-5-nano"
+    database_url: str = DEFAULT_DATABASE_URL
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
 
 
@@ -101,6 +103,17 @@ def _get_cors_origins() -> tuple[str, ...]:
     return tuple(origins) or LOCAL_FRONTEND_ORIGINS
 
 
+def _get_database_url() -> str:
+    database_url = _get_env("DATABASE_URL", DEFAULT_DATABASE_URL)
+    if database_url.startswith("postgres://"):
+        return database_url.replace("postgres://", "postgresql+psycopg://", 1)
+    if database_url.startswith("postgresql://"):
+        return database_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if database_url.startswith("sqlite:///"):
+        return database_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
+    return database_url
+
+
 def get_settings() -> Settings:
     return Settings(
         default_provider=_get_env("DEFAULT_PROVIDER", "mock"),
@@ -122,6 +135,7 @@ def get_settings() -> Settings:
         jina_api_key=_get_env("JINA_API_KEY", ""),
         visit_max_concurrency=_get_int_env("VISIT_MAX_CONCURRENCY", 5),
         evidence_extraction_model=_get_env("EVIDENCE_EXTRACTION_MODEL", "gpt-5-nano"),
+        database_url=_get_database_url(),
         cors_origins=_get_cors_origins(),
     )
 

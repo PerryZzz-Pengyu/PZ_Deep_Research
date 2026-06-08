@@ -17,6 +17,8 @@ A multi-model deep research web application for consumer users. It combines acad
 - Uses compact evidence cards to control context size and reduce token growth in long-running tasks.
 - Renders Markdown reports with Arabic-number inline citations, citation hover cards, and APA-style references.
 - Exits through a bounded fallback path when sources or full-text evidence are insufficient, avoiding repeated visits and infinite loops.
+- Persists research jobs, events, report drafts, and final reports in SQLite or PostgreSQL.
+- Provides per-visitor research history and report restoration before account authentication is introduced.
 
 ## Research Pipeline
 
@@ -53,7 +55,8 @@ Actual source counts depend on search results and webpage accessibility. When th
 - Search: SerpAPI Google Scholar
 - Web retrieval: Jina Reader
 - Streaming: Server-Sent Events
-- Verification: pytest, ESLint, Next.js production build
+- Database: SQLite (local default), PostgreSQL (production option), SQLAlchemy, Alembic
+- Verification: pytest, Playwright, ESLint, Next.js production build
 
 ## Repository Structure
 
@@ -118,12 +121,19 @@ A real research run requires:
 
 Never commit `.env`, `frontend/.env.local`, or real API credentials. See the [API key setup guide](project-docs/api-key-setup.md) for details.
 
+Local development stores data in `data/pz_deep_research.db` by default. PostgreSQL example:
+
+```text
+DATABASE_URL=postgresql://user:password@host:5432/database
+```
+
 ### 4. Start the backend
 
 ```bash
 python3 -m venv backend/.venv
 backend/.venv/bin/python -m pip install --upgrade pip setuptools
 backend/.venv/bin/python -m pip install -r backend/requirements-lock.txt
+cd backend && PYTHONPATH=. .venv/bin/alembic upgrade head && cd ..
 PYTHONPATH=backend backend/.venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
@@ -161,6 +171,7 @@ Frontend:
 cd frontend
 npm run lint
 npm run build
+npm run test:e2e
 ```
 
 See the [testing guide](project-docs/testing-guide.md) for the complete test strategy and manual acceptance flow. Project documentation is currently maintained in Chinese.
@@ -171,7 +182,9 @@ See the [testing guide](project-docs/testing-guide.md) for the complete test str
 - Search queries are sent to SerpAPI; visited URLs and webpage content are processed through Jina Reader.
 - API usage costs and third-party service quotas are the responsibility of the operator.
 - Public deployments should add authentication, per-user quotas, rate limiting, abuse prevention, and cost alerts.
-- Research jobs currently use in-process memory storage and may be lost when the service restarts.
+- Until authentication is added, research history is partitioned by a random anonymous visitor ID stored in the browser. Clearing browser storage removes the local access key for that history.
+- The anonymous visitor ID is not authentication or a security credential. Public deployments must add account authentication and claim anonymous jobs into an authenticated `user_id`.
+- SQLite is intended for local or single-instance use. Multi-instance production deployments should use PostgreSQL, backups, and a separate task worker.
 - Never expose model, search, or webpage-retrieval API keys in client-side code.
 
 ## Upstream Reference and Independence

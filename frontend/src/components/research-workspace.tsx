@@ -4,14 +4,17 @@ import {
   ArrowRight,
   Bot,
   CheckCircle2,
+  Clock3,
   ExternalLink,
   FileText,
+  History,
   Loader2,
   PauseCircle,
   Search,
   Settings2,
   Sparkles,
   Square,
+  RefreshCw,
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -25,6 +28,7 @@ import {
   getModelOptions,
   getResearchEvents,
   getResearchJob,
+  listResearchJobs,
 } from "@/lib/api";
 import type { ModelOption, ProviderName, ResearchEvent, ResearchJob, ResearchMode } from "@/lib/types";
 
@@ -365,6 +369,9 @@ export function ResearchWorkspace() {
   const [isRunning, setIsRunning] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const [isRestoring, setIsRestoring] = useState(true);
+  const [activeView, setActiveView] = useState<"research" | "history">("research");
+  const [historyJobs, setHistoryJobs] = useState<ResearchJob[]>([]);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [error, setError] = useState("");
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -495,6 +502,49 @@ export function ResearchWorkspace() {
     };
   }, []);
 
+  const restoreJob = useCallback(
+    async (targetJobId: string) => {
+      const [job, restoredEvents] = await Promise.all([
+        getResearchJob(targetJobId),
+        getResearchEvents(targetJobId),
+      ]);
+      setJobId(job.id);
+      setJobStatus(job.status);
+      setQuery(job.query);
+      setMode(job.mode);
+      if (isProviderName(job.provider)) setProvider(job.provider);
+      setModel(job.model || "");
+      setEvents(restoredEvents);
+      setReport(job.final_report || job.draft_report || "");
+      setLiveModelText("");
+      setError(job.error || "");
+      window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, job.id);
+
+      const shouldResume = job.status === "queued" || job.status === "running";
+      setIsRunning(shouldResume);
+      if (shouldResume) {
+        connectToJob(job.id, restoredEvents.at(-1)?.id);
+      } else {
+        eventSourceRef.current?.close();
+        eventSourceRef.current = null;
+      }
+      return job;
+    },
+    [connectToJob],
+  );
+
+  const refreshHistory = useCallback(async () => {
+    setIsHistoryLoading(true);
+    setError("");
+    try {
+      setHistoryJobs(await listResearchJobs());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "获取研究历史失败");
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     return () => {
       eventSourceRef.current?.close();
@@ -535,40 +585,24 @@ export function ResearchWorkspace() {
       };
     }
 
-    Promise.all([getResearchJob(storedJobId), getResearchEvents(storedJobId)])
-      .then(([job, restoredEvents]) => {
-        if (ignore) return;
-        setJobId(job.id);
-        setJobStatus(job.status);
-        setQuery(job.query);
-        setMode(job.mode);
-        if (isProviderName(job.provider)) setProvider(job.provider);
-        setModel(job.model || "");
-        setEvents(restoredEvents);
-        setReport(job.final_report || job.draft_report || "");
-        setLiveModelText("");
-        setError(job.error || "");
-
-        const shouldResume = job.status === "queued" || job.status === "running";
-        setIsRunning(shouldResume);
-        if (shouldResume) {
-          connectToJob(job.id, restoredEvents.at(-1)?.id);
-        }
-      })
-      .catch(() => {
-        if (ignore) return;
-        window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
-        setJobId("");
-        setJobStatus("");
-      })
-      .finally(() => {
-        if (!ignore) setIsRestoring(false);
-      });
+    const timer = window.setTimeout(() => {
+      restoreJob(storedJobId)
+        .catch(() => {
+          if (ignore) return;
+          window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+          setJobId("");
+          setJobStatus("");
+        })
+        .finally(() => {
+          if (!ignore) setIsRestoring(false);
+        });
+    }, 0);
 
     return () => {
       ignore = true;
+      window.clearTimeout(timer);
     };
-  }, [connectToJob]);
+  }, [restoreJob]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -587,6 +621,7 @@ export function ResearchWorkspace() {
       setJobStatus(job.status);
       window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, job.id);
       connectToJob(job.id);
+      setHistoryJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建研究任务失败");
       setIsRunning(false);
@@ -626,12 +661,23 @@ export function ResearchWorkspace() {
         </div>
 
         <nav className="nav-list" aria-label="主导航">
-          <button className="nav-item active" type="button">
+          <button
+            className={activeView === "research" ? "nav-item active" : "nav-item"}
+            type="button"
+            onClick={() => setActiveView("research")}
+          >
             <Search size={16} />
             研究
           </button>
-          <button className="nav-item" type="button">
-            <FileText size={16} />
+          <button
+            className={activeView === "history" ? "nav-item active" : "nav-item"}
+            type="button"
+            onClick={() => {
+              setActiveView("history");
+              void refreshHistory();
+            }}
+          >
+            <History size={16} />
             历史
           </button>
           <button className="nav-item" type="button">
@@ -648,6 +694,73 @@ export function ResearchWorkspace() {
       </aside>
 
       <section className="main-panel">
+        {activeView === "history" ? (
+          <div className="history-view">
+            <div className="history-header">
+              <div>
+                <span className="block-label">当前访客</span>
+                <h1>研究历史</h1>
+              </div>
+              <button
+                className="icon-button"
+                type="button"
+                aria-label="刷新研究历史"
+                title="刷新研究历史"
+                disabled={isHistoryLoading}
+                onClick={() => void refreshHistory()}
+              >
+                <RefreshCw className={isHistoryLoading ? "spin" : undefined} size={17} />
+              </button>
+            </div>
+
+            {error ? <div className="error-line">{error}</div> : null}
+
+            <div className="history-list">
+              {isHistoryLoading && historyJobs.length === 0 ? (
+                <div className="empty-state">
+                  <Loader2 className="spin" size={18} />
+                  正在读取历史记录
+                </div>
+              ) : historyJobs.length === 0 ? (
+                <div className="empty-state">
+                  <Clock3 size={18} />
+                  暂无研究历史
+                </div>
+              ) : (
+                historyJobs.map((job) => (
+                  <button
+                    className="history-item"
+                    type="button"
+                    key={job.id}
+                    onClick={() => {
+                      setIsRestoring(true);
+                      restoreJob(job.id)
+                        .then(() => setActiveView("research"))
+                        .catch((err) => {
+                          setError(err instanceof Error ? err.message : "恢复研究任务失败");
+                        })
+                        .finally(() => setIsRestoring(false));
+                    }}
+                  >
+                    <span className="history-item-topline">
+                      <strong>{job.query}</strong>
+                      <span className={`job-status ${job.status}`}>{jobStatusLabel(job.status)}</span>
+                    </span>
+                    <span className="history-meta">
+                      {job.mode === "quick" ? "快速" : job.mode === "deep" ? "深度" : "专家"}
+                      <span>{job.provider}</span>
+                      <time dateTime={job.updated_at}>
+                        {new Date(job.updated_at).toLocaleString("zh-CN")}
+                      </time>
+                    </span>
+                    <span className="history-id">{job.id}</span>
+                  </button>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          <>
         <form className="research-form" onSubmit={handleSubmit}>
           <div className="field-row">
             <label htmlFor="query">研究问题</label>
@@ -767,6 +880,8 @@ export function ResearchWorkspace() {
             <pre>{liveModelText}</pre>
           </div>
         ) : null}
+          </>
+        )}
       </section>
 
       <aside className="report-panel">

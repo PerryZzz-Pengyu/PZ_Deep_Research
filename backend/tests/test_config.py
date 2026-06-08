@@ -46,6 +46,14 @@ def test_get_settings_reads_mock_provider_delay(monkeypatch) -> None:
     assert settings.mock_provider_delay_seconds == 1.25
 
 
+def test_get_settings_normalizes_postgresql_database_url(monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:password@localhost/research")
+
+    settings = get_settings()
+
+    assert settings.database_url == "postgresql+psycopg://user:password@localhost/research"
+
+
 def test_get_settings_ignores_chinese_placeholders(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "在这里填写你的OpenAI_API_Key")
     monkeypatch.setenv("OPENAI_MODEL", "在这里填写你要使用的OpenAI模型")

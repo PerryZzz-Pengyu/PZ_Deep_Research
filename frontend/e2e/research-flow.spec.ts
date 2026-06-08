@@ -46,3 +46,21 @@ test("刷新页面后恢复运行任务，并在完成后恢复报告", async ({
   await expect(page.locator(".job-status")).toHaveText("已完成");
   await expect(page.locator(".report-body")).toContainText("核心结论");
 });
+
+test("完成的研究任务会出现在当前访客的历史记录中", async ({ page }) => {
+  const query = `验证研究历史 ${Date.now()}`;
+  await page.getByLabel("研究问题").fill(query);
+  await page.getByRole("button", { name: "开始", exact: true }).click();
+  await expect(page.locator(".job-status")).toHaveText("已完成", { timeout: 30_000 });
+
+  await page.getByRole("button", { name: "历史", exact: true }).click();
+
+  await expect(page.getByRole("heading", { name: "研究历史" })).toBeVisible();
+  const historyItem = page.getByRole("button", { name: new RegExp(query) });
+  await expect(historyItem).toBeVisible();
+  await historyItem.click();
+
+  await expect(page.getByLabel("研究问题")).toHaveValue(query);
+  await expect(page.locator(".job-status")).toHaveText("已完成");
+  await expect(page.locator(".report-body")).toContainText("核心结论");
+});

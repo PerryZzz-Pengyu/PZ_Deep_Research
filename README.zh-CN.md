@@ -17,6 +17,8 @@
 - 使用证据卡片控制上下文长度，降低长任务的 token 膨胀风险。
 - 最终报告支持 Markdown、阿拉伯数字行内引用、来源悬浮卡片和 APA 风格参考文献。
 - 来源不足或全文证据不足时有界退出并明确降级，不重复访问造成死循环。
+- 使用 SQLite/PostgreSQL 持久化研究任务、事件、报告草稿和最终报告。
+- 支持按当前匿名访客查看研究历史并恢复报告。
 
 ## 研究流程
 
@@ -53,7 +55,8 @@
 - 搜索：SerpAPI Google Scholar
 - 网页读取：Jina Reader
 - 实时通信：Server-Sent Events
-- 测试：pytest、ESLint、Next.js production build
+- 数据库：SQLite（本地默认）、PostgreSQL（生产可选）、SQLAlchemy、Alembic
+- 测试：pytest、Playwright、ESLint、Next.js production build
 
 ## 项目结构
 
@@ -118,12 +121,19 @@ SEARCH_PROVIDER=mock
 
 不要提交 `.env`、`frontend/.env.local` 或任何真实 API Key。完整说明见 [API Key 配置](project-docs/api-key-setup.md)。
 
+本地默认把数据保存到 `data/pz_deep_research.db`。生产 PostgreSQL 示例：
+
+```text
+DATABASE_URL=postgresql://user:password@host:5432/database
+```
+
 ### 4. 启动后端
 
 ```bash
 python3 -m venv backend/.venv
 backend/.venv/bin/python -m pip install --upgrade pip setuptools
 backend/.venv/bin/python -m pip install -r backend/requirements-lock.txt
+cd backend && PYTHONPATH=. .venv/bin/alembic upgrade head && cd ..
 PYTHONPATH=backend backend/.venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
@@ -161,6 +171,7 @@ PYTHONPATH=backend backend/.venv/bin/pytest backend/tests
 cd frontend
 npm run lint
 npm run build
+npm run test:e2e
 ```
 
 完整测试策略和手动验收流程见 [测试说明](project-docs/testing-guide.md)。
@@ -171,7 +182,9 @@ npm run build
 - 搜索词会发送给 SerpAPI，访问的 URL 和网页内容会经过 Jina Reader。
 - API 调用费用和第三方服务额度由部署者承担。
 - 公网部署前应增加身份验证、用户额度、请求限流、滥用防护和费用告警。
-- 当前任务存储为进程内内存存储，服务重启后任务记录可能丢失。
+- 当前无登录系统，研究历史按浏览器生成的匿名访客 ID 隔离；清理浏览器本地数据后将失去该匿名 ID 对应的访问入口。
+- 匿名访客 ID 不是身份认证或安全凭证。公网部署必须接入登录鉴权，并将匿名历史归并到账号 `user_id`。
+- SQLite 适合本地和单实例部署；多实例生产环境应使用 PostgreSQL、备份和独立任务 Worker。
 - 不要在客户端代码中暴露模型、搜索或网页读取 API Key。
 
 ## 上游参考与独立性

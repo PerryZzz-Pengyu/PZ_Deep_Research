@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from app.agent.providers import ProviderFactory
@@ -11,12 +12,12 @@ from app.agent.runtime import AgentRuntime
 from app.agent.schemas import ResearchEvent, ResearchJob, ResearchRequest
 from app.agent.tools import build_default_tool_registry
 from app.config import missing_provider_requirements, missing_search_requirements, provider_model, get_settings
-from app.storage import InMemoryJobStore
+from app.storage import SqlJobStore, upgrade_database
 
 
 router = APIRouter(prefix="/api")
 settings = get_settings()
-job_store = InMemoryJobStore()
+job_store = SqlJobStore(settings.database_url, auto_create_schema=False)
 runtime = AgentRuntime(
     provider_factory=ProviderFactory(settings),
     tool_registry=build_default_tool_registry(settings),
@@ -86,8 +87,20 @@ def format_sse(event: ResearchEvent, *, include_id: bool = True) -> str:
     return f"{prefix}data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def validate_visitor_id(visitor_id: str) -> str:
+    try:
+        return str(UUID(visitor_id))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="访客标识无效") from exc
+
+
 @router.post("/research-jobs", response_model=ResearchJob)
-async def create_research_job(request: ResearchRequest, background_tasks: BackgroundTasks) -> ResearchJob:
+async def create_research_job(
+    request: ResearchRequest,
+    background_tasks: BackgroundTasks,
+    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+) -> ResearchJob:
+    visitor_id = validate_visitor_id(visitor_id)
     provider = request.provider or settings.default_provider
     missing = missing_provider_requirements(settings, provider, model_override=request.model)
     if missing:
@@ -99,7 +112,11 @@ async def create_research_job(request: ResearchRequest, background_tasks: Backgr
                 "missing": missing,
             },
         )
-    job = await job_store.create_job(request, provider=provider)
+    job = await job_store.create_job(
+        request,
+        provider=provider,
+        anonymous_id=visitor_id,
+    )
     background_tasks.add_task(run_research_job, job.id, request)
     return job
 
@@ -205,16 +222,42 @@ async def get_openai_available_models() -> dict[str, object]:
 
 
 @router.get("/research-jobs/{job_id}", response_model=ResearchJob)
-async def get_research_job(job_id: str) -> ResearchJob:
-    job = await job_store.get_job(job_id)
+async def get_research_job(
+    job_id: str,
+    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+) -> ResearchJob:
+    job = await job_store.get_job(
+        job_id,
+        anonymous_id=validate_visitor_id(visitor_id),
+    )
     if not job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
     return job
 
 
+@router.get("/research-jobs", response_model=list[ResearchJob])
+async def list_research_jobs(
+    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> list[ResearchJob]:
+    return await job_store.list_jobs(
+        anonymous_id=validate_visitor_id(visitor_id),
+        limit=limit,
+        offset=offset,
+    )
+
+
 @router.post("/research-jobs/{job_id}/cancel", response_model=ResearchJob)
-async def cancel_research_job(job_id: str) -> ResearchJob:
-    job, changed = await job_store.request_cancel(job_id)
+async def cancel_research_job(
+    job_id: str,
+    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+) -> ResearchJob:
+    visitor_id = validate_visitor_id(visitor_id)
+    job, changed = await job_store.request_cancel(
+        job_id,
+        anonymous_id=visitor_id,
+    )
     if not job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
     if not changed:
@@ -241,8 +284,14 @@ async def cancel_research_job(job_id: str) -> ResearchJob:
 
 
 @router.get("/research-jobs/{job_id}/events", response_model=list[ResearchEvent])
-async def get_research_events(job_id: str) -> list[ResearchEvent]:
-    job = await job_store.get_job(job_id)
+async def get_research_events(
+    job_id: str,
+    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+) -> list[ResearchEvent]:
+    job = await job_store.get_job(
+        job_id,
+        anonymous_id=validate_visitor_id(visitor_id),
+    )
     if not job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
     return await job_store.list_events(job_id)
@@ -251,10 +300,12 @@ async def get_research_events(job_id: str) -> list[ResearchEvent]:
 @router.get("/research-jobs/{job_id}/stream")
 async def stream_research_events(
     job_id: str,
+    visitor_id: str,
     after: str | None = None,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
 ) -> StreamingResponse:
-    job = await job_store.get_job(job_id)
+    visitor_id = validate_visitor_id(visitor_id)
+    job = await job_store.get_job(job_id, anonymous_id=visitor_id)
     if not job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
 
@@ -306,6 +357,16 @@ async def stream_research_events(
             await unregister_live_event_queue(job_id, queue)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+async def initialize_job_store() -> int:
+    await upgrade_database(settings.database_url)
+    await job_store.initialize()
+    return await job_store.recover_incomplete_jobs()
+
+
+async def dispose_job_store() -> None:
+    await job_store.dispose()
 
 
 async def run_research_job(job_id: str, request: ResearchRequest) -> None:

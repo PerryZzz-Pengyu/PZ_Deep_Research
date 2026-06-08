@@ -94,6 +94,11 @@ openai 2.40.0
 anthropic 0.105.2
 google-genai 2.7.0
 pytest 9.0.3
+SQLAlchemy 2.0.50
+aiosqlite 0.22.1
+psycopg 3.3.4
+greenlet 3.5.1
+alembic 1.18.4
 ```
 
 安装建议：
@@ -114,7 +119,9 @@ backend/.venv/bin/python -m pip install -r backend/requirements.txt
 
 - `backend/.venv/` 是本地生成物，不提交到仓库。
 - 真实 Provider 尚未完成 API Key 联调，所以 SDK 升级后仍需要后续集成测试。
-- `pip list --outdated` 当前只提示 `pydantic_core 2.46.4 -> 2.47.0`，但它是 `pydantic` 的底层依赖，不作为直接依赖单独升级；当前 `pip check` 无破损依赖。
+- SQLAlchemy 异步接口在当前 Python 3.14 环境需要显式安装 `greenlet`，已写入范围依赖和锁文件。
+- SQLite 使用 `aiosqlite`，PostgreSQL 使用 psycopg 3；Alembic 负责两种数据库的结构迁移。
+- 当前 `pip check` 无破损依赖。
 
 ## 前端依赖状态
 
@@ -139,6 +146,7 @@ eslint 9.39.4
 @types/node 24.12.4
 @types/react 19.2.16
 @types/react-dom 19.2.3
+@playwright/test 1.60.0
 ```
 
 ## 未采用 latest 的依赖
@@ -227,9 +235,11 @@ unrs-resolver@1.12.2
 ```bash
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests
 PYTHONPYCACHEPREFIX=/tmp/pz_deep_research_pycache backend/.venv/bin/python -m compileall backend/app
+cd backend && DATABASE_URL=sqlite+aiosqlite:////private/tmp/pz-migration-check.db PYTHONPATH=. .venv/bin/alembic upgrade head
 cd frontend
 npm run lint
 npm run build
+npm run test:e2e
 ```
 
 结果需要同步记录到 `project-docs/changelog.md`。

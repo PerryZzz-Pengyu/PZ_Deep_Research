@@ -19,6 +19,12 @@ venv/
 env/
 backend/.venv/
 
+# Local databases
+data/
+*.db
+*.db-shm
+*.db-wal
+
 # Node / Next.js generated files
 node_modules/
 .next/

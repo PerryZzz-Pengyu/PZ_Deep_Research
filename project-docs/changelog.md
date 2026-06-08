@@ -14,6 +14,70 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+## 2026-06-08 20:21 CST +0800
+
+### 新增
+
+- 新增 SQLAlchemy 异步持久化存储 `SqlJobStore`：
+  - 本地默认使用 SQLite。
+  - 通过 `DATABASE_URL` 支持 PostgreSQL/psycopg。
+  - 持久化任务、事件、报告草稿、最终报告和错误状态。
+- 新增 `research_jobs` / `research_events` 数据模型与索引。
+- 新增 Alembic 初始迁移，支持 SQLite 执行和 PostgreSQL SQL 生成。
+- 应用启动时自动执行 Alembic `upgrade head`；产品数据库不使用 `create_all` 建表，避免迁移版本缺失。
+- 新增按匿名访客隔离的研究历史 API 和前端历史视图。
+- 新增匿名历史归并到未来账号 `user_id` 的存储层能力。
+- 新增服务重启恢复规则：遗留 queued/running 任务标记为失败并记录 `service_restarted` 事件。
+- 新增 4 个数据库测试和历史 API/归属测试。
+- Playwright 新增历史记录端到端用例。
+
+### 修改
+
+- 前端首次使用时生成随机匿名访客 ID；REST 请求使用 `X-PZ-Visitor-ID`，SSE 使用 `visitor_id` 查询参数。
+- 任务详情、事件、取消、SSE 和历史列表均校验匿名访客归属。
+- `InMemoryJobStore` 保留为测试替身，并补齐与 SQL 存储一致的归属、历史、恢复和账号归并接口。
+- 后端新增 SQLAlchemy、aiosqlite、psycopg、greenlet 和 Alembic 依赖并更新锁文件。
+- 更新中英文 README、产品文档、项目计划、技术架构、测试说明和依赖管理。
+
+### 验证
+
+- 后端全量 pytest：80 个通过，1 个 Starlette/TestClient deprecation warning。
+- 前端 ESLint 通过。
+- 前端 Next.js 生产构建通过。
+- Playwright Chromium：3 个 E2E 全部通过。
+- SQLite Alembic `upgrade head` 执行成功。
+- PostgreSQL Alembic 离线 SQL 编译成功。
+- `pip check`：无破损依赖。
+
+### 当前边界
+
+- 匿名访客 ID 只是无登录 MVP 的数据分区键，不是认证凭证；公网部署前必须接入账号鉴权。
+- 清除浏览器本地存储后，浏览器会生成新的匿名 ID，旧匿名历史仍在数据库中但不会自动展示。
+- 已完成任务可跨后端重启恢复；运行中任务尚不能续跑，重启后会明确标记为中断失败。
+- PostgreSQL 已完成代码和迁移兼容验证，尚未连接真实 PostgreSQL 实例做部署、备份和恢复验收。
+
+### 影响文件
+
+- `.env.example`
+- `.gitignore`
+- `README.md`
+- `README.zh-CN.md`
+- `backend/alembic.ini`
+- `backend/migrations/`
+- `backend/app/config.py`
+- `backend/app/main.py`
+- `backend/app/api/routes.py`
+- `backend/app/storage/`
+- `backend/requirements.txt`
+- `backend/requirements-lock.txt`
+- `backend/tests/`
+- `frontend/src/lib/api.ts`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/src/app/globals.css`
+- `frontend/e2e/research-flow.spec.ts`
+- `frontend/playwright.config.ts`
+- `project-docs/`
+
 ## 2026-06-08 19:57 CST +0800
 
 ### 新增

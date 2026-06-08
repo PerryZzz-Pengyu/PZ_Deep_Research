@@ -93,13 +93,14 @@ npm 11.16.0
 - 已实现 `/health` 健康检查。
 - 已实现 `/api/readiness` 配置体检，返回 Provider、默认模型、缺失环境变量和工具配置状态。
 - 已实现 research job 创建、查询、取消、事件查询和 SSE 流接口。
+- 已实现按匿名访客归属过滤的研究历史列表和任务详情接口。
 - 创建真实 Provider 任务前会检查必要环境变量，避免任务创建后才失败。
 - 运行任务会登记当前 `asyncio.Task`。取消接口先原子更新状态并记录 `cancelled` 事件，再取消后台协程，防止任务取消后仍写入 `completed`。
-- 当前任务存储为内存存储，适合开发阶段，不适合生产。
+- 任务、事件、报告草稿和最终报告已写入 SQLite/PostgreSQL 兼容存储。
+- 应用启动时会把上次异常退出遗留的 queued/running 任务标记为中断失败。
 
 后续可替换点：
 
-- 任务存储从内存改为 Postgres。
 - 任务执行从 FastAPI background task 改为 Celery、RQ、Arq 或独立 worker。
 - SSE 可按需要升级为 WebSocket。
 
@@ -135,13 +136,14 @@ npm 11.16.0
 - 来源卡片已展示证据强度标签，例如全文证据、部分正文、题录摘要、访问受限。
 - 已实现运行中停止按钮和任务状态标签。
 - 已使用 `localStorage` 保存当前任务 ID；刷新后重新获取任务与持久事件，并恢复问题、模式、Provider、时间线、来源、报告草稿或最终报告。
-- 当前仍没有任务历史列表、报告详情页、重新运行、追问和导出交互。
+- 已实现基础历史视图，按当前匿名访客加载任务列表，点击后恢复任务详情和报告。
+- 当前仍没有重新运行、追问、导出和登录交互。
 
 后续可替换点：
 
 - UI 可升级为 shadcn/ui 组件体系。
 - 状态管理可从本地 state 升级为 SWR 或 React Query。
-- 历史记录、登录态和用户额度需要接入后端真实数据。
+- 登录态、跨设备历史和用户额度需要接入账号系统。
 
 ## Agent Runtime 方案
 
@@ -407,29 +409,40 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 
 ## 数据存储方案
 
-### 当前使用内存存储
+### SQLAlchemy + SQLite/PostgreSQL
 
-位置：`backend/app/storage/memory.py`
+位置：
 
-当前方案：使用 `InMemoryJobStore` 保存任务和事件。
+- `backend/app/storage/sql.py`
+- `backend/migrations/`
+- `backend/alembic.ini`
 
-选择原因：
+当前方案：
 
-- 第一版开发最快。
-- 方便验证 Agent Runtime 和前端事件流。
-- 不需要先配置数据库。
+- 本地默认使用 `data/pz_deep_research.db`。
+- 通过 `DATABASE_URL` 可以切换 PostgreSQL；普通 `postgresql://` URL 会规范化为 `postgresql+psycopg://`。
+- `research_jobs` 保存任务状态、报告草稿、最终报告和归属字段。
+- `research_events` 保存持久进度事件，使用任务外键和级联删除。
+- Alembic 是应用启动时的正式建表和升级路径；`create_all` 只用于独立存储单元测试，不参与产品数据库初始化。
 
-当前限制：
+归属模型：
 
-- 服务重启后任务丢失。
-- 无法支持多进程或多 worker。
-- 没有任务列表、用户归属、过期清理和跨进程取消信号。
-- 不适合生产环境。
+- 当前未接登录，前端生成随机匿名访客 ID，通过 `X-PZ-Visitor-ID` 请求头发送；EventSource 因无法设置自定义请求头，通过 `visitor_id` 查询参数发送。
+- 数据表同时保留 `anonymous_id` 和可空 `user_id`。匿名任务只写 `anonymous_id`。
+- 存储层提供 `claim_anonymous_jobs`，未来用户登录后可以在事务中把当前匿名历史迁移到账号 `user_id`。
+- API 的历史、详情、事件和取消操作都按当前匿名访客过滤。
+- 匿名访客 ID 只是 MVP 数据分区键，不是认证凭证。公网部署必须由认证中间件提供可信 `user_id`，不能依赖客户端自报访客 ID 保护隐私。
+
+重启语义：
+
+- 已完成、失败、取消任务及其报告和事件可以跨后端重启恢复。
+- queued/running 任务的 Runtime 执行现场尚未持久化；服务启动时将其标记为失败并写入 `service_restarted` 事件，避免永久显示“研究中”。
 
 后续方案：
 
-- Postgres 保存用户、任务、事件、报告、来源、用量。
-- Redis 保存队列、临时状态和流式事件缓冲。
+- 真实 PostgreSQL 实例验证连接池、迁移、备份和恢复。
+- 独立 Worker 保存可恢复执行状态，Redis 或消息队列承载任务调度和跨进程取消信号。
+- 用户表和认证系统为 `user_id` 提供真实外键与权限边界。
 - 对大报告和上传文件可接对象存储。
 
 ## 实时进度方案
@@ -457,7 +470,7 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 - SSE 输出持久事件 ID，支持 `after` 查询参数和 `Last-Event-ID` 游标；连接建立时先发送 `job_snapshot`，再重放游标后的持久事件。
 - 浏览器通过 `localStorage` 记住当前任务，刷新后先读取任务和事件，再从最后一个持久事件继续订阅 SSE。
 - 用户取消任务时，取消事件会进入持久事件和实时队列，SSE 随后正常结束。
-- 当前恢复能力只在同一后端进程内有效；服务重启后内存任务、草稿和取消状态都会丢失，仍需要 Postgres 和 Worker 才能达到生产级恢复。
+- 已完成任务、持久事件和报告可以跨后端重启恢复；运行中任务仍需要独立 Worker 和可恢复执行状态才能真正续跑。
 
 后续可替换点：
 
@@ -491,6 +504,7 @@ SEARCH_PROVIDER=serpapi
 ACADEMIC_SEARCH_ENGINE=google_scholar
 SERPAPI_API_KEY=
 JINA_API_KEY=
+DATABASE_URL=
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
@@ -517,10 +531,12 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 后端 Python 语法检查通过。
 - 后端 app 导入通过。
-- 后端 pytest 自动化测试通过，当前为 72 个用例。
+- 后端 pytest 自动化测试通过，当前为 80 个用例。
 - 前端 lint 通过。
 - 前端 build 通过。
-- Playwright Chromium 端到端测试通过，覆盖任务取消、刷新续跑和完成后报告恢复。
+- Playwright Chromium 端到端测试通过，当前为 3 个用例，覆盖任务取消、刷新续跑、完成后报告恢复和历史详情恢复。
+- SQLite 跨 Store 持久化、访客隔离、重启中断处理和匿名历史账号归并测试通过。
+- Alembic 初始迁移已在 SQLite 执行通过，并完成 PostgreSQL 离线 SQL 编译。
 - FastAPI 本地服务启动成功。
 - Next.js 本地服务启动成功。
 - mock 研究任务流跑通。
@@ -535,17 +551,18 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 - 真实 Claude、Gemini API 联调。
 - Claude、Gemini 原生 streaming、Gemini token 用量和真实模型成本计算。
 - 关键桌面/移动视口视觉回归验证。
-- 历史记录、跨进程持久化、重新运行和 Markdown 导出。
-- 生产数据库和任务队列验证。
+- 重新运行、Markdown 导出和登录后跨设备历史。
+- 真实 PostgreSQL、备份恢复和独立任务队列验证。
 - 文件上传和文件解析验证。
 
 ## 当前技术风险
 
 - 真实模型可能不稳定遵守 XML 工具调用格式。
-- 内存任务存储不能用于生产。
 - FastAPI background task 不适合长时间高并发任务。
+- 匿名访客 ID 由客户端持有，只能用于无登录 MVP 的数据分区，不能作为公网环境的认证或授权机制。
+- SQLite 不支持多实例共享和高并发写入，生产多实例需要 PostgreSQL。
 - 搜索和网页读取依赖第三方服务，可能受 QPS、费用和可用性影响。
-- 前端已经支持取消和同进程刷新恢复，但还没有历史记录、跨进程持久化、导出和登录能力。
+- 前端已经支持取消、刷新恢复和匿名历史，但还没有重跑、导出、登录和跨设备历史。
 - 当前引用校验能验证格式、编号和来源存在性，但不能证明每个事实都被对应来源支持。
 - APA 参考文献依赖搜索元数据和模型输出，缺少作者、年份、期刊等字段时只能降级展示。
 - 当前只有 SerpAPI + Jina 主链路，缺少搜索和正文读取的生产级备用服务。
@@ -553,11 +570,11 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 ## 后续技术优先级
 
-1. 引入持久化存储，增加任务列表、任务详情和重新运行 API。
-2. 完成前端历史、详情、重跑、导出和完整错误恢复交互。
+1. 完成重新运行、Markdown 导出和完整错误恢复交互。
+2. 在真实 PostgreSQL 实例验证迁移、连接池、备份和恢复。
 3. 建立 OpenAI、Claude、Gemini 真实 Provider 回归矩阵，并补齐 Claude/Gemini 原生 streaming、Gemini 用量和成本计算。
-4. 增加关键视口视觉回归、真实断线恢复和跨进程恢复测试。
+4. 增加关键视口视觉回归、真实断线恢复和 Worker 任务恢复测试。
 5. 增加搜索与网页访问备用链路、结构化学术元数据、语义去重和事实级引用校验。
-6. 阶段 4 验收后，将持久化迁移到 Postgres，并把后台任务迁移到独立 Worker 队列。
-7. 增加用户认证、数据隔离、限流、额度、成本预算、内容安全和可观测性。
+6. 把后台任务迁移到独立 Worker 队列，支持多实例和可恢复执行。
+7. 增加用户认证、匿名历史归并、数据隔离、限流、额度、成本预算、内容安全和可观测性。
 8. 增加 CI/CD、生产密钥管理、备份、部署和回滚说明。
