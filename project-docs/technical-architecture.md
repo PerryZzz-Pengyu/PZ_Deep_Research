@@ -37,11 +37,13 @@ LLM Provider 层
 ## 项目目录说明
 
 ```text
-PZ Deep Research/
+PZ_Deep_Research/
   backend/              # 后端服务和 Agent Runtime
   frontend/             # 前端网页工作台
   project-docs/         # 项目计划、产品文档、架构文档、变更日志
   README.md             # 项目入口说明
+  LICENSE               # Apache License 2.0
+  NOTICE                # 项目归属、上游参考和非官方关系说明
   .python-version       # Python 运行时声明
   .nvmrc                # Node.js 运行时声明
   .env.example          # 环境变量模板

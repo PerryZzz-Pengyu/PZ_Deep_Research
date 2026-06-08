@@ -1,5 +1,7 @@
 # Local environment
 .env
+.env.local
+.env.*.local
 .DS_Store
 
 # Python generated files
@@ -15,15 +17,16 @@ htmlcov/
 .venv/
 venv/
 env/
-PZ Deep Research/backend/.venv/
+backend/.venv/
 
 # Node / Next.js generated files
 node_modules/
 .next/
 out/
 dist/
-PZ Deep Research/frontend/node_modules/
-PZ Deep Research/frontend/.next/
+frontend/node_modules/
+frontend/.next/
+frontend/out/
 
 # Logs
 *.log

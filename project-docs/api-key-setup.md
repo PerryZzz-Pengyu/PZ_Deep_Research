@@ -136,7 +136,7 @@ cp .env.example .env
 然后编辑：
 
 ```text
-PZ Deep Research/.env
+.env
 ```
 
 后端现在会自动读取项目根目录的 `.env`。

@@ -16,7 +16,7 @@ PZ Deep Research 的目标是做一个面向 C 端用户的深度研究网页产
 
 ### 第一阶段要做
 
-- 在 `PZ Deep Research` 内建立新的产品项目。
+- 在本 Git 仓库根目录建立独立产品项目。
 - 支持 Claude、OpenAI/ChatGPT API、Gemini API。
 - 抽象统一的模型 Provider 层，避免绑定某一家模型。
 - 复用 Qwen Deep Research 的核心思路：
@@ -40,7 +40,7 @@ PZ Deep Research 的目标是做一个面向 C 端用户的深度研究网页产
 ## 推荐项目结构
 
 ```text
-PZ Deep Research/
+PZ_Deep_Research/
   backend/
     app/
       agent/
@@ -74,6 +74,8 @@ PZ Deep Research/
     api-key-setup.md
     changelog.md
   README.md
+  LICENSE
+  NOTICE
   .env.example
 ```
 
@@ -164,7 +166,7 @@ PZ Deep Research/
 ## 工程原则
 
 - `Qwen Deep Research` 只作为上游参考代码，不在里面继续做产品开发。
-- 所有新实现都放在 `PZ Deep Research`。
+- 所有产品实现都放在本仓库根目录的 `backend/`、`frontend/` 和相关产品目录中。
 - 新项目避免引入 Qwen 专属依赖。
 - 模块要小而清晰，方便测试和替换。
 - 后续功能开发默认先定义测试或验收标准，再开始实现，避免写完功能后再补测。

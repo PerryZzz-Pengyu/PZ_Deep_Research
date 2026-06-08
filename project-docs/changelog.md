@@ -14,6 +14,61 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+## 2026-06-08 12:11 CST +0800
+
+### 修改
+
+- 按 GitHub 公开仓库的标准结构，将原 `PZ Deep Research/` 子目录中的产品代码整体提升到仓库根目录：
+  - `backend/`
+  - `frontend/`
+  - `project-docs/`
+  - `.env.example`
+  - `.nvmrc`
+  - `.python-version`
+  - `README.md`
+- 合并并更新根 `.gitignore`，继续忽略真实 `.env`、`frontend/.env.local`、虚拟环境、pytest 缓存、Next.js 构建产物、`node_modules` 和本地 `Qwen Deep Research/` 参考目录。
+- 本机真实 `.env` 已安全移动到仓库根目录，仍保持 Git 忽略；公开仓库只包含无密钥的 `.env.example`。
+- 重写根 `README.md`，补充：
+  - 产品定位、核心能力、研究流程和三种研究模式。
+  - 技术栈、标准目录结构和从克隆到启动的完整步骤。
+  - 测试命令、隐私说明、第三方 API 费用风险和公网部署安全边界。
+  - 当前内存存储、模型准确性和高风险场景限制。
+  - 上游参考关系、独立实现说明和非官方/非背书声明。
+- 新增 `LICENSE`，项目采用 Apache License 2.0。
+- 新增 `NOTICE`，说明项目对 Alibaba-NLP/DeepResearch 的早期设计参考、独立实现范围、未分发的上游资产和商标归属。
+- 更新项目计划、技术架构、测试说明和 API Key 配置文档，使目录结构和运行命令与新的仓库根路径一致。
+- 清理目录提升后仅剩 `.DS_Store` 和 pytest 缓存的旧 `PZ Deep Research/` 空壳目录。
+- 修复本机 `backend/.venv` 中 `pip`、`pytest`、`uvicorn` 等入口脚本残留的旧绝对路径；该虚拟环境不进入 Git。
+
+### 公开发布检查
+
+- 当前 `main` 仅包含 PZ 项目自己的 4 个历史提交，不继承 Qwen 上游提交历史。
+- `Qwen Deep Research/` 继续作为本地参考目录并被 Git 忽略，不会进入普通 `main` 推送。
+- 真实 `.env` 和 `frontend/.env.local` 均未被 Git 跟踪。
+- 当前追踪文件中未发现真实 OpenAI、Anthropic、Gemini、SerpAPI、Jina 或 GitHub 密钥。
+- 当前 `main` 不包含 GitHub 100MB 限制附近的大文件；最大的产品追踪文件为前端 lockfile。
+
+### 验证
+
+- 后端全量测试通过：65 个用例通过，保留 1 个 Starlette/TestClient 弃用警告。
+- 前端 `npm run lint` 通过。
+- 前端 `npm run build` 通过，Next.js 16.2.7 成功完成生产构建和静态页面生成。
+- `git diff --check` 通过。
+- 根目录结构、`README.md`、`LICENSE`、`NOTICE`、`backend/`、`frontend/` 和 `project-docs/` 均存在。
+
+### 影响文件
+
+- 根目录结构
+- `.gitignore`
+- `README.md`
+- `LICENSE`
+- `NOTICE`
+- `project-docs/project-plan.md`
+- `project-docs/technical-architecture.md`
+- `project-docs/testing-guide.md`
+- `project-docs/api-key-setup.md`
+- `project-docs/changelog.md`
+
 ## 2026-06-07 22:24 CST +0800
 
 ### 修复

@@ -132,14 +132,12 @@ backend/tests/
 运行方式：
 
 ```bash
-cd "PZ Deep Research"
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests
 ```
 
 如果还没有安装后端依赖：
 
 ```bash
-cd "PZ Deep Research"
 python3 -m venv backend/.venv
 backend/.venv/bin/python -m pip install --upgrade pip setuptools
 backend/.venv/bin/python -m pip install -r backend/requirements-lock.txt
@@ -158,7 +156,7 @@ frontend/
 当前不单独引入 Jest 或 Playwright。第一阶段先使用 Next.js 的 lint 和 build 检查：
 
 ```bash
-cd "PZ Deep Research/frontend"
+cd frontend
 nvm use
 npm run lint
 npm run build
@@ -176,7 +174,7 @@ npm run build
 ### 1. 启动后端
 
 ```bash
-cd "PZ Deep Research/backend"
+cd backend
 .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
@@ -195,7 +193,7 @@ curl http://127.0.0.1:8000/health
 ### 2. 启动前端
 
 ```bash
-cd "PZ Deep Research/frontend"
+cd frontend
 nvm use
 npm run dev
 ```

@@ -1,0 +1,20 @@
+PZ Deep Research
+Copyright 2026 PZ Deep Research contributors
+
+This project is licensed under the Apache License, Version 2.0.
+
+PZ Deep Research was independently implemented as a consumer-facing deep
+research web application. Its early design references ideas from:
+
+  Alibaba-NLP/DeepResearch
+  https://github.com/Alibaba-NLP/DeepResearch
+  Licensed under the Apache License, Version 2.0.
+
+Referenced ideas include deep-research agent workflows, search/visit tool
+roles, and XML-style tool-call protocols. This repository does not distribute
+the upstream Qwen model weights, datasets, evaluation assets, or the upstream
+reference repository.
+
+PZ Deep Research is not an official project of, affiliated with, endorsed by,
+or sponsored by Alibaba-NLP, Qwen, OpenAI, Anthropic, Google, SerpAPI, or
+Jina AI. All product names and trademarks belong to their respective owners.
