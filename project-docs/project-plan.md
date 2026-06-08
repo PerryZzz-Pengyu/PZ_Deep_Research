@@ -74,6 +74,7 @@ PZ_Deep_Research/
     api-key-setup.md
     changelog.md
   README.md
+  README.zh-CN.md
   LICENSE
   NOTICE
   .env.example

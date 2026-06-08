@@ -1,85 +1,88 @@
 # PZ Deep Research
 
-面向 C 端用户的多模型深度研究网页应用。系统通过学术搜索、网页访问、证据抽取、来源筛选和引用校验，生成带来源的结构化研究报告。
+**English** | [简体中文](README.zh-CN.md)
+
+A multi-model deep research web application for consumer users. It combines academic search, webpage retrieval, evidence extraction, source selection, and citation validation to produce structured research reports with traceable sources.
 
 > [!WARNING]
-> 当前项目处于实验性 MVP 阶段。模型输出可能包含遗漏、错误或不准确引用，不应直接用于医疗、法律、金融等高风险决策。
+> This project is an experimental MVP. Model-generated content may contain omissions, errors, or inaccurate citations and should not be used directly for medical, legal, financial, or other high-stakes decisions.
 
-## 核心能力
+## Key Features
 
-- 支持 OpenAI、Anthropic Claude、Google Gemini 和离线 mock Provider。
-- 使用 SerpAPI Google Scholar 检索学术资料。
-- 使用 Jina Reader 访问网页正文并判断证据可用性。
-- 提供快速、深度、专家三种研究模式。
-- 实时展示模型输出、搜索、访问和证据处理进度。
-- 使用证据卡片控制上下文长度，降低长任务的 token 膨胀风险。
-- 最终报告支持 Markdown、阿拉伯数字行内引用、来源悬浮卡片和 APA 风格参考文献。
-- 来源不足或全文证据不足时有界退出并明确降级，不重复访问造成死循环。
+- Supports OpenAI, Anthropic Claude, Google Gemini, and an offline mock provider.
+- Searches academic sources through SerpAPI Google Scholar.
+- Retrieves webpage content through Jina Reader and classifies evidence availability.
+- Provides Quick, Deep, and Expert research modes.
+- Streams model output, search activity, webpage visits, and evidence-processing progress.
+- Uses compact evidence cards to control context size and reduce token growth in long-running tasks.
+- Renders Markdown reports with Arabic-number inline citations, citation hover cards, and APA-style references.
+- Exits through a bounded fallback path when sources or full-text evidence are insufficient, avoiding repeated visits and infinite loops.
 
-## 研究流程
+## Research Pipeline
 
 ```text
-用户问题
-  -> 模型生成英文搜索词
-  -> SerpAPI Google Scholar 搜索
-  -> Runtime 并发访问候选来源
-  -> Jina Reader 返回网页内容
-  -> 抽取证据卡片并评估证据强度
-  -> 按质量和相关性筛选最终来源
-  -> 模型基于证据卡片生成报告
-  -> Runtime 校验字数、引用和 References
-  -> SSE 流式展示结果
+User question
+  -> Model generates English search queries
+  -> SerpAPI Google Scholar search
+  -> Runtime visits candidate sources concurrently
+  -> Jina Reader returns webpage content
+  -> Evidence cards are extracted and graded
+  -> Final sources are selected by quality and relevance
+  -> Model writes a report from the evidence cards
+  -> Runtime validates length, citations, and References
+  -> Results stream to the frontend over SSE
 ```
 
-访问流程由 Runtime 控制。模型只负责生成搜索词和最终报告，不自行循环调用 `visit`，从而保证任务有界、来源编号稳定，并减少重复访问。
+The Runtime controls webpage visits. The model only generates search queries and the final report; it does not autonomously loop over `visit` calls. This keeps tasks bounded, stabilizes citation numbering, and reduces duplicate retrieval.
 
-## 研究模式
+## Research Modes
 
-| 模式 | 搜索策略 | 最终来源目标 | 报告正文 |
+| Mode | Search strategy | Target final sources | Report body |
 | --- | --- | ---: | ---: |
-| 快速 | 1 个高命中英文搜索词 | 3 | 400-500 字 |
-| 深度 | 3 个高命中英文搜索词 | 10 | 1300-1500 字 |
-| 专家 | 两轮搜索，每轮 5 个英文搜索词 | 20 | 3000-3500 字 |
+| Quick | 1 high-intent English query | 3 | 400-500 Chinese characters |
+| Deep | 3 high-intent English queries | 10 | 1,300-1,500 Chinese characters |
+| Expert | 2 search stages, 5 English queries per stage | 20 | 3,000-3,500 Chinese characters |
 
-来源数量受实际搜索结果和网页可访问性影响。系统无法达到目标时会使用已有证据完成降级报告，并提示证据局限。
+Actual source counts depend on search results and webpage accessibility. When the target cannot be reached, the system produces a degraded report from the available evidence and explicitly states the limitations.
 
-## 技术栈
+## Tech Stack
 
-- 前端：Next.js 16、React 19、TypeScript
-- 后端：FastAPI、Python
-- 模型：OpenAI API、Anthropic API、Google Gemini API
-- 搜索：SerpAPI Google Scholar
-- 网页读取：Jina Reader
-- 实时通信：Server-Sent Events
-- 测试：pytest、ESLint、Next.js production build
+- Frontend: Next.js 16, React 19, TypeScript
+- Backend: FastAPI, Python
+- Models: OpenAI API, Anthropic API, Google Gemini API
+- Search: SerpAPI Google Scholar
+- Web retrieval: Jina Reader
+- Streaming: Server-Sent Events
+- Verification: pytest, ESLint, Next.js production build
 
-## 项目结构
+## Repository Structure
 
 ```text
 .
-├── backend/              # FastAPI、Agent Runtime、Provider、工具与测试
-├── frontend/             # Next.js 研究工作台
-├── project-docs/         # 计划、产品、架构、测试与变更记录
-├── .env.example          # 环境变量模板，不包含真实密钥
-├── .nvmrc                # Node.js 版本声明
-├── .python-version       # Python 版本声明
+├── backend/              # FastAPI, Agent Runtime, providers, tools, and tests
+├── frontend/             # Next.js research workspace
+├── project-docs/         # Plans, product docs, architecture, tests, and changelog
+├── .env.example          # Environment template without real credentials
+├── .nvmrc                # Node.js version declaration
+├── .python-version       # Python version declaration
 ├── LICENSE               # Apache License 2.0
-├── NOTICE                # 项目归属与上游参考说明
-└── README.md
+├── NOTICE                # Attribution and upstream-reference notice
+├── README.md             # English
+└── README.zh-CN.md       # Simplified Chinese
 ```
 
-## 快速开始
+## Quick Start
 
-### 1. 克隆项目
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/PerryZzz-Pengyu/PZ_Deep_Research.git
 cd PZ_Deep_Research
 ```
 
-### 2. 准备环境
+### 2. Prepare the runtime
 
-当前已验证环境：
+Currently verified versions:
 
 ```text
 Python 3.14.5
@@ -94,28 +97,28 @@ node -v
 npm -v
 ```
 
-### 3. 配置环境变量
+### 3. Configure environment variables
 
 ```bash
 cp .env.example .env
 ```
 
-不配置真实 API Key 时，可以保持：
+To run without real API credentials, keep:
 
 ```text
 DEFAULT_PROVIDER=mock
 SEARCH_PROVIDER=mock
 ```
 
-真实研究至少需要：
+A real research run requires:
 
-- OpenAI、Anthropic 或 Gemini 中任意一个模型 API Key。
-- `SERPAPI_API_KEY`。
-- 推荐配置 `JINA_API_KEY`，提高网页读取稳定性和额度。
+- An API key for at least one of OpenAI, Anthropic, or Gemini.
+- `SERPAPI_API_KEY`.
+- `JINA_API_KEY` is recommended for more reliable webpage retrieval and higher service limits.
 
-不要提交 `.env`、`frontend/.env.local` 或任何真实 API Key。完整说明见 [API Key 配置](project-docs/api-key-setup.md)。
+Never commit `.env`, `frontend/.env.local`, or real API credentials. See the [API key setup guide](project-docs/api-key-setup.md) for details.
 
-### 4. 启动后端
+### 4. Start the backend
 
 ```bash
 python3 -m venv backend/.venv
@@ -124,16 +127,16 @@ backend/.venv/bin/python -m pip install -r backend/requirements-lock.txt
 PYTHONPATH=backend backend/.venv/bin/uvicorn app.main:app --reload --port 8000
 ```
 
-健康检查：
+Health and readiness checks:
 
 ```bash
 curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/api/readiness
 ```
 
-### 5. 启动前端
+### 5. Start the frontend
 
-打开另一个终端：
+Open another terminal:
 
 ```bash
 cd frontend
@@ -142,17 +145,17 @@ npm ci
 npm run dev
 ```
 
-访问 <http://localhost:3000>。
+Open <http://localhost:3000>.
 
-## 测试
+## Testing
 
-后端：
+Backend:
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests
 ```
 
-前端：
+Frontend:
 
 ```bash
 cd frontend
@@ -160,39 +163,39 @@ npm run lint
 npm run build
 ```
 
-完整测试策略和手动验收流程见 [测试说明](project-docs/testing-guide.md)。
+See the [testing guide](project-docs/testing-guide.md) for the complete test strategy and manual acceptance flow. Project documentation is currently maintained in Chinese.
 
-## 隐私、费用与安全
+## Privacy, Cost, and Security
 
-- 用户问题会发送给所选模型 Provider。
-- 搜索词会发送给 SerpAPI，访问的 URL 和网页内容会经过 Jina Reader。
-- API 调用费用和第三方服务额度由部署者承担。
-- 公网部署前应增加身份验证、用户额度、请求限流、滥用防护和费用告警。
-- 当前任务存储为进程内内存存储，服务重启后任务记录可能丢失。
-- 不要在客户端代码中暴露模型、搜索或网页读取 API Key。
+- User questions are sent to the selected model provider.
+- Search queries are sent to SerpAPI; visited URLs and webpage content are processed through Jina Reader.
+- API usage costs and third-party service quotas are the responsibility of the operator.
+- Public deployments should add authentication, per-user quotas, rate limiting, abuse prevention, and cost alerts.
+- Research jobs currently use in-process memory storage and may be lost when the service restarts.
+- Never expose model, search, or webpage-retrieval API keys in client-side code.
 
-## 上游参考与独立性
+## Upstream Reference and Independence
 
-PZ Deep Research 在早期设计阶段参考了 [Alibaba-NLP/DeepResearch](https://github.com/Alibaba-NLP/DeepResearch) 中的深度研究 Agent、`search` / `visit` 工具和 XML 工具协议思路。
+During its early design stage, PZ Deep Research referenced ideas from [Alibaba-NLP/DeepResearch](https://github.com/Alibaba-NLP/DeepResearch), including deep-research agent workflows, `search` / `visit` tool roles, and XML-style tool-call protocols.
 
-当前项目采用独立实现的 Runtime、Provider、证据卡片、来源筛选、引用校验、FastAPI 服务和 Next.js 产品界面；不依赖 Qwen 模型或 `qwen-agent` 包，也不分发上游模型权重、数据集或大型资产。
+This repository independently implements its Runtime, provider abstraction, evidence cards, source selection, citation validation, FastAPI service, and Next.js product interface. It does not depend on Qwen models or the `qwen-agent` package, and it does not distribute upstream model weights, datasets, or large assets.
 
-本项目不是 Alibaba-NLP、Qwen、OpenAI、Anthropic、Google、SerpAPI 或 Jina AI 的官方产品，也不代表上述组织对本项目的认可或背书。更多说明见 [NOTICE](NOTICE)。
+PZ Deep Research is not an official product of, affiliated with, endorsed by, or sponsored by Alibaba-NLP, Qwen, OpenAI, Anthropic, Google, SerpAPI, or Jina AI. See [NOTICE](NOTICE) for details.
 
-## 项目文档
+## Project Documentation
 
-- [项目计划书](project-docs/project-plan.md)
-- [产品文档](project-docs/product-doc.md)
-- [技术架构](project-docs/technical-architecture.md)
-- [测试说明](project-docs/testing-guide.md)
-- [依赖管理](project-docs/dependency-management.md)
-- [API Key 配置](project-docs/api-key-setup.md)
-- [变更日志](project-docs/changelog.md)
+- [Project plan](project-docs/project-plan.md)
+- [Product document](project-docs/product-doc.md)
+- [Technical architecture](project-docs/technical-architecture.md)
+- [Testing guide](project-docs/testing-guide.md)
+- [Dependency management](project-docs/dependency-management.md)
+- [API key setup](project-docs/api-key-setup.md)
+- [Changelog](project-docs/changelog.md)
 
-## 贡献与文档维护
+## Contributing and Documentation
 
-提交代码前请运行后端测试、前端 lint 和生产构建。每次修改代码、架构、配置、依赖、接口或产品行为时，需要同步更新 `project-docs/changelog.md`，并按影响范围更新其他项目文档。
+Run the backend tests, frontend lint, and production build before submitting changes. Any change to code, architecture, configuration, dependencies, interfaces, or product behavior must also be recorded in `project-docs/changelog.md`, with other project documents updated as needed.
 
 ## License
 
-本项目采用 [Apache License 2.0](LICENSE)。
+Licensed under the [Apache License 2.0](LICENSE).

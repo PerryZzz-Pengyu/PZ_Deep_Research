@@ -41,7 +41,8 @@ PZ_Deep_Research/
   backend/              # 后端服务和 Agent Runtime
   frontend/             # 前端网页工作台
   project-docs/         # 项目计划、产品文档、架构文档、变更日志
-  README.md             # 项目入口说明
+  README.md             # 英文项目入口说明
+  README.zh-CN.md       # 简体中文项目入口说明
   LICENSE               # Apache License 2.0
   NOTICE                # 项目归属、上游参考和非官方关系说明
   .python-version       # Python 运行时声明
