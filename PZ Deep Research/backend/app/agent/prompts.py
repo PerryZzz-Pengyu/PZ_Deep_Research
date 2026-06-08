@@ -17,16 +17,16 @@ SYSTEM_PROMPT_ZH_FOR_REVIEW = _load_prompt("system_prompt.zh-CN.md")
 MODE_GUIDANCE = {
     "quick": (
         "Quick mode: use exactly 1 high-intent English search query, visit 3 key sources, "
-        "then write a concise essay-style report within 500 Chinese characters."
+        "then write a concise essay-style report with 400-500 Chinese body characters, excluding references."
     ),
     "deep": (
         "Deep mode: use exactly 3 high-intent English search queries, visit 10 key sources, "
-        "then write a literature-review-style report within 1500 Chinese characters."
+        "then write a literature-review-style report with 1300-1500 Chinese body characters, excluding references."
     ),
     "expert": (
         "Expert mode: run search and visit, synthesize preliminary findings, review evidence gaps, "
         "run a second search with exactly 5 high-intent English search queries, visit 20 key sources in total, "
-        "then write a paper-style final report of at least 3000 Chinese characters."
+        "then write a paper-style final report with 3000-3500 Chinese body characters, excluding references."
     ),
 }
 

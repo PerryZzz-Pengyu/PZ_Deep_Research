@@ -26,7 +26,7 @@ def count_full_text(sources: list[dict[str, str]]) -> int:
 
 
 def should_stop_visiting(full_text_count: int, target: int) -> bool:
-    """访问队列早停判据：已拿到的全文证据数达到本模式目标即可短路。"""
+    """访问队列早停判据：全文证据达到本阶段目标；候选耗尽时由调用方自然退出。"""
     return full_text_count >= target
 
 
@@ -34,13 +34,19 @@ def should_stop_visiting(full_text_count: int, target: int) -> bool:
 class SelectionResult:
     selected: list[dict[str, str]]
     target: int
+    minimum_full_text: int
     total_available: int
     full_text_count: int
     degraded: bool  # 总来源数不足目标 → 逃生降级，有多少用多少
-    full_text_shortfall: bool  # 全文证据数不足目标 → 报告需说明部分结论基于摘要/受限证据
+    full_text_shortfall: bool  # 全文证据数不足质量最低值 → 报告需说明证据限制
 
 
-def select_sources(sources: list[dict[str, str]], target: int) -> SelectionResult:
+def select_sources(
+    sources: list[dict[str, str]],
+    target: int,
+    *,
+    minimum_full_text: int = 0,
+) -> SelectionResult:
     """从已访问来源里按「全文证据优先 > 相关性（输入即搜索原生序）」选出本模式所需数量。
 
     - 总数 >= 目标：取排序后的前 target 个；
@@ -56,20 +62,20 @@ def select_sources(sources: list[dict[str, str]], target: int) -> SelectionResul
     ]
 
     total_available = len(sources)
-    full_text_count = count_full_text(sources)
-
     if total_available <= target:
         selected = ordered
         degraded = total_available < target
     else:
         selected = ordered[:target]
         degraded = False
+    full_text_count = count_full_text(selected)
 
     return SelectionResult(
         selected=selected,
         target=target,
+        minimum_full_text=max(0, minimum_full_text),
         total_available=total_available,
         full_text_count=full_text_count,
         degraded=degraded,
-        full_text_shortfall=full_text_count < target,
+        full_text_shortfall=full_text_count < max(0, minimum_full_text),
     )

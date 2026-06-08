@@ -263,7 +263,8 @@ function EventDetail({ event }: { event: ResearchEvent }) {
     if (typeof visited === "number" && typeof target === "number") {
       return (
         <p className="event-note">
-          已访问 {visited}/{target} 个来源{typeof fullText === "number" ? `，其中全文证据 ${fullText} 个` : ""}
+          已访问 {visited} 个候选来源
+          {typeof fullText === "number" ? `，全文证据 ${fullText}/${target} 个` : ""}
         </p>
       );
     }
@@ -277,6 +278,8 @@ function EventDetail({ event }: { event: ResearchEvent }) {
 
   if (event.type === "source_selected") {
     const total = event.payload.total_available;
+    const selected = event.payload.selected_count;
+    const target = event.payload.target;
     const fullText = event.payload.full_text_count;
     const degraded = event.payload.degraded === true;
     const shortfall = event.payload.full_text_shortfall === true;
@@ -285,8 +288,10 @@ function EventDetail({ event }: { event: ResearchEvent }) {
     if (shortfall) notes.push("全文证据不足，部分结论基于摘要/受限来源");
     return (
       <p className="event-note">
-        已筛选来源：共 {typeof total === "number" ? total : "?"} 个
+        已筛选来源：最终 {typeof selected === "number" ? selected : "?"}
+        {typeof target === "number" ? `/${target}` : ""} 个
         {typeof fullText === "number" ? `，全文证据 ${fullText} 个` : ""}
+        {typeof total === "number" ? `（共访问 ${total} 个候选）` : ""}
         {notes.length ? `（${notes.join("；")}）` : ""}
       </p>
     );
@@ -332,17 +337,20 @@ export function ResearchWorkspace() {
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const sources = useMemo(() => {
-    const seen = new Set<string>();
-    const items: SourceItem[] = [];
+    let selected: SourceItem[] = [];
     for (const event of events) {
+      if (event.type !== "source_selected" && event.type !== "completed") continue;
+      const seen = new Set<string>();
+      const eventSources: SourceItem[] = [];
       for (const source of parseSources(event.payload.sources)) {
         if (!isVisitedSource(source)) continue;
         if (seen.has(source.url)) continue;
         seen.add(source.url);
-        items.push(source);
+        eventSources.push(source);
       }
+      if (eventSources.length) selected = eventSources;
     }
-    return items;
+    return selected;
   }, [events]);
 
   const sourceByCitation = useMemo(() => {

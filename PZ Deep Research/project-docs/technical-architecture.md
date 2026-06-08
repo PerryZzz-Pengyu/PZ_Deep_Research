@@ -167,9 +167,9 @@ npm 11.16.0
   - deep：18 轮，允许 10 个来源访问在模型分批调用时仍能完成。
   - expert：32 轮，支持两段搜索、两段访问和最终长报告。
 - 三个模式共享固定流水线，但研究强度不同：
-  - quick：1 个高命中英文搜索词，访问 3 个关键来源，500 字以内 essay 风格报告。
-  - deep：3 个高命中英文搜索词，访问 10 个关键来源，1500 字以内文献综述风格报告。
-  - expert：每次搜索 5 个高命中英文搜索词，先搜索/访问，再审查缺口后二次搜索/访问；总共访问 20 个关键来源，3000 字以上论文风格报告。
+  - quick：1 个高命中英文搜索词，最终选择 3 个来源，正文 400-500 字。
+  - deep：3 个高命中英文搜索词，最终选择 10 个来源，正文 1300-1500 字。
+  - expert：每次搜索 5 个高命中英文搜索词，先搜索/访问，再基于第一阶段证据卡片审查缺口后二次搜索/访问；最终选择 20 个来源，正文 3000-3500 字。
 - Runtime 对真实 Provider 的证据门槛不再只判断是否调用过工具，而是按搜索次数和已访问来源 URL 数量判断是否可以进入最终报告。
 - 已实现模型调用超时控制，默认 `LLM_TIMEOUT_SECONDS=60`。
 - 已实现模型调用失败重试，默认 `LLM_MAX_RETRIES=1`。
@@ -179,15 +179,16 @@ npm 11.16.0
 - 如果流式报告草稿后续没有通过引用或参考文献格式校验，Runtime 会发送 `report_reset`，前端清空草稿并等待重写。
 - 模型调用最终失败时 Runtime 会产出 `failed` 事件，让任务状态可以被存储层正确更新。
 - 研究流程为「Runtime 驱动的访问漏斗」：模型只负责输出 `search` 查询和最终报告，**访问由 Runtime 驱动，模型不再输出 `visit` 调用**。
-- 访问漏斗（`_visit_funnel`）：search 候选按搜索原生相关性序，用并发 `visit` 滚动访问；full_text 数达到本模式目标（quick 3 / deep 10 / expert 20）即早停，否则访问完所有候选。候选数量有限，天然有界，不会死循环。
-- 证据卡片裁剪：每条已访问来源由便宜模型（`EVIDENCE_EXTRACTION_MODEL`，默认 `gpt-5-nano`）抽成紧凑证据卡片，原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告，单轮请求 token 不随轮数膨胀。
-- 选源（`selection.select_sources`）：「质量优先 → 数量补足 → 逃生降级」。full_text 达标取前 N；不足按 `full_text > 相关性` 取前 N；总数不足则逃生降级（有多少用多少），并通过 `source_selected` 事件的 `degraded` / `full_text_shortfall` 标志要求报告标注证据受限。
-- expert 模式跑两轮 `search`（第二轮审查证据缺口补充检索），选源覆盖两轮访问的并集。
+- 访问漏斗（`_visit_funnel`）：search 候选按搜索原生相关性序，用并发 `visit` 滚动访问；full_text 数达到阶段目标（quick 3 / deep 10；expert 第一阶段 10、最终 20）即早停，否则访问完该次搜索返回的有限候选。候选耗尽即退出，不重复搜索或重访，因此不会因全文不足卡死。
+- 证据卡片裁剪：每条已访问来源由便宜模型（`EVIDENCE_EXTRACTION_MODEL`，默认 `gpt-5-nano`）抽成紧凑证据卡片，原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告，单轮请求 token 不随轮数膨胀。抽取调用带超时和重试，单条抽取失败时退回截断原文卡片，不使整项研究失败。
+- 选源（`selection.select_sources`）：「质量优先 → 数量补足 → 逃生降级」。按 `full_text > partial_text > metadata > failed` 排序后取前 N；总数不足则有多少用多少。最终来源重新连续编号 1..N。quick / deep / expert 的全文质量最低线分别为 1 / 3 / 5，低于最低线时通过 `full_text_shortfall` 要求报告说明证据局限，但不阻止任务完成。
+- expert 模式强制跑两轮 `search`。第一阶段访问和抽卡后，Runtime 把证据卡片交给模型审查缺口，再执行第二轮补充检索；最终选源覆盖两轮访问并集。
 - 搜索词按模式上限裁剪（quick 1 / deep 3 / expert 5）。
 - Runtime 可以从未闭合但 JSON 完整的 `<tool_call>` 中恢复工具调用，也可以从未闭合但内容完整的 `<answer>` 中恢复报告正文。
-- 来源分级：`search` 返回的是候选来源（`source_kind=search_result`），使用罗马编号 `(i)`、`(ii)`、`(iii)`，只在中间「工具返回」展示、不能被引用；只有经过 `visit` 的来源（`source_kind=visited_source`）才会分配阿拉伯 `citation_id`，作为可引用来源进入右侧来源区；`completed` 与 `source_selected` 事件只包含已选中的已访问来源。
+- 来源分级：`search` 返回的是候选来源（`source_kind=search_result`），使用罗马编号 `(i)`、`(ii)`、`(iii)`，只在中间「工具返回」展示、不能被引用；访问过程也只在中间展示。质量筛选完成后，`source_selected` 与 `completed` 仅携带最终入选来源并连续编号，右侧来源区只读取这两个事件。
 - 新增事件：`visit_progress`（访问进度 n/目标、全文证据数）、`evidence_ready`（已抽取卡片数）、`source_selected`（最终选中来源 + 降级标志）。
 - 真实 Provider 的最终报告需要包含阿拉伯 `[n]` 引用角标和 References / 参考文献章节；缺失、出现 `[^n]` 脚注、或引用了未在证据卡片中的来源时，Runtime 会产出 `citation_required` 并要求模型重写。
+- 真实 Provider 报告还会校验正文长度：quick 400-500、deep 1300-1500、expert 3000-3500；References / 参考文献整节和 `[n]` 引用标记不计入。重写两次仍不合格时任务明确失败，不无限重试。
 - 最终报告会通过 `report_delta` 事件实时推送给前端，前端可以逐步显示报告内容；`report_delta` 不再写入历史事件存储，避免 token 级报告片段撑爆任务记录。
 
 后续可替换点：
@@ -506,7 +507,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 后端 Python 语法检查通过。
 - 后端 app 导入通过。
-- 后端 pytest 自动化测试通过，当前为 32 个用例。
+- 后端 pytest 自动化测试通过，当前为 64 个用例。
 - 前端 lint 通过。
 - 前端 build 通过。
 - FastAPI 本地服务启动成功。

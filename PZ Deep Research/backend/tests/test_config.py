@@ -27,6 +27,17 @@ def test_get_settings_uses_provider_default_models_when_env_is_blank(monkeypatch
     assert settings.gemini_model == "gemini-2.5-flash"
 
 
+def test_get_settings_expands_localhost_cors_aliases(monkeypatch) -> None:
+    monkeypatch.setenv("CORS_ORIGINS", "http://localhost:3000")
+
+    settings = get_settings()
+
+    assert settings.cors_origins == (
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    )
+
+
 def test_get_settings_ignores_chinese_placeholders(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "在这里填写你的OpenAI_API_Key")
     monkeypatch.setenv("OPENAI_MODEL", "在这里填写你要使用的OpenAI模型")

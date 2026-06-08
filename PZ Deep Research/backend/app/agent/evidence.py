@@ -25,6 +25,7 @@ class EvidenceCard:
     url: str
     evidence_level: str
     content: str
+    extraction_status: str = "extracted"
 
 
 def build_extraction_prompt(
@@ -83,12 +84,16 @@ class EvidenceExtractor:
         min_extract_chars: int = 800,
         max_output_chars: int = 1200,
         max_concurrency: int = 5,
+        max_retries: int = 1,
+        timeout_seconds: float = 45.0,
     ) -> None:
         self.provider = provider
         self.model = model
         self.min_extract_chars = max(1, min_extract_chars)
         self.max_output_chars = max(1, max_output_chars)
         self.max_concurrency = max(1, max_concurrency)
+        self.max_retries = max(0, max_retries)
+        self.timeout_seconds = max(0.1, timeout_seconds)
 
     async def extract(
         self,
@@ -113,6 +118,7 @@ class EvidenceExtractor:
                 url=url,
                 evidence_level=evidence_level,
                 content=fallback.strip()[: self.max_output_chars],
+                extraction_status="passthrough",
             )
 
         messages = build_extraction_prompt(
@@ -123,14 +129,35 @@ class EvidenceExtractor:
             raw_text=text,
         )
 
-        async def _run() -> LLMResult:
-            return await self.provider.generate(messages, model=self.model, temperature=0.0)
+        async def _run_with_retries() -> Optional[LLMResult]:
+            for _ in range(self.max_retries + 1):
+                try:
+                    result = await asyncio.wait_for(
+                        self.provider.generate(messages, model=self.model, temperature=0.0),
+                        timeout=self.timeout_seconds,
+                    )
+                    if result.content.strip():
+                        return result
+                except Exception:
+                    continue
+            return None
 
         if semaphore is not None:
             async with semaphore:
-                result = await _run()
+                result = await _run_with_retries()
         else:
-            result = await _run()
+            result = await _run_with_retries()
+
+        if result is None:
+            fallback = text or source.get("content_preview", "") or source.get("snippet", "")
+            return EvidenceCard(
+                citation_id=citation_id,
+                title=title,
+                url=url,
+                evidence_level=evidence_level,
+                content=fallback.strip()[: self.max_output_chars],
+                extraction_status="fallback",
+            )
 
         return EvidenceCard(
             citation_id=citation_id,
@@ -138,6 +165,7 @@ class EvidenceExtractor:
             url=url,
             evidence_level=evidence_level,
             content=result.content.strip()[: self.max_output_chars],
+            extraction_status="extracted",
         )
 
     async def extract_many(

@@ -14,6 +14,62 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+## 2026-06-07 22:24 CST +0800
+
+### 修复
+
+- 修复从 `http://127.0.0.1:3000` 打开前端时，后端只允许 `http://localhost:3000` 导致 `/api/models` 与 `/api/research-jobs` 预检返回 `400 Disallowed CORS origin`、前端显示 `Failed to fetch` 的问题。
+- 配置层现在会自动补齐 `localhost:3000` 与 `127.0.0.1:3000` 两个本地等价来源；`.env.example` 同步列出两者。
+- 新增配置回归测试，确保本地 CORS 别名始终同时可用。
+
+### 验证
+
+- 修复前复现：`127.0.0.1:3000` 的 OPTIONS 预检返回 400，`localhost:3000` 返回 200。
+- 修复后要求两个来源的 OPTIONS 预检均返回 200，并通过后端全量测试。
+
+### 影响文件
+
+- `backend/app/config.py`
+- `backend/tests/test_config.py`
+- `.env.example`
+- `project-docs/changelog.md`
+
+## 2026-06-07 18:09 CST +0800
+
+### 修改
+
+- 保持既定的 Runtime 驱动研究流程：模型只负责生成 search 查询和最终报告，visit 继续由 Runtime 在有限候选队列中滚动并发执行。full_text 达到阶段目标时早停；全文不足时访问完本轮有限候选后立即退出并降级选源，不重复访问、不无限补轮，避免卡死。
+- quick / deep / expert 最终分别质量优先选择 3 / 10 / 20 个来源。访问过程来源只在中间工具结果展示；最终来源重新连续编号 1..N，右侧来源区只读取 `source_selected` / `completed` 的最终入选来源。
+- expert 强制执行两轮搜索。第一阶段完成访问和证据卡片抽取后，Runtime 将卡片交给模型审查证据缺口，再执行第二轮补充搜索；最终从两轮访问并集中选源。
+- 新增报告正文硬校验：quick 400-500 字、deep 1300-1500 字、expert 3000-3500 字；References / 参考文献章节和 `[n]` 引用标记不计入。格式、引用或字数不合格时清空流式草稿并要求重写，最多两次，仍不合格则明确失败而非无限循环。
+- 证据卡片抽取增加单次超时、一次重试和逐来源降级：抽取模型失败时使用截断原文生成 fallback 卡片，其他来源和整个任务继续执行。
+- 前端完整任务 ID 保持展示；来源聚合改为只展示最终入选来源。
+- 将 `frontend/.env.local` 纳入忽略规则，新增不含密钥的 `frontend/.env.example`，避免本地环境配置继续进入版本控制。
+- 修复项目迁移后本地 `backend/.venv/bin/{python工具}` 入口残留旧目录的问题；`pytest`、`pip`、`uvicorn` 已可从真实 Git 项目路径直接运行。该虚拟环境目录保持忽略，不进入 Git。
+- 同步更新英文生产提示词、中文审阅提示词、产品文档、技术架构、测试说明、项目计划书和 README。
+
+### 测试
+
+- 新增/调整测试覆盖：有界候选耗尽降级、全文最低质量告警、最终来源质量优先与连续编号、expert 两阶段、报告正文计数与范围、证据抽取失败重试降级。
+- 后端全量测试 64 个通过；Python `compileall`、前端 `npm run lint` 与 `npm run build` 通过。仍有 1 个 Starlette/TestClient 弃用警告，不影响当前功能。
+
+### 影响文件
+
+- `backend/app/agent/runtime.py`
+- `backend/app/agent/selection.py`
+- `backend/app/agent/evidence.py`
+- `backend/app/agent/prompts.py`
+- `backend/app/agent/prompt_templates/system_prompt.en.md`
+- `backend/app/agent/prompt_templates/system_prompt.zh-CN.md`
+- `backend/tests/test_agent_runtime.py`
+- `backend/tests/test_selection.py`
+- `backend/tests/test_evidence.py`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/.env.example`
+- `.gitignore`
+- `README.md`
+- `project-docs/`
+
 ## 2026-06-03 23:22 CST +0800
 
 ### 修改

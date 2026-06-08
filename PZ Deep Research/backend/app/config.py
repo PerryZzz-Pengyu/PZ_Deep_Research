@@ -25,6 +25,10 @@ DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
 DEFAULT_SEARCH_PROVIDER = "serpapi"
 DEFAULT_ACADEMIC_SEARCH_ENGINE = "google_scholar"
+LOCAL_FRONTEND_ORIGINS = (
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+)
 
 
 @dataclass(frozen=True)
@@ -86,8 +90,17 @@ def _get_csv_env(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
     return values or default
 
 
+def _get_cors_origins() -> tuple[str, ...]:
+    raw = os.getenv("CORS_ORIGINS", LOCAL_FRONTEND_ORIGINS[0])
+    origins = [origin.strip().rstrip("/") for origin in raw.split(",") if origin.strip()]
+    if any(origin in LOCAL_FRONTEND_ORIGINS for origin in origins):
+        for local_origin in LOCAL_FRONTEND_ORIGINS:
+            if local_origin not in origins:
+                origins.append(local_origin)
+    return tuple(origins) or LOCAL_FRONTEND_ORIGINS
+
+
 def get_settings() -> Settings:
-    origins = os.getenv("CORS_ORIGINS", "http://localhost:3000")
     return Settings(
         default_provider=_get_env("DEFAULT_PROVIDER", "mock"),
         default_model=_get_env("DEFAULT_MODEL", ""),
@@ -107,7 +120,7 @@ def get_settings() -> Settings:
         jina_api_key=_get_env("JINA_API_KEY", ""),
         visit_max_concurrency=_get_int_env("VISIT_MAX_CONCURRENCY", 5),
         evidence_extraction_model=_get_env("EVIDENCE_EXTRACTION_MODEL", "gpt-5-nano"),
-        cors_origins=tuple(origin.strip() for origin in origins.split(",") if origin.strip()),
+        cors_origins=_get_cors_origins(),
     )
 
 

@@ -4,6 +4,7 @@ import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from typing import Any, Optional
 
 from app.agent.evidence import EvidenceCard, EvidenceExtractor, render_card
@@ -30,11 +31,12 @@ MODE_POLICIES = {
         "search_query_count": 1,
         "visit_source_count": 3,
         "full_text_source_count": 1,
+        "min_report_chars": 400,
         "max_report_chars": 500,
         "report_style": "essay",
         "search_guidance": "Use exactly 1 high-intent English search query.",
         "visit_guidance": "Visit 3 key sources before answering.",
-        "report_guidance": "Write an essay-style report within 500 Chinese characters.",
+        "report_guidance": "Write an essay-style report with 400-500 Chinese body characters.",
     },
     "deep": {
         "max_rounds": 18,
@@ -42,11 +44,12 @@ MODE_POLICIES = {
         "search_query_count": 3,
         "visit_source_count": 10,
         "full_text_source_count": 3,
+        "min_report_chars": 1300,
         "max_report_chars": 1500,
         "report_style": "literature_review",
         "search_guidance": "Use exactly 3 high-intent English search queries.",
         "visit_guidance": "Visit 10 key sources before answering.",
-        "report_guidance": "Write a literature-review-style report within 1500 Chinese characters.",
+        "report_guidance": "Write a literature-review-style report with 1300-1500 Chinese body characters.",
     },
     "expert": {
         "max_rounds": 32,
@@ -56,10 +59,11 @@ MODE_POLICIES = {
         "full_text_source_count": 5,
         "first_visit_source_count": 10,
         "min_report_chars": 3000,
+        "max_report_chars": 3500,
         "report_style": "paper",
         "search_guidance": "Use exactly 5 high-intent English search queries in each search stage.",
         "visit_guidance": "Visit 20 key sources in total before the final answer.",
-        "report_guidance": "Write a paper-style final report of at least 3000 Chinese characters.",
+        "report_guidance": "Write a paper-style final report with 3000-3500 Chinese body characters.",
     },
 }
 
@@ -130,6 +134,7 @@ class AgentRuntime:
         provider = self.provider_factory.create(request.provider)
         mode_policy = MODE_POLICIES[request.mode]
         target = int(mode_policy["visit_source_count"])
+        minimum_full_text = int(mode_policy["full_text_source_count"])
         search_query_count = int(mode_policy["search_query_count"])
         search_stages = int(mode_policy.get("search_rounds", 1))
         goal = request.query
@@ -204,8 +209,20 @@ class AgentRuntime:
                 )
             )
 
+            stage_target = target
+            if stage == 0 and search_stages > 1:
+                stage_target = int(mode_policy.get("first_visit_source_count", target))
+
             queue = [source for source in new_candidates if source["url"] not in visited_urls]
-            async for event in self._visit_funnel(queue, target, visited, raw_by_url, visited_urls, goal, job_id):
+            async for event in self._visit_funnel(
+                queue,
+                stage_target,
+                visited,
+                raw_by_url,
+                visited_urls,
+                goal,
+                job_id,
+            ):
                 yield event
 
             pending = [source for source in visited if source["url"] not in {card.url for card in cards}]
@@ -216,35 +233,62 @@ class AgentRuntime:
                     job_id=job_id,
                     type="evidence_ready",
                     message="已为已访问来源抽取证据卡片",
-                    payload={"new_cards": len(new_cards), "total_cards": len(cards)},
+                    payload={
+                        "new_cards": len(new_cards),
+                        "total_cards": len(cards),
+                        "fallback_cards": sum(
+                            1 for card in new_cards if card.extraction_status == "fallback"
+                        ),
+                    },
                 )
 
-            if should_stop_visiting(count_full_text(visited), target):
-                break
             if stage + 1 < search_stages:
+                review_cards = "\n\n".join(render_card(card) for card in cards)
                 messages.append(
-                    LLMMessage(role="user", content=self._build_supplement_search_request(search_query_count))
+                    LLMMessage(
+                        role="user",
+                        content=(
+                            "<evidence_cards>\n"
+                            f"{review_cards or '（第一阶段没有可用证据卡片）'}\n"
+                            "</evidence_cards>\n"
+                            f"{self._build_supplement_search_request(search_query_count)}"
+                        ),
+                    )
+                )
+                yield ResearchEvent(
+                    job_id=job_id,
+                    type="status",
+                    message="正在审查第一阶段证据缺口，准备补充检索",
+                    payload={
+                        "stage": stage + 1,
+                        "visited": len(visited),
+                        "full_text": count_full_text(visited),
+                        "evidence_cards": len(cards),
+                    },
                 )
 
         # ===== 选源：质量优先 → 数量补足 → 逃生降级 =====
-        selection = select_sources(visited, target)
+        selection = select_sources(
+            visited,
+            target,
+            minimum_full_text=minimum_full_text,
+        )
+        selected, selected_cards = self._renumber_selected_sources(selection.selected, cards)
         yield ResearchEvent(
             job_id=job_id,
             type="source_selected",
             message="已完成来源筛选",
             payload={
-                "sources": self._source_snapshot(selection.selected),
+                "sources": self._source_snapshot(selected),
                 "target": target,
+                "selected_count": len(selected),
+                "minimum_full_text": minimum_full_text,
                 "total_available": selection.total_available,
                 "full_text_count": selection.full_text_count,
                 "degraded": selection.degraded,
                 "full_text_shortfall": selection.full_text_shortfall,
             },
         )
-
-        selected = selection.selected
-        selected_ids = {source.get("citation_id", "") for source in selected}
-        selected_cards = [card for card in cards if card.citation_id in selected_ids]
 
         # ===== 报告阶段 =====
         messages.append(
@@ -254,6 +298,8 @@ class AgentRuntime:
             )
         )
         report_attempts = 0
+        min_body_chars = int(mode_policy["min_report_chars"])
+        max_body_chars = int(mode_policy["max_report_chars"])
         while True:
             round_index += 1
             holder = {}
@@ -283,9 +329,15 @@ class AgentRuntime:
                     )
                     continue
 
-            missing_report_format = self._missing_report_format(answer, selected, real_provider)
-            if missing_report_format and report_attempts < 2:
-                report_attempts += 1
+            body_char_count = self._count_report_body_chars(answer)
+            missing_report_format = self._missing_report_format(
+                answer,
+                selected,
+                real_provider,
+                min_body_chars=min_body_chars,
+                max_body_chars=max_body_chars,
+            )
+            if missing_report_format:
                 if streamed_report:
                     yield ResearchEvent(
                         job_id=job_id,
@@ -293,20 +345,47 @@ class AgentRuntime:
                         message="报告草稿格式不合格，准备重写",
                         payload={"round": round_index},
                     )
+                if report_attempts >= 2:
+                    yield ResearchEvent(
+                        job_id=job_id,
+                        type="failed",
+                        message="研究报告经过重写后仍未满足格式或字数要求",
+                        payload={
+                            "round": round_index,
+                            "missing": missing_report_format,
+                            "body_char_count": body_char_count,
+                            "min_body_chars": min_body_chars,
+                            "max_body_chars": max_body_chars,
+                        },
+                    )
+                    return
+                report_attempts += 1
                 yield ResearchEvent(
                     job_id=job_id,
                     type="citation_required",
-                    message="研究报告缺少引用或参考文献，已要求模型重写",
+                    message="研究报告格式、引用或字数不合格，已要求模型重写",
                     payload={
                         "round": round_index,
                         "missing": missing_report_format,
                         "attempt": report_attempts,
+                        "body_char_count": body_char_count,
+                        "min_body_chars": min_body_chars,
+                        "max_body_chars": max_body_chars,
                         "content_preview": answer[:1000],
                     },
                 )
                 messages.append(LLMMessage(role="assistant", content=content))
                 messages.append(
-                    LLMMessage(role="user", content=self._build_report_rewrite_request(missing_report_format, selected_cards))
+                    LLMMessage(
+                        role="user",
+                        content=self._build_report_rewrite_request(
+                            missing_report_format,
+                            selected_cards,
+                            min_body_chars=min_body_chars,
+                            max_body_chars=max_body_chars,
+                            body_char_count=body_char_count,
+                        ),
+                    )
                 )
                 continue
 
@@ -475,12 +554,11 @@ class AgentRuntime:
         goal: str,
         job_id: str,
     ) -> AsyncIterator[ResearchEvent]:
-        """Runtime 驱动的访问漏斗：按相关性序滚动访问候选，full_text 达标即早停，否则访问完所有候选。"""
+        """按相关性滚动访问有限候选：全文达标早停，候选耗尽则降级退出。"""
         remaining = [source for source in queue if source["url"] not in visited_urls]
         while remaining and not should_stop_visiting(count_full_text(visited), target):
-            needed = target - len(visited)
-            batch_size = needed if needed > 0 else target
-            batch = remaining[: max(1, batch_size)]
+            needed_full_text = target - count_full_text(visited)
+            batch = remaining[: max(1, needed_full_text)]
             remaining = remaining[len(batch):]
             urls = [source["url"] for source in batch]
 
@@ -524,6 +602,7 @@ class AgentRuntime:
                     "visited": len(visited),
                     "full_text": count_full_text(visited),
                     "target": target,
+                    "full_text_target": target,
                     "remaining_candidates": len(remaining),
                 },
             )
@@ -596,7 +675,8 @@ class AgentRuntime:
             reasons = []
             if selection.full_text_shortfall:
                 reasons.append(
-                    f"全文证据只有 {selection.full_text_count} 条（目标 {selection.target} 条）"
+                    f"全文证据只有 {selection.full_text_count} 条"
+                    f"（最低质量线 {selection.minimum_full_text} 条）"
                 )
             if selection.degraded:
                 reasons.append(
@@ -609,7 +689,9 @@ class AgentRuntime:
             )
         return (
             f"现在请基于以上证据卡片{REPORT_REQUEST_MARKER}。\n"
-            f"研究模式：{mode}。{policy['report_guidance']}\n"
+            f"研究模式：{mode}。{policy['report_guidance']}"
+            f"正文必须为 {policy['min_report_chars']}-{policy['max_report_chars']} 字，"
+            "字数不包含 References/参考文献列表与 [n] 引用标记。\n"
             "只能引用下面列出的来源，使用阿拉伯数字角标 [1]、[2]，禁止使用罗马编号或 [^1] 脚注，"
             "禁止引用未列出的来源，禁止编造数据。\n"
             f"{degrade_note}"
@@ -667,27 +749,59 @@ class AgentRuntime:
         return parsed
 
     @staticmethod
-    def _missing_report_format(answer: str, sources: list[dict[str, str]], enabled: bool) -> list[str]:
-        if not enabled or not sources:
+    def _missing_report_format(
+        answer: str,
+        sources: list[dict[str, str]],
+        enabled: bool,
+        *,
+        min_body_chars: Optional[int] = None,
+        max_body_chars: Optional[int] = None,
+    ) -> list[str]:
+        if not enabled:
             return []
         missing: list[str] = []
-        citation_markers = re.findall(r"\[(\d+)\]", answer)
-        if not citation_markers:
-            missing.append("citation_markers")
-        else:
-            valid_citation_ids = {source.get("citation_id", "") for source in sources}
-            if any(citation_id not in valid_citation_ids for citation_id in citation_markers):
-                missing.append("invalid_citation_markers")
+        if sources:
+            citation_markers = re.findall(r"\[(\d+)\]", answer)
+            if not citation_markers:
+                missing.append("citation_markers")
+            else:
+                valid_citation_ids = {source.get("citation_id", "") for source in sources}
+                if any(citation_id not in valid_citation_ids for citation_id in citation_markers):
+                    missing.append("invalid_citation_markers")
         if re.search(r"\[\^\d+\]", answer):
             missing.append("footnote_citations")
         if not re.search(r"(^|\n)\s*(#{1,6}\s*)?(\*\*)?(References|参考文献)(\*\*)?\s*($|\n|[:：])", answer, re.IGNORECASE):
             missing.append("references_section")
+        body_chars = AgentRuntime._count_report_body_chars(answer)
+        if min_body_chars is not None and body_chars < min_body_chars:
+            missing.append("report_too_short")
+        if max_body_chars is not None and body_chars > max_body_chars:
+            missing.append("report_too_long")
         return missing
+
+    @staticmethod
+    def _count_report_body_chars(answer: str) -> int:
+        reference_heading = re.search(
+            r"(^|\n)\s*(#{1,6}\s*)?(\*\*)?(References|参考文献)(\*\*)?\s*($|\n|[:：])",
+            answer,
+            re.IGNORECASE,
+        )
+        body = answer[: reference_heading.start()] if reference_heading else answer
+        body = re.sub(r"\[\^\d+\]", "", body)
+        body = re.sub(r"\[\d+(?:\s*[,，-]\s*\d+)*\]", "", body)
+        body = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", body)
+        body = re.sub(r"https?://\S+", "", body)
+        body = re.sub(r"[#*_>`~|]", "", body)
+        return sum(1 for character in body if character.isalnum())
 
     def _build_report_rewrite_request(
         self,
         missing_report_format: list[str],
         selected_cards: list[EvidenceCard],
+        *,
+        min_body_chars: int,
+        max_body_chars: int,
+        body_char_count: int,
     ) -> str:
         cards_text = "\n\n".join(render_card(card) for card in selected_cards) or "（无可用证据卡片）"
         missing_text = "、".join(missing_report_format)
@@ -700,12 +814,32 @@ class AgentRuntime:
             "3. References 使用 APA 风格，尽量包含标题、来源和 URL。\n"
             "4. 如果来源标记为 blocked、metadata_only 或 metadata，只能说明它是题录/摘要/受限访问证据，不能写成已阅读全文。\n"
             "5. 只能引用下面列出的来源，不要编造来源。\n"
+            f"6. 正文必须为 {min_body_chars}-{max_body_chars} 字，"
+            f"不包含 References/参考文献列表与 [n] 引用标记；上一稿正文为 {body_char_count} 字。\n"
             f"{cards_text}"
         )
 
     @staticmethod
     def _visited_sources(sources: list[dict[str, str]]) -> list[dict[str, str]]:
         return [source for source in sources if source.get("source_kind") == "visited_source" and source.get("citation_id")]
+
+    @staticmethod
+    def _renumber_selected_sources(
+        sources: list[dict[str, str]],
+        cards: list[EvidenceCard],
+    ) -> tuple[list[dict[str, str]], list[EvidenceCard]]:
+        cards_by_url = {card.url: card for card in cards}
+        selected_sources: list[dict[str, str]] = []
+        selected_cards: list[EvidenceCard] = []
+        for index, source in enumerate(sources, start=1):
+            citation_id = str(index)
+            selected_source = dict(source)
+            selected_source["citation_id"] = citation_id
+            selected_sources.append(selected_source)
+            card = cards_by_url.get(source.get("url", ""))
+            if card is not None:
+                selected_cards.append(replace(card, citation_id=citation_id))
+        return selected_sources, selected_cards
 
     @staticmethod
     def _source_snapshot(sources: list[dict[str, str]]) -> list[dict[str, str]]:

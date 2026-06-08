@@ -39,7 +39,7 @@ def test_select_sources_orders_full_text_first_preserving_relevance() -> None:
         make_source("https://r3", "full_text"),
         make_source("https://r4", "metadata_only"),
     ]
-    result = select_sources(sources, target=3)
+    result = select_sources(sources, target=3, minimum_full_text=1)
 
     # 取前 3：full_text 优先（保各自相关性序），再补相关性最高的受限来源
     assert [s["url"] for s in result.selected] == ["https://r1", "https://r3", "https://r0"]
@@ -47,8 +47,7 @@ def test_select_sources_orders_full_text_first_preserving_relevance() -> None:
     assert result.total_available == 5
     assert result.full_text_count == 2
     assert result.degraded is False
-    # full_text(2) < target(3)，应标记全文证据不足
-    assert result.full_text_shortfall is True
+    assert result.full_text_shortfall is False
 
 
 def test_select_sources_not_full_text_shortfall_when_enough_full_text() -> None:
@@ -58,7 +57,7 @@ def test_select_sources_not_full_text_shortfall_when_enough_full_text() -> None:
         make_source("https://c", "full_text"),
         make_source("https://d", "metadata_only"),
     ]
-    result = select_sources(sources, target=3)
+    result = select_sources(sources, target=3, minimum_full_text=3)
     assert [s["url"] for s in result.selected] == ["https://a", "https://b", "https://c"]
     assert result.full_text_count == 3
     assert result.full_text_shortfall is False
@@ -71,7 +70,7 @@ def test_select_sources_escape_hatch_when_fewer_than_target() -> None:
         make_source("https://a", "metadata_only"),
         make_source("https://b", "full_text"),
     ]
-    result = select_sources(sources, target=10)
+    result = select_sources(sources, target=10, minimum_full_text=3)
     assert {s["url"] for s in result.selected} == {"https://a", "https://b"}
     # 仍按 full_text 优先排序
     assert [s["url"] for s in result.selected] == ["https://b", "https://a"]
@@ -87,7 +86,21 @@ def test_select_sources_ranks_usable_above_failed() -> None:
         make_source("https://meta", "metadata_only"),
         make_source("https://partial", "partial_text"),
     ]
-    result = select_sources(sources, target=2)
+    result = select_sources(sources, target=2, minimum_full_text=1)
     # 取前 2：partial_text 与 metadata_only 优先于 failed
     assert [s["url"] for s in result.selected] == ["https://partial", "https://meta"]
     assert result.degraded is False
+
+
+def test_select_sources_full_text_shortfall_uses_quality_minimum_not_visit_target() -> None:
+    sources = [
+        make_source("https://a", "full_text"),
+        make_source("https://b", "metadata_only"),
+        make_source("https://c", "metadata_only"),
+    ]
+
+    enough = select_sources(sources, target=3, minimum_full_text=1)
+    short = select_sources(sources, target=3, minimum_full_text=2)
+
+    assert enough.full_text_shortfall is False
+    assert short.full_text_shortfall is True

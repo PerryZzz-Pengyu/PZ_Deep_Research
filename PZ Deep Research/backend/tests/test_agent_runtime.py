@@ -132,9 +132,16 @@ class EchoVisitTool(AgentTool):
     name = "visit"
     description = "visit"
 
-    def __init__(self, *, evidence_level: str = "full_text", read_status: str = "full_text") -> None:
+    def __init__(
+        self,
+        *,
+        evidence_level: str = "full_text",
+        read_status: str = "full_text",
+        text: str = "full text evidence " * 100,
+    ) -> None:
         self.evidence_level = evidence_level
         self.read_status = read_status
+        self.text = text
         self.calls: list[dict[str, object]] = []
 
     async def call(self, arguments: dict[str, object]) -> ToolResult:
@@ -154,7 +161,33 @@ class EchoVisitTool(AgentTool):
             }
             for url in urls
         ]
-        texts = {str(url): "full text evidence " * 100 for url in urls}
+        texts = {str(url): self.text for url in urls}
+        return ToolResult(name="visit", content="网页正文", sources=sources, source_texts=texts)
+
+
+class MixedEvidenceVisitTool(EchoVisitTool):
+    async def call(self, arguments: dict[str, object]) -> ToolResult:
+        self.calls.append(arguments)
+        urls = arguments.get("url") or []
+        if isinstance(urls, str):
+            urls = [urls]
+        sources = []
+        texts = {}
+        for url in urls:
+            index = int(str(url).rsplit("-", 1)[-1])
+            full_text = index > 3
+            sources.append(
+                {
+                    "title": f"Visited {url}",
+                    "url": str(url),
+                    "snippet": "evidence",
+                    "read_status": "full_text" if full_text else "metadata_only",
+                    "evidence_level": "full_text" if full_text else "metadata_only",
+                    "evidence_note": "note",
+                    "content_preview": "preview",
+                }
+            )
+            texts[str(url)] = "short evidence"
         return ToolResult(name="visit", content="网页正文", sources=sources, source_texts=texts)
 
 
@@ -190,21 +223,37 @@ def make_visit_sources(count: int, *, start: int = 1) -> list[dict[str, str]]:
     ]
 
 
+def make_valid_answer(message: str, mode: str, citations: str = "[1]") -> str:
+    minimum = int(MODE_POLICIES[mode]["min_report_chars"])
+    body = f"{message} {citations}\n\n" + ("研" * minimum)
+    return (
+        "<answer>\n"
+        f"{body}\n\n"
+        "## References\n"
+        "Source. (n.d.). Evidence source. https://example.com/paper-1\n"
+        "</answer>"
+    )
+
+
 def test_mode_policies_match_product_spec() -> None:
     assert MODE_POLICIES["quick"]["search_query_count"] == 1
     assert MODE_POLICIES["quick"]["visit_source_count"] == 3
     assert MODE_POLICIES["quick"]["full_text_source_count"] == 1
+    assert MODE_POLICIES["quick"]["min_report_chars"] == 400
     assert MODE_POLICIES["quick"]["max_report_chars"] == 500
 
     assert MODE_POLICIES["deep"]["search_query_count"] == 3
     assert MODE_POLICIES["deep"]["visit_source_count"] == 10
     assert MODE_POLICIES["deep"]["full_text_source_count"] == 3
+    assert MODE_POLICIES["deep"]["min_report_chars"] == 1300
     assert MODE_POLICIES["deep"]["max_report_chars"] == 1500
 
     assert MODE_POLICIES["expert"]["search_query_count"] == 5
     assert MODE_POLICIES["expert"]["visit_source_count"] == 20
     assert MODE_POLICIES["expert"]["full_text_source_count"] == 5
     assert MODE_POLICIES["expert"]["min_report_chars"] == 3000
+    assert MODE_POLICIES["expert"]["max_report_chars"] == 3500
+    assert MODE_POLICIES["expert"]["first_visit_source_count"] == 10
     assert MODE_POLICIES["expert"]["search_rounds"] == 2
 
 
@@ -228,6 +277,39 @@ def test_report_format_accepts_bold_references_heading() -> None:
     missing = AgentRuntime._missing_report_format(answer, sources, enabled=True)
 
     assert missing == []
+
+
+def test_report_body_length_excludes_references_and_citation_markers() -> None:
+    answer = f"{'研' * 400} [1]\n\n## References\n{'参考文献内容' * 100}"
+
+    assert AgentRuntime._count_report_body_chars(answer) == 400
+    assert AgentRuntime._missing_report_format(
+        answer,
+        [],
+        enabled=True,
+        min_body_chars=400,
+        max_body_chars=500,
+    ) == []
+
+
+def test_report_body_length_rejects_out_of_range_content() -> None:
+    too_short = f"{'研' * 399}\n\n## References\nSource"
+    too_long = f"{'研' * 501}\n\n## References\nSource"
+
+    assert "report_too_short" in AgentRuntime._missing_report_format(
+        too_short,
+        [],
+        enabled=True,
+        min_body_chars=400,
+        max_body_chars=500,
+    )
+    assert "report_too_long" in AgentRuntime._missing_report_format(
+        too_long,
+        [],
+        enabled=True,
+        min_body_chars=400,
+        max_body_chars=500,
+    )
 
 
 def test_mock_runtime_completes_research_flow() -> None:
@@ -292,7 +374,7 @@ def test_runtime_emits_llm_usage_event() -> None:
                     estimated_cost_usd=0.00045,
                 ),
                 LLMResult(
-                    content="<answer>\n带用量统计的最终报告\n</answer>",
+                    content=make_valid_answer("带用量统计的最终报告", "quick"),
                     model="unit-test-model",
                     input_tokens=200,
                     output_tokens=50,
@@ -412,7 +494,7 @@ def test_real_provider_runtime_drives_search_then_visit_before_report() -> None:
                     model="openai-test",
                 ),
                 LLMResult(
-                    content="<answer>\n最终报告引用来源 [1]\n\n## References\nGLP-1 Trial. (n.d.). https://example.com/paper-1\n</answer>",
+                    content=make_valid_answer("最终报告引用来源", "deep"),
                     model="openai-test",
                 ),
             ]
@@ -452,7 +534,7 @@ def test_real_provider_quick_mode_visits_before_report() -> None:
                     model="openai-test",
                 ),
                 LLMResult(
-                    content="<answer>\n快速模式访问后的最终报告 [1]\n\n## References\nGLP-1 Trial. (n.d.). https://example.com/paper-1\n</answer>",
+                    content=make_valid_answer("快速模式访问后的最终报告", "quick"),
                     model="openai-test",
                 ),
             ]
@@ -493,7 +575,7 @@ def test_quick_mode_trims_search_queries_to_policy() -> None:
                     model="openai-test",
                 ),
                 LLMResult(
-                    content="<answer>\n快速 essay 报告 [1]\n\n**References**\nSource. (n.d.). https://example.com/paper-1\n</answer>",
+                    content=make_valid_answer("快速 essay 报告", "quick"),
                     model="openai-test",
                 ),
             ]
@@ -530,7 +612,7 @@ def test_search_candidates_use_roman_ids_and_visited_sources_use_citation_ids() 
                     model="openai-test",
                 ),
                 LLMResult(
-                    content="<answer>\n最终报告只引用访问来源 [1][2][3]\n\n## References\nSource. (n.d.). https://example.com/paper-1\n</answer>",
+                    content=make_valid_answer("最终报告只引用访问来源", "quick", "[1][2][3]"),
                     model="openai-test",
                 ),
             ]
@@ -582,7 +664,7 @@ def test_report_cannot_cite_unvisited_search_candidates() -> None:
                     model="openai-test",
                 ),
                 LLMResult(
-                    content="<answer>\n修正后只引用访问来源 [1]\n\n## References\nSource. (n.d.). https://example.com/paper-1\n</answer>",
+                    content=make_valid_answer("修正后只引用访问来源", "quick"),
                     model="openai-test",
                 ),
             ]
@@ -618,7 +700,7 @@ def test_quick_mode_degrades_when_no_full_text_evidence() -> None:
                     model="openai-test",
                 ),
                 LLMResult(
-                    content="<answer>\n证据受限下的报告 [1]\n\n## References\nSource. (n.d.). https://example.com/paper-1\n</answer>",
+                    content=make_valid_answer("证据受限下的报告", "quick"),
                     model="openai-test",
                 ),
             ]
@@ -648,6 +730,89 @@ def test_quick_mode_degrades_when_no_full_text_evidence() -> None:
     assert events[-1].type == "completed"
 
 
+def test_deep_mode_exhausts_finite_candidates_then_selects_ten_when_full_text_is_unavailable() -> None:
+    async def run_runtime():
+        provider = SequenceProvider(
+            [
+                LLMResult(
+                    content='<tool_call>\n{"name":"search","arguments":{"query":["q1","q2","q3"]}}\n</tool_call>',
+                    model="openai-test",
+                ),
+                LLMResult(content=make_valid_answer("深度模式报告", "deep"), model="openai-test"),
+            ]
+        )
+        visit_tool = EchoVisitTool(
+            evidence_level="metadata_only",
+            read_status="metadata_only",
+            text="short abstract",
+        )
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry(
+                [
+                    FixedTool("search", ToolResult(name="search", content="搜索结果", sources=make_sources(15))),
+                    visit_tool,
+                ]
+            ),
+        )
+        request = ResearchRequest(query="GLP-1 for obesity", mode="deep", provider="openai")
+        events = [event async for event in runtime.run("bounded-visit-job", request)]
+        return events, visit_tool.calls
+
+    events, visit_calls = asyncio.run(run_runtime())
+    selected_event = next(event for event in events if event.type == "source_selected")
+    visited_urls = [
+        url
+        for call in visit_calls
+        for url in call.get("url", [])
+        if isinstance(url, str)
+    ]
+
+    assert len(visited_urls) == 15
+    assert selected_event.payload["full_text_count"] == 0
+    assert selected_event.payload["full_text_shortfall"] is True
+    assert selected_event.payload["selected_count"] == 10
+    assert len(events[-1].payload["sources"]) == 10
+
+
+def test_final_selected_sources_are_quality_first_and_renumbered_contiguously() -> None:
+    async def run_runtime():
+        provider = SequenceProvider(
+            [
+                LLMResult(
+                    content='<tool_call>\n{"name":"search","arguments":{"query":["q"]}}\n</tool_call>',
+                    model="openai-test",
+                ),
+                LLMResult(
+                    content=make_valid_answer("最终来源连续编号", "quick", "[1][2][3]"),
+                    model="openai-test",
+                ),
+            ]
+        )
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry(
+                [
+                    FixedTool("search", ToolResult(name="search", content="搜索结果", sources=make_sources(6))),
+                    MixedEvidenceVisitTool(),
+                ]
+            ),
+        )
+        request = ResearchRequest(query="GLP-1 for obesity", mode="quick", provider="openai")
+        return [event async for event in runtime.run("renumber-job", request)]
+
+    events = asyncio.run(run_runtime())
+    selected = next(event for event in events if event.type == "source_selected").payload["sources"]
+
+    assert [source["url"] for source in selected] == [
+        "https://example.com/paper-4",
+        "https://example.com/paper-5",
+        "https://example.com/paper-6",
+    ]
+    assert [source["citation_id"] for source in selected] == ["1", "2", "3"]
+    assert events[-1].payload["sources"] == selected
+
+
 def test_real_provider_always_searches_before_visit() -> None:
     async def run_runtime():
         # 即使模型先抛出 visit，Runtime 也只认 search；访问由 Runtime 在 search 之后驱动。
@@ -658,7 +823,7 @@ def test_real_provider_always_searches_before_visit() -> None:
                     model="openai-test",
                 ),
                 LLMResult(
-                    content="<answer>\n按顺序完成后的报告 [1]\n\n## References\nGLP-1 Trial. (n.d.). https://example.com/paper-1\n</answer>",
+                    content=make_valid_answer("按顺序完成后的报告", "deep"),
                     model="openai-test",
                 ),
             ]
@@ -696,7 +861,7 @@ def test_expert_mode_runs_two_search_stages() -> None:
                     model="openai-test",
                 ),
                 LLMResult(
-                    content="<answer>\n专家最终报告 [1][11]\n\n## References\nSource. (n.d.). https://example.com/paper-1\n</answer>",
+                    content=make_valid_answer("专家最终报告", "expert", "[1][11]"),
                     model="openai-test",
                 ),
             ]
@@ -704,11 +869,11 @@ def test_expert_mode_runs_two_search_stages() -> None:
         search_tool = SequenceTool(
             "search",
             [
-                ToolResult(name="search", content="第一轮搜索", sources=make_sources(10)),
-                ToolResult(name="search", content="第二轮搜索", sources=make_sources(10, start=11)),
+                ToolResult(name="search", content="第一轮搜索", sources=make_sources(20)),
+                ToolResult(name="search", content="第二轮搜索", sources=make_sources(20, start=21)),
             ],
         )
-        visit_tool = EchoVisitTool()
+        visit_tool = EchoVisitTool(text="short evidence")
         runtime = AgentRuntime(
             provider_factory=FixedProviderFactory(provider),
             tool_registry=ToolRegistry([search_tool, visit_tool]),
@@ -724,6 +889,8 @@ def test_expert_mode_runs_two_search_stages() -> None:
     assert tool_names == ["search", "visit", "search", "visit"]
     assert len(search_calls) == 2
     assert len(visit_calls) == 2
+    assert [len(call["url"]) for call in visit_calls] == [10, 10]
+    assert len(events[-1].payload["sources"]) == 20
     assert events[-1].type == "completed"
 
 
@@ -743,7 +910,7 @@ def test_real_provider_prefers_tool_call_when_answer_and_tool_call_are_mixed() -
                     model="openai-test",
                 ),
                 LLMResult(
-                    content="<answer>\n工具优先后的最终报告 [1]\n\n## References\nGLP-1 Trial. (n.d.). https://example.com/paper\n</answer>",
+                    content=make_valid_answer("工具优先后的最终报告", "deep"),
                     model="openai-test",
                 ),
             ]
@@ -791,7 +958,7 @@ def test_real_provider_must_rewrite_report_with_references() -> None:
                 ),
                 LLMResult(content="<answer>\n有引用但没有参考文献 [1]\n</answer>", model="openai-test"),
                 LLMResult(
-                    content="<answer>\n重写后报告 [1]\n\n## References\nGLP-1 Trial. (n.d.). https://example.com/paper\n</answer>",
+                    content=make_valid_answer("重写后报告", "deep"),
                     model="openai-test",
                 ),
             ]

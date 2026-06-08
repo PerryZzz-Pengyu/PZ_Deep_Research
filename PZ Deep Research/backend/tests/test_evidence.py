@@ -23,6 +23,12 @@ class FakeProvider:
         return LLMResult(content=self.output, model=model)
 
 
+class FailingProvider(FakeProvider):
+    async def generate(self, messages, *, model=None, temperature=0.3, max_tokens=4096):
+        self.calls.append({"messages": messages, "model": model})
+        raise RuntimeError("temporary extraction failure")
+
+
 def make_source(url, citation_id, evidence_level, *, title="标题", read_status=None, snippet="", content_preview=""):
     source = {
         "url": url,
@@ -124,3 +130,22 @@ def test_render_card_is_compact_and_cites_id() -> None:
     assert "https://example.org/x" in rendered
     assert "8.0kg" in rendered
     assert "full_text" in rendered
+
+
+def test_extract_falls_back_to_raw_text_after_retries() -> None:
+    provider = FailingProvider()
+    extractor = EvidenceExtractor(
+        provider,
+        model="gpt-5-nano",
+        min_extract_chars=20,
+        max_retries=1,
+        timeout_seconds=1,
+    )
+    source = make_source("https://example.org/fallback", "4", "full_text")
+    raw = "可验证的网页原文证据。" * 20
+
+    card = asyncio.run(extractor.extract(source, raw, goal="目标"))
+
+    assert len(provider.calls) == 2
+    assert card.extraction_status == "fallback"
+    assert "可验证的网页原文证据" in card.content

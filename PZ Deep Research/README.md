@@ -4,10 +4,10 @@ PZ Deep Research 是一个面向 C 端用户的深度研究网页产品。当前
 
 ## 当前状态
 
-第一批工程骨架已经建立：
+网页端研究 MVP 已经建立：
 
-- `backend/`：FastAPI 后端、Agent Runtime、Provider 抽象、工具抽象、内存任务流。
-- `frontend/`：Next.js 前端研究工作台。
+- `backend/`：FastAPI 后端、Runtime 驱动的研究漏斗、多模型 Provider、SerpAPI 搜索、Jina 访问、证据卡片和报告校验。
+- `frontend/`：Next.js 研究工作台，支持实时进度、工具结果、Markdown 报告、引用悬浮卡片和最终来源列表。
 - `project-docs/`：项目计划书、产品文档、变更日志。
 
 默认 Provider 是 `mock`，用于在没有模型 API Key 的情况下跑通任务创建、事件流、工具调用和报告展示。
