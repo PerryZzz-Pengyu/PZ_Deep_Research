@@ -8,6 +8,7 @@ export type ResearchJob = {
   provider: string;
   model?: string | null;
   status: "queued" | "running" | "completed" | "failed" | "cancelled";
+  draft_report: string;
   final_report?: string | null;
   error?: string | null;
   created_at: string;

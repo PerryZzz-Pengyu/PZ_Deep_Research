@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Optional
 
@@ -10,6 +11,9 @@ from app.agent.schemas import LLMMessage, LLMResult
 class MockProvider(LLMProvider):
     name = "mock"
 
+    def __init__(self, *, delay_seconds: float = 0.0) -> None:
+        self.delay_seconds = max(delay_seconds, 0.0)
+
     async def generate(
         self,
         messages: list[LLMMessage],
@@ -18,6 +22,9 @@ class MockProvider(LLMProvider):
         temperature: float = 0.3,
         max_tokens: int = 4096,
     ) -> LLMResult:
+        if self.delay_seconds:
+            await asyncio.sleep(self.delay_seconds)
+
         # 新流程下访问由 Runtime 驱动，模型只负责：被要求时输出 search 查询，
         # 或在收到「撰写最终研究报告」指令时输出 <answer>。
         last_user = next((message.content for message in reversed(messages) if message.role == "user"), "")

@@ -1,4 +1,10 @@
-import type { ModelOptionsResponse, ProviderName, ResearchJob, ResearchMode } from "@/lib/types";
+import type {
+  ModelOptionsResponse,
+  ProviderName,
+  ResearchEvent,
+  ResearchJob,
+  ResearchMode,
+} from "@/lib/types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
@@ -35,6 +41,39 @@ export async function getModelOptions(): Promise<ModelOptionsResponse> {
   return response.json();
 }
 
-export function createResearchEventSource(jobId: string): EventSource {
-  return new EventSource(`${API_BASE_URL}/api/research-jobs/${jobId}/stream`);
+export async function getResearchJob(jobId: string): Promise<ResearchJob> {
+  const response = await fetch(`${API_BASE_URL}/api/research-jobs/${jobId}`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "获取研究任务失败");
+  }
+  return response.json();
+}
+
+export async function getResearchEvents(jobId: string): Promise<ResearchEvent[]> {
+  const response = await fetch(`${API_BASE_URL}/api/research-jobs/${jobId}/events`);
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "获取研究事件失败");
+  }
+  return response.json();
+}
+
+export async function cancelResearchJob(jobId: string): Promise<ResearchJob> {
+  const response = await fetch(`${API_BASE_URL}/api/research-jobs/${jobId}/cancel`, {
+    method: "POST",
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "取消研究任务失败");
+  }
+  return response.json();
+}
+
+export function createResearchEventSource(jobId: string, afterEventId?: string): EventSource {
+  const url = new URL(`${API_BASE_URL}/api/research-jobs/${jobId}/stream`);
+  if (afterEventId) {
+    url.searchParams.set("after", afterEventId);
+  }
+  return new EventSource(url);
 }

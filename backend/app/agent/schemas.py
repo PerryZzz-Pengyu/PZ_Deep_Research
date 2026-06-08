@@ -39,6 +39,7 @@ class ResearchJob(BaseModel):
     provider: str
     model: Optional[str] = None
     status: ResearchStatus = "queued"
+    draft_report: str = ""
     final_report: Optional[str] = None
     error: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)

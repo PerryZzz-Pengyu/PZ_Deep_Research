@@ -16,6 +16,13 @@ def test_provider_factory_uses_default_provider_when_request_is_empty() -> None:
     assert isinstance(provider, MockProvider)
 
 
+def test_provider_factory_passes_mock_delay() -> None:
+    provider = ProviderFactory(Settings(mock_provider_delay_seconds=1.25)).create("mock")
+
+    assert isinstance(provider, MockProvider)
+    assert provider.delay_seconds == 1.25
+
+
 def test_provider_factory_applies_default_model_to_real_providers() -> None:
     settings = Settings(
         default_model="shared-model",

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.agent.providers import ProviderFactory
@@ -27,6 +27,8 @@ runtime = AgentRuntime(
 )
 live_event_queues: dict[str, set[asyncio.Queue[ResearchEvent]]] = {}
 live_event_lock = asyncio.Lock()
+running_tasks: dict[str, asyncio.Task[None]] = {}
+running_tasks_lock = asyncio.Lock()
 
 
 async def register_live_event_queue(job_id: str) -> asyncio.Queue[ResearchEvent]:
@@ -51,6 +53,37 @@ async def publish_live_event(job_id: str, event: ResearchEvent) -> None:
         queues = list(live_event_queues.get(job_id, set()))
     for queue in queues:
         await queue.put(event)
+
+
+async def register_running_task(job_id: str, task: asyncio.Task[None]) -> None:
+    async with running_tasks_lock:
+        running_tasks[job_id] = task
+
+
+async def unregister_running_task(job_id: str, task: asyncio.Task[None]) -> None:
+    async with running_tasks_lock:
+        if running_tasks.get(job_id) is task:
+            running_tasks.pop(job_id, None)
+
+
+async def get_running_task(job_id: str) -> asyncio.Task[None] | None:
+    async with running_tasks_lock:
+        return running_tasks.get(job_id)
+
+
+def events_after(events: list[ResearchEvent], cursor: str | None) -> list[ResearchEvent]:
+    if not cursor:
+        return events
+    for index, event in enumerate(events):
+        if event.id == cursor:
+            return events[index + 1 :]
+    return events
+
+
+def format_sse(event: ResearchEvent, *, include_id: bool = True) -> str:
+    payload = event.model_dump(mode="json")
+    prefix = f"id: {event.id}\n" if include_id else ""
+    return f"{prefix}data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 @router.post("/research-jobs", response_model=ResearchJob)
@@ -179,6 +212,34 @@ async def get_research_job(job_id: str) -> ResearchJob:
     return job
 
 
+@router.post("/research-jobs/{job_id}/cancel", response_model=ResearchJob)
+async def cancel_research_job(job_id: str) -> ResearchJob:
+    job, changed = await job_store.request_cancel(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="研究任务不存在")
+    if not changed:
+        if job.status == "cancelled":
+            return job
+        raise HTTPException(status_code=409, detail="任务已经结束，无法取消")
+
+    cancelled_event = ResearchEvent(
+        job_id=job_id,
+        type="cancelled",
+        message="研究任务已取消",
+        payload={"reason": "user_requested"},
+    )
+    await job_store.add_event(cancelled_event)
+    await publish_live_event(job_id, cancelled_event)
+
+    task = await get_running_task(job_id)
+    current_task = asyncio.current_task()
+    if task and task is not current_task and not task.done():
+        task.cancel()
+
+    updated_job = await job_store.get_job(job_id)
+    return updated_job or job
+
+
 @router.get("/research-jobs/{job_id}/events", response_model=list[ResearchEvent])
 async def get_research_events(job_id: str) -> list[ResearchEvent]:
     job = await job_store.get_job(job_id)
@@ -188,7 +249,11 @@ async def get_research_events(job_id: str) -> list[ResearchEvent]:
 
 
 @router.get("/research-jobs/{job_id}/stream")
-async def stream_research_events(job_id: str) -> StreamingResponse:
+async def stream_research_events(
+    job_id: str,
+    after: str | None = None,
+    last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+) -> StreamingResponse:
     job = await job_store.get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
@@ -197,11 +262,28 @@ async def stream_research_events(job_id: str) -> StreamingResponse:
         queue = await register_live_event_queue(job_id)
         sent_event_ids: set[str] = set()
         try:
-            events = await job_store.list_events(job_id)
+            current_job = await job_store.get_job(job_id)
+            if current_job:
+                snapshot_event = ResearchEvent(
+                    job_id=job_id,
+                    type="job_snapshot",
+                    message="已恢复任务状态",
+                    payload={
+                        "status": current_job.status,
+                        "draft_report": current_job.draft_report,
+                        "final_report": current_job.final_report,
+                        "error": current_job.error,
+                    },
+                )
+                yield format_sse(snapshot_event, include_id=False)
+
+            events = events_after(
+                await job_store.list_events(job_id),
+                last_event_id or after,
+            )
             for event in events:
                 sent_event_ids.add(event.id)
-                payload = event.model_dump(mode="json")
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+                yield format_sse(event)
 
             while True:
                 current_job = await job_store.get_job(job_id)
@@ -214,9 +296,11 @@ async def stream_research_events(job_id: str) -> StreamingResponse:
                 if event.id in sent_event_ids:
                     continue
                 sent_event_ids.add(event.id)
-                payload = event.model_dump(mode="json")
-                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
-                if event.type in {"completed", "failed"}:
+                yield format_sse(
+                    event,
+                    include_id=event.type not in {"llm_delta", "report_delta"},
+                )
+                if event.type in {"completed", "failed", "cancelled"}:
                     break
         finally:
             await unregister_live_event_queue(job_id, queue)
@@ -225,12 +309,40 @@ async def stream_research_events(job_id: str) -> StreamingResponse:
 
 
 async def run_research_job(job_id: str, request: ResearchRequest) -> None:
-    await job_store.update_status(job_id, "running")
+    task = asyncio.current_task()
+    if task:
+        await register_running_task(job_id, task)
     try:
+        if not await job_store.start_job(job_id):
+            return
         async for event in runtime.run(job_id, request):
-            if event.type not in {"llm_delta", "report_delta"}:
+            current_job = await job_store.get_job(job_id)
+            if not current_job or current_job.status == "cancelled":
+                return
+            if event.type == "report_delta":
+                delta = event.payload.get("delta")
+                if isinstance(delta, str):
+                    await job_store.append_report_delta(job_id, delta)
+                    draft_job = await job_store.get_job(job_id)
+                    if draft_job:
+                        event.payload["draft_report"] = draft_job.draft_report
+            elif event.type != "llm_delta":
                 await job_store.add_event(event)
             await publish_live_event(job_id, event)
+    except asyncio.CancelledError:
+        current_job = await job_store.get_job(job_id)
+        if current_job and current_job.status not in {"completed", "failed", "cancelled"}:
+            _, changed = await job_store.request_cancel(job_id)
+            if changed:
+                cancelled_event = ResearchEvent(
+                    job_id=job_id,
+                    type="cancelled",
+                    message="研究任务已取消",
+                    payload={"reason": "task_cancelled"},
+                )
+                await job_store.add_event(cancelled_event)
+                await publish_live_event(job_id, cancelled_event)
+        return
     except Exception as exc:
         failed_event = ResearchEvent(
             job_id=job_id,
@@ -240,3 +352,6 @@ async def run_research_job(job_id: str, request: ResearchRequest) -> None:
         )
         await job_store.add_event(failed_event)
         await publish_live_event(job_id, failed_event)
+    finally:
+        if task:
+            await unregister_running_task(job_id, task)

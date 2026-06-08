@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from app.api import routes
@@ -135,3 +137,147 @@ def test_run_research_job_does_not_persist_stream_deltas(monkeypatch) -> None:
     event_types = [event.type for event in events]
 
     assert event_types == ["completed"]
+
+
+def test_job_store_tracks_report_draft_without_persisting_delta_events() -> None:
+    async def run_store():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="测试刷新恢复报告草稿", mode="quick", provider="mock")
+        job = await store.create_job(request, provider="mock")
+        await store.append_report_delta(job.id, "第一段")
+        await store.append_report_delta(job.id, "第二段")
+        before_reset = await store.get_job(job.id)
+        events_before_reset = await store.list_events(job.id)
+        await store.add_event(
+            ResearchEvent(
+                job_id=job.id,
+                type="report_reset",
+                message="报告草稿重置",
+            )
+        )
+        after_reset = await store.get_job(job.id)
+        return before_reset, events_before_reset, after_reset
+
+    before_reset, events_before_reset, after_reset = asyncio.run(run_store())
+
+    assert before_reset is not None
+    assert before_reset.draft_report == "第一段第二段"
+    assert events_before_reset == []
+    assert after_reset is not None
+    assert after_reset.draft_report == ""
+
+
+def test_cancel_endpoint_marks_running_job_and_records_event(monkeypatch) -> None:
+    async def prepare_store():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="测试取消接口", mode="quick", provider="mock")
+        job = await store.create_job(request, provider="mock")
+        assert await store.start_job(job.id) is True
+        return store, job
+
+    store, job = asyncio.run(prepare_store())
+    monkeypatch.setattr(routes, "job_store", store)
+
+    response = client.post(f"/api/research-jobs/{job.id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelled"
+    events = asyncio.run(store.list_events(job.id))
+    assert [event.type for event in events] == ["cancelled"]
+
+    second_response = client.post(f"/api/research-jobs/{job.id}/cancel")
+    assert second_response.status_code == 200
+    assert len(asyncio.run(store.list_events(job.id))) == 1
+
+
+def test_cancel_endpoint_rejects_completed_job(monkeypatch) -> None:
+    async def prepare_store():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="测试已完成任务不能取消", mode="quick", provider="mock")
+        job = await store.create_job(request, provider="mock")
+        await store.add_event(
+            ResearchEvent(
+                job_id=job.id,
+                type="completed",
+                message="研究报告已生成",
+                payload={"final_report": "完成", "sources": []},
+            )
+        )
+        return store, job
+
+    store, job = asyncio.run(prepare_store())
+    monkeypatch.setattr(routes, "job_store", store)
+
+    response = client.post(f"/api/research-jobs/{job.id}/cancel")
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "任务已经结束，无法取消"
+
+
+def test_cancel_endpoint_interrupts_running_background_coroutine(monkeypatch) -> None:
+    class BlockingRuntime:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.blocker = asyncio.Event()
+
+        async def run(self, job_id: str, request: ResearchRequest):
+            self.started.set()
+            yield ResearchEvent(job_id=job_id, type="status", message="已开始")
+            await self.blocker.wait()
+            yield ResearchEvent(
+                job_id=job_id,
+                type="completed",
+                message="不应该完成",
+                payload={"final_report": "不应该出现", "sources": []},
+            )
+
+    async def run_scenario():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="测试取消后台任务", mode="quick", provider="mock")
+        job = await store.create_job(request, provider="mock")
+        runtime = BlockingRuntime()
+        monkeypatch.setattr(routes, "job_store", store)
+        monkeypatch.setattr(routes, "runtime", runtime)
+        routes.running_tasks.clear()
+
+        task = asyncio.create_task(routes.run_research_job(job.id, request))
+        await asyncio.wait_for(runtime.started.wait(), timeout=1)
+        cancelled_job = await routes.cancel_research_job(job.id)
+        await asyncio.wait_for(task, timeout=1)
+        return cancelled_job, await store.get_job(job.id), await store.list_events(job.id)
+
+    cancelled_job, stored_job, events = asyncio.run(run_scenario())
+
+    assert cancelled_job.status == "cancelled"
+    assert stored_job is not None
+    assert stored_job.status == "cancelled"
+    assert [event.type for event in events] == ["status", "cancelled"]
+    assert all(event.type != "completed" for event in events)
+
+
+def test_sse_resume_replays_only_events_after_cursor_and_includes_snapshot(monkeypatch) -> None:
+    async def prepare_store():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="测试 SSE 续接", mode="quick", provider="mock")
+        job = await store.create_job(request, provider="mock")
+        first = ResearchEvent(job_id=job.id, type="status", message="第一步")
+        second = ResearchEvent(
+            job_id=job.id,
+            type="completed",
+            message="研究报告已生成",
+            payload={"final_report": "恢复后的完整报告", "sources": []},
+        )
+        await store.add_event(first)
+        await store.add_event(second)
+        return store, job, first, second
+
+    store, job, first, second = asyncio.run(prepare_store())
+    monkeypatch.setattr(routes, "job_store", store)
+
+    response = client.get(f"/api/research-jobs/{job.id}/stream?after={first.id}")
+
+    assert response.status_code == 200
+    assert '"type": "job_snapshot"' in response.text
+    assert '"final_report": "恢复后的完整报告"' in response.text
+    assert f"id: {first.id}" not in response.text
+    assert f"id: {second.id}" in response.text

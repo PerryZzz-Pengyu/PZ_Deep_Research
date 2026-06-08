@@ -10,7 +10,7 @@
 
 ## 当前总体架构
 
-当前项目采用“前端工作台 + 后端 Agent 服务 + 多模型 Provider + 工具层”的结构。
+当前项目采用“前端工作台 + 后端研究任务服务 + Runtime 驱动的研究漏斗 + 多模型 Provider + 工具层”的结构。
 
 ```text
 用户浏览器
@@ -20,16 +20,15 @@ Next.js 前端工作台
 FastAPI 后端 API
   ↓
 Agent Runtime
-  ↓
-LLM Provider 层
-  ├─ mock
-  ├─ OpenAI / ChatGPT API
-  ├─ Anthropic / Claude API
-  └─ Gemini API
-  ↓
-工具层
-  ├─ search
-  └─ visit
+  ├─ LLM Provider：生成搜索词、证据缺口和最终报告
+  │   ├─ mock
+  │   ├─ OpenAI / ChatGPT API
+  │   ├─ Anthropic / Claude API
+  │   └─ Gemini API
+  ├─ search：获取候选来源
+  ├─ visit：Runtime 并发访问候选来源
+  ├─ evidence：把访问正文压缩为证据卡片
+  └─ selection：质量优先选源并连续编号
 ```
 
 这样设计的原因是：C 端产品需要稳定的网页体验、可观察的任务进度、可替换的模型能力，以及后续可以扩展搜索、网页访问、文件解析、支付、登录等功能。
@@ -93,8 +92,9 @@ npm 11.16.0
 
 - 已实现 `/health` 健康检查。
 - 已实现 `/api/readiness` 配置体检，返回 Provider、默认模型、缺失环境变量和工具配置状态。
-- 已实现 research job 创建、查询、事件查询和 SSE 流接口。
+- 已实现 research job 创建、查询、取消、事件查询和 SSE 流接口。
 - 创建真实 Provider 任务前会检查必要环境变量，避免任务创建后才失败。
+- 运行任务会登记当前 `asyncio.Task`。取消接口先原子更新状态并记录 `cancelled` 事件，再取消后台协程，防止任务取消后仍写入 `completed`。
 - 当前任务存储为内存存储，适合开发阶段，不适合生产。
 
 后续可替换点：
@@ -133,6 +133,9 @@ npm 11.16.0
 - 已实现工具返回正文展示，`tool_result` 可展开查看 search / visit 原始内容。
 - 已实现引用 hover 卡片，展示来源标题、域名、URL 和证据强度。
 - 来源卡片已展示证据强度标签，例如全文证据、部分正文、题录摘要、访问受限。
+- 已实现运行中停止按钮和任务状态标签。
+- 已使用 `localStorage` 保存当前任务 ID；刷新后重新获取任务与持久事件，并恢复问题、模式、Provider、时间线、来源、报告草稿或最终报告。
+- 当前仍没有任务历史列表、报告详情页、重新运行、追问和导出交互。
 
 后续可替换点：
 
@@ -157,23 +160,17 @@ npm 11.16.0
 
 当前状态：
 
-- 已实现基础循环：
-  - 系统提示词
-  - 用户问题
-  - 模型生成
-  - 解析 `<tool_call>`
-  - 调用工具
-  - 注入 `<tool_response>`
-  - 解析 `<answer>`
-- 已按研究模式限制最大轮数，并使用英文生产 Prompt 搭配三个模式策略块：
-  - quick：8 轮，给 search、visit、answer 和必要格式修复留出空间。
-  - deep：18 轮，允许 10 个来源访问在模型分批调用时仍能完成。
-  - expert：32 轮，支持两段搜索、两段访问和最终长报告。
-- 三个模式共享固定流水线，但研究强度不同：
+- 当前不是由模型每轮自行决定 `search` / `visit` 的开放式 ReAct Agent，而是有明确边界的 Runtime 编排流程。
+- 模型只负责三个受限任务：
+  - 生成符合模式数量限制的英文搜索词。
+  - expert 第一阶段完成后，根据证据卡片生成补充搜索词。
+  - 根据最终选中的证据卡片生成带引用的研究报告。
+- `visit` 不再由模型调用。Runtime 按搜索结果原生相关性顺序并发访问有限候选，达到目标后早停，候选耗尽后必须退出。
+- 三个模式共享同一条确定性流水线，但研究强度不同：
   - quick：1 个高命中英文搜索词，最终选择 3 个来源，正文 400-500 字。
   - deep：3 个高命中英文搜索词，最终选择 10 个来源，正文 1300-1500 字。
   - expert：每次搜索 5 个高命中英文搜索词，先搜索/访问，再基于第一阶段证据卡片审查缺口后二次搜索/访问；最终选择 20 个来源，正文 3000-3500 字。
-- Runtime 对真实 Provider 的证据门槛不再只判断是否调用过工具，而是按搜索次数和已访问来源 URL 数量判断是否可以进入最终报告。
+- `MODE_POLICIES` 中仍保留 `max_rounds` 兼容字段，但当前访问漏斗不依赖模型轮数驱动，该字段不再是 visit 调度或防死循环机制，后续应清理或重命名。
 - 已实现模型调用超时控制，默认 `LLM_TIMEOUT_SECONDS=60`。
 - 已实现模型调用失败重试，默认 `LLM_MAX_RETRIES=1`。
 - 已实现 `llm_result` 事件，用于记录模型名、输入 token、输出 token、单轮估算成本和累计用量。
@@ -181,7 +178,7 @@ npm 11.16.0
 - 已实现报告级真流式输出：证据门槛满足后，如果模型开始输出 `<answer>`，Runtime 会在模型仍在生成时同步发送 `report_delta`。
 - 如果流式报告草稿后续没有通过引用或参考文献格式校验，Runtime 会发送 `report_reset`，前端清空草稿并等待重写。
 - 模型调用最终失败时 Runtime 会产出 `failed` 事件，让任务状态可以被存储层正确更新。
-- 研究流程为「Runtime 驱动的访问漏斗」：模型只负责输出 `search` 查询和最终报告，**访问由 Runtime 驱动，模型不再输出 `visit` 调用**。
+- 主流程固定为「生成搜索词 → search → Runtime visit → 证据卡片 → 选源 → 最终报告」；expert 在两轮检索之间额外执行一次证据缺口分析。
 - 访问漏斗（`_visit_funnel`）：search 候选按搜索原生相关性序，用并发 `visit` 滚动访问；full_text 数达到阶段目标（quick 3 / deep 10；expert 第一阶段 10、最终 20）即早停，否则访问完该次搜索返回的有限候选。候选耗尽即退出，不重复搜索或重访，因此不会因全文不足卡死。
 - 证据卡片裁剪：每条已访问来源由便宜模型（`EVIDENCE_EXTRACTION_MODEL`，默认 `gpt-5-nano`）抽成紧凑证据卡片，原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告，单轮请求 token 不随轮数膨胀。抽取调用带超时和重试，单条抽取失败时退回截断原文卡片，不使整项研究失败。
 - 选源（`selection.select_sources`）：「质量优先 → 数量补足 → 逃生降级」。按 `full_text > partial_text > metadata > failed` 排序后取前 N；总数不足则有多少用多少。最终来源重新连续编号 1..N。quick / deep / expert 的全文质量最低线分别为 1 / 3 / 5，低于最低线时通过 `full_text_shortfall` 要求报告说明证据局限，但不阻止任务完成。
@@ -196,17 +193,17 @@ npm 11.16.0
 
 后续可替换点：
 
-- XML 工具协议可以升级为各模型原生 tool calling。
-- Agent 轮数、搜索数量、访问数量当前写在 `MODE_POLICIES`，后续可以改为配置化或管理员后台可调。
-- 增加任务取消、暂停、恢复。
+- 搜索词的 XML 输出协议可以升级为结构化输出或各模型原生 tool calling。
+- 搜索数量、访问目标、选源数量和报告字数当前写在 `MODE_POLICIES`，后续可以改为配置化或管理员后台可调。
+- 在现有取消和刷新恢复基础上增加暂停、继续及跨进程恢复。
 - 增加 token 预算和成本预算控制，目前只有用量记录和成本字段透传。
-- 增加引用生成、来源去重和证据评分。
+- 加强语义来源去重、论文元数据、事实级引用验证和来源可信度评分。
 
-## 工具调用协议
+## 模型结构化输出协议
 
-### 当前使用 XML 风格协议
+### 当前使用 XML 风格搜索词协议
 
-当前工具调用格式：
+模型生成搜索词时使用：
 
 ```text
 <tool_call>
@@ -239,19 +236,21 @@ backend/app/agent/prompt_templates/system_prompt.zh-CN.md   # 中文对照提示
 
 - OpenAI、Claude、Gemini 都能理解文本格式协议。
 - 第一版适配成本低，不需要分别处理三家模型不同的 tool calling 协议。
-- 更接近 Qwen Deep Research 原始 ReAct 风格，迁移思路更直接。
+- 保留了早期原型已经验证过的标签解析方式，跨 Provider 的实现成本较低。
+
+Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用 `visit`。模型不能输出 `visit` 调用，也不能绕过选源流程直接把搜索摘要作为最终证据。
 
 当前风险：
 
 - 文本协议依赖模型遵守格式，真实模型可能输出不标准 JSON。
-- 当前已有基础容错和流程纠偏，但仍不如各家模型原生 tool calling 稳定。
-- 当前执行策略只接受每轮第一个工具调用；如果后续要支持批量工具调用，需要增加更严格的依赖判断和人工可观察性。
+- 当前已有未闭合标签恢复和 JSON 容错，但仍不如结构化输出或各家模型原生 tool calling 稳定。
+- 每个搜索生成阶段只接受第一个合法 `search` 调用，并由 Runtime 按模式裁剪搜索词数量。
 - 原生 tool calling 的稳定性通常更好，后续应逐步升级。
 
 后续方向：
 
-- 当前 MVP 阶段继续使用 XML 协议跑通多模型闭环。
-- 后续模型深度适配阶段再为 OpenAI、Claude、Gemini 分别实现原生工具调用。
+- 当前 MVP 阶段继续使用 XML 协议生成受限搜索词。
+- 后续模型深度适配阶段优先改为统一结构化输出；是否采用各 Provider 原生工具调用，需要以跨模型维护成本和稳定性测试决定。
 - 保留 XML 协议作为 fallback。
 
 ## 模型 Provider 方案
@@ -286,7 +285,7 @@ backend/app/agent/prompt_templates/system_prompt.zh-CN.md   # 中文对照提示
 
 当前状态：
 
-- 已能模拟 search、visit 和最终报告。
+- 已能模拟搜索词生成、证据流程所需响应和最终报告。
 
 ### OpenAI Provider
 
@@ -320,6 +319,7 @@ backend/app/agent/prompt_templates/system_prompt.zh-CN.md   # 中文对照提示
 - 已通过 ProviderFactory 测试覆盖默认模型和专属模型选择。
 - 当前默认模型为 `claude-sonnet-4-6`。
 - 尚未做真实 API Key 联调。
+- 尚未接入 Anthropic SDK 原生 streaming，当前通过兼容封装在完整响应后发送结果。
 
 后续注意：
 
@@ -336,6 +336,8 @@ backend/app/agent/prompt_templates/system_prompt.zh-CN.md   # 中文对照提示
 - 已通过 ProviderFactory 测试覆盖默认模型和专属模型选择。
 - 当前默认模型为 `gemini-2.5-flash`。
 - 尚未做真实 API Key 联调。
+- 尚未接入 Gemini SDK 原生 streaming。
+- 尚未补齐与 OpenAI、Anthropic 一致的 token 用量采集。
 
 后续注意：
 
@@ -421,6 +423,7 @@ backend/app/agent/prompt_templates/system_prompt.zh-CN.md   # 中文对照提示
 
 - 服务重启后任务丢失。
 - 无法支持多进程或多 worker。
+- 没有任务列表、用户归属、过期清理和跨进程取消信号。
 - 不适合生产环境。
 
 后续方案：
@@ -449,8 +452,12 @@ backend/app/agent/prompt_templates/system_prompt.zh-CN.md   # 中文对照提示
 - 前端已实现 EventSource 连接和事件展示。
 - 前端已支持 `llm_delta` 模型实时输出、`report_delta` 报告分段渲染、`tool_result` 来源卡片渲染、Markdown 报告渲染和引用 hover。
 - `llm_delta` 和 `report_delta` 使用实时队列推送给当前连接的 SSE 客户端，不写入历史事件存储，避免 token 级日志撑爆任务记录。
-- 历史事件仍保留 `llm_result`、流程纠偏、工具调用、工具结果和完成/失败状态；刷新后通过 `completed.final_report` 恢复最终报告。
-- `report_delta` 当前只承担在线连接期的打字机式报告流，不再承担历史分段回放。
+- 历史事件保留 `llm_result`、工具调用、工具结果、报告重置和完成/失败/取消状态。
+- 后端在 `ResearchJob.draft_report` 中累计当前报告草稿，但不把每个 token 作为历史事件保存；每个实时 `report_delta` 同时携带累计草稿，前端以累计值校正内容，避免重连竞态导致重复字符。
+- SSE 输出持久事件 ID，支持 `after` 查询参数和 `Last-Event-ID` 游标；连接建立时先发送 `job_snapshot`，再重放游标后的持久事件。
+- 浏览器通过 `localStorage` 记住当前任务，刷新后先读取任务和事件，再从最后一个持久事件继续订阅 SSE。
+- 用户取消任务时，取消事件会进入持久事件和实时队列，SSE 随后正常结束。
+- 当前恢复能力只在同一后端进程内有效；服务重启后内存任务、草稿和取消状态都会丢失，仍需要 Postgres 和 Worker 才能达到生产级恢复。
 
 后续可替换点：
 
@@ -510,22 +517,25 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 后端 Python 语法检查通过。
 - 后端 app 导入通过。
-- 后端 pytest 自动化测试通过，当前为 64 个用例。
+- 后端 pytest 自动化测试通过，当前为 72 个用例。
 - 前端 lint 通过。
 - 前端 build 通过。
+- Playwright Chromium 端到端测试通过，覆盖任务取消、刷新续跑和完成后报告恢复。
 - FastAPI 本地服务启动成功。
 - Next.js 本地服务启动成功。
 - mock 研究任务流跑通。
 
 测试说明统一记录在 `project-docs/testing-guide.md`。
 
-后续工程实施采用测试优先原则：新增功能前先明确测试用例或手动验收标准，再进入实现。后端优先使用 pytest，前端交互复杂后再引入 Playwright。
+后续工程实施采用测试优先原则：新增功能前先明确测试用例或手动验收标准，再进入实现。后端优先使用 pytest，前端核心交互使用 Playwright。
 
 当前未完成：
 
-- 真实 OpenAI 完整研究任务质量联调。
+- OpenAI 已完成人工真实任务联调，但尚未形成可重复执行的质量回归套件。
 - 真实 Claude、Gemini API 联调。
-- 浏览器自动化视觉截图验证。
+- Claude、Gemini 原生 streaming、Gemini token 用量和真实模型成本计算。
+- 关键桌面/移动视口视觉回归验证。
+- 历史记录、跨进程持久化、重新运行和 Markdown 导出。
 - 生产数据库和任务队列验证。
 - 文件上传和文件解析验证。
 
@@ -535,16 +545,19 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 - 内存任务存储不能用于生产。
 - FastAPI background task 不适合长时间高并发任务。
 - 搜索和网页读取依赖第三方服务，可能受 QPS、费用和可用性影响。
-- 前端当前是 MVP UI，还没有登录、历史记录和错误恢复能力。
+- 前端已经支持取消和同进程刷新恢复，但还没有历史记录、跨进程持久化、导出和登录能力。
+- 当前引用校验能验证格式、编号和来源存在性，但不能证明每个事实都被对应来源支持。
+- APA 参考文献依赖搜索元数据和模型输出，缺少作者、年份、期刊等字段时只能降级展示。
+- 当前只有 SerpAPI + Jina 主链路，缺少搜索和正文读取的生产级备用服务。
 - npm 当前报告 2 个 moderate 级别漏洞，暂未执行强制修复。
 
 ## 后续技术优先级
 
-1. 真实 Provider 联调：继续验证 OpenAI 完整研究质量，再接 Claude 和 Gemini。
-2. 为 Claude 和 Gemini 接入原生 streaming。
-3. 增加真实 tool calling 或增强 XML 解析容错。
-4. 将任务存储迁移到 Postgres。
-5. 将后台任务迁移到 worker 队列。
-6. 增加来源去重、引用格式和报告结构化输出。
-7. 增加前端任务历史和报告详情页。
-8. 增加部署方案和环境配置说明。
+1. 引入持久化存储，增加任务列表、任务详情和重新运行 API。
+2. 完成前端历史、详情、重跑、导出和完整错误恢复交互。
+3. 建立 OpenAI、Claude、Gemini 真实 Provider 回归矩阵，并补齐 Claude/Gemini 原生 streaming、Gemini 用量和成本计算。
+4. 增加关键视口视觉回归、真实断线恢复和跨进程恢复测试。
+5. 增加搜索与网页访问备用链路、结构化学术元数据、语义去重和事实级引用校验。
+6. 阶段 4 验收后，将持久化迁移到 Postgres，并把后台任务迁移到独立 Worker 队列。
+7. 增加用户认证、数据隔离、限流、额度、成本预算、内容安全和可观测性。
+8. 增加 CI/CD、生产密钥管理、备份、部署和回滚说明。

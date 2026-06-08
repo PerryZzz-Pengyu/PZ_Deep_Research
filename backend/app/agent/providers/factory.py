@@ -17,7 +17,7 @@ class ProviderFactory:
     def create(self, provider_name: Optional[str]) -> LLMProvider:
         provider = (provider_name or self.settings.default_provider).lower()
         if provider == "mock":
-            return MockProvider()
+            return MockProvider(delay_seconds=self.settings.mock_provider_delay_seconds)
         if provider == "openai":
             return OpenAIProvider(
                 api_key=self.settings.openai_api_key,

@@ -36,6 +36,7 @@ class Settings:
     app_name: str = "PZ Deep Research API"
     default_provider: str = "mock"
     default_model: str = ""
+    mock_provider_delay_seconds: float = 0.0
     llm_max_retries: int = 1
     llm_timeout_seconds: float = 60.0
     openai_api_key: str = ""
@@ -104,6 +105,7 @@ def get_settings() -> Settings:
     return Settings(
         default_provider=_get_env("DEFAULT_PROVIDER", "mock"),
         default_model=_get_env("DEFAULT_MODEL", ""),
+        mock_provider_delay_seconds=_get_float_env("MOCK_PROVIDER_DELAY_SECONDS", 0.0),
         llm_max_retries=_get_int_env("LLM_MAX_RETRIES", 1),
         llm_timeout_seconds=_get_float_env("LLM_TIMEOUT_SECONDS", 60.0),
         openai_api_key=_get_env("OPENAI_API_KEY", ""),

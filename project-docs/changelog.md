@@ -14,6 +14,149 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+## 2026-06-08 19:57 CST +0800
+
+### 新增
+
+- 在前端项目中加入 `@playwright/test 1.60.0`。
+- 新增 `frontend/playwright.config.ts`，端到端测试固定使用 `127.0.0.1:8000` 和 `127.0.0.1:3000`，自动启动 Mock 后端和 Next.js 前端。
+- 新增 `frontend/e2e/research-flow.spec.ts`，覆盖：
+  - 运行中取消任务，并确认取消后不会进入完成状态。
+  - 运行中刷新页面，恢复任务 ID、研究问题、进度和 SSE 连接。
+  - 任务完成后再次刷新，恢复最终报告。
+- Mock Provider 新增 `MOCK_PROVIDER_DELAY_SECONDS` 测试配置，默认值为 0；E2E 使用可控延迟避免任务瞬间完成导致取消/刷新测试偶发失败。
+- Playwright Chromium `148.0.7778.96` 安装到用户缓存 `~/Library/Caches/ms-playwright`，不写入项目仓库或系统 `/Applications`。
+
+### 修改
+
+- 前端新增 `npm run test:e2e` 和 `npm run test:e2e:headed`。
+- `.gitignore` 新增 Playwright 报告和测试结果目录。
+- 更新项目计划、技术架构和测试指南，标记核心 Playwright 流程已完成，并保留持久化、历史、重跑、导出、真实多模型验收和视觉回归等阶段 4 待办。
+
+### 验证
+
+- 后端全量 pytest：72 个通过，1 个 Starlette/TestClient deprecation warning。
+- 前端 ESLint 通过。
+- 前端 Next.js 生产构建通过。
+- Playwright 使用系统 Chrome 回退验证：2 个 E2E 通过。
+- Playwright 使用用户目录 Chromium 最终验证：2 个 E2E 通过。
+- Playwright 能识别用户缓存中的 `chromium-1223` 和 `chromium_headless_shell-1223`。
+
+### 影响文件
+
+- `.gitignore`
+- `backend/app/config.py`
+- `backend/app/agent/providers/factory.py`
+- `backend/app/agent/providers/mock_provider.py`
+- `backend/tests/test_config.py`
+- `backend/tests/test_provider_factory.py`
+- `frontend/package.json`
+- `frontend/package-lock.json`
+- `frontend/playwright.config.ts`
+- `frontend/e2e/research-flow.spec.ts`
+- `project-docs/project-plan.md`
+- `project-docs/technical-architecture.md`
+- `project-docs/testing-guide.md`
+- `project-docs/changelog.md`
+
+## 2026-06-08 19:41 CST +0800
+
+### 新增
+
+- 新增 `POST /api/research-jobs/{job_id}/cancel`：
+  - 排队或运行中的任务可取消。
+  - 重复取消保持幂等。
+  - 已完成或失败任务返回 409。
+- 新增运行任务注册表，取消请求会中断对应的后台 `asyncio.Task`，避免取消后继续写入完成状态。
+- `ResearchJob` 新增 `draft_report`，用于在不保存 token 级事件的情况下保留当前报告草稿。
+- SSE 新增：
+  - `job_snapshot` 初始快照。
+  - `after` 和 `Last-Event-ID` 持久事件游标。
+  - 持久事件 `id:` 字段。
+  - 报告 delta 的累计草稿校正。
+- 前端新增：
+  - 运行中“停止”按钮。
+  - 当前任务状态标签。
+  - 使用 `localStorage` 记住当前任务 ID。
+  - 刷新后恢复问题、模式、Provider、时间线、来源、报告草稿和最终报告。
+  - SSE 临时断线自动重连和事件 ID 去重。
+
+### 测试
+
+- 先新增失败测试，再完成实现。
+- 后端测试从 65 个增加到 70 个，新增覆盖：
+  - 报告草稿累计与重置。
+  - 取消接口、幂等取消和已完成任务冲突。
+  - 后台协程真实中断。
+  - SSE 快照和事件游标续接。
+- 后端全量 pytest：70 个通过。
+- 前端 ESLint 通过。
+- 前端 Next.js 生产构建通过。
+- Python `compileall` 通过。
+- `git diff --check` 通过。
+- 本地标准端口验证：
+  - FastAPI：`http://127.0.0.1:8000`
+  - Next.js：`http://127.0.0.1:3000`
+  - 已完成任务从最后持久事件续接时，只返回 `job_snapshot`，没有重复重放历史事件。
+
+### 当前边界
+
+- 刷新恢复目前依赖后端进程内存；后端重启后任务仍会丢失。
+- 当前环境没有可用的内置浏览器、`agent-browser` 或 Playwright，因此取消与刷新恢复的浏览器自动化视觉验证尚未执行。
+- 下一步建议在 `frontend` 项目内安装 Playwright，并把取消、刷新恢复和 SSE 重连写成可重复 E2E 测试。
+
+### 影响文件
+
+- `backend/app/agent/schemas.py`
+- `backend/app/api/routes.py`
+- `backend/app/storage/memory.py`
+- `backend/tests/test_api.py`
+- `frontend/src/app/globals.css`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/src/lib/api.ts`
+- `frontend/src/lib/types.ts`
+- `project-docs/project-plan.md`
+- `project-docs/product-doc.md`
+- `project-docs/technical-architecture.md`
+- `project-docs/testing-guide.md`
+- `project-docs/changelog.md`
+
+## 2026-06-08 19:24 CST +0800
+
+### 修改
+
+- 对照当前代码、测试和产品定义重新审计项目实施进度。
+- 更新 `project-plan.md`：
+  - 将阶段 2 调整为“Provider 抽象和 Runtime 工程闭环完成，真实多模型产品联调未全部完成”。
+  - 将阶段 3 调整为“MVP 工具层完成，生产级检索质量和备用链路未完成”。
+  - 将阶段 4 明确为“部分完成”，补充任务取消、历史、持久化、断线恢复、重跑、导出和 Playwright 等退出条件。
+  - 将阶段 5 明确为“尚未开始正式实施”，补充认证、数据库、Worker、配额、安全、可观测性和部署范围。
+  - 增加实施进度总览和下一里程碑，避免协作者把核心研究链路完成误判为完整 C 端 MVP 完成。
+  - 更新推荐目录结构，使其与当前 `evidence.py`、`selection.py`、`prompt_templates/`、`memory.py` 和前端 `src/` 结构一致。
+- 更新 `technical-architecture.md`：
+  - 删除旧的“模型每轮自行选择 search/visit”的 ReAct 流程描述。
+  - 明确当前为 Runtime 驱动的有界访问漏斗，模型只生成搜索词、专家模式证据缺口和最终报告，`visit` 由 Runtime 调度。
+  - 说明 `max_rounds` 仅为遗留兼容字段，不再承担访问调度和防死循环职责。
+  - 补充 Claude/Gemini 非原生流式、Gemini 用量、成本计算、内存存储、取消、断线恢复、引用验证和备用检索链路等真实边界。
+  - 将当前后端测试数量从 64 更新为 65。
+  - 重排后续技术优先级，以阶段 4 产品闭环和测试验收为先。
+
+### 修改原因
+
+- 项目已经从早期 ReAct 原型切换为 Runtime 驱动的访问漏斗，但部分文档仍保留旧流程和偏乐观的阶段状态，可能误导后续协作者。
+- 先统一项目计划和技术架构，确保接下来的代码实现、测试和外部评审基于同一套事实。
+
+### 影响文件
+
+- `project-docs/project-plan.md`
+- `project-docs/technical-architecture.md`
+- `project-docs/changelog.md`
+
+### 验证
+
+- 已逐项对照后端 API、Runtime、Provider、存储、前端交互和现有 65 个测试的实际实现。
+- 已检查阶段状态、Runtime 流程、研究模式数字规格和后续优先级在两份文档中保持一致。
+
 ## 2026-06-08 12:16 CST +0800
 
 ### 修改

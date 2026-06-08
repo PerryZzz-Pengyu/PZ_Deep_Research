@@ -11,14 +11,24 @@ import {
   Search,
   Settings2,
   Sparkles,
+  Square,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
-import { createResearchEventSource, createResearchJob, getModelOptions } from "@/lib/api";
-import type { ModelOption, ProviderName, ResearchEvent, ResearchMode } from "@/lib/types";
+import {
+  cancelResearchJob,
+  createResearchEventSource,
+  createResearchJob,
+  getModelOptions,
+  getResearchEvents,
+  getResearchJob,
+} from "@/lib/api";
+import type { ModelOption, ProviderName, ResearchEvent, ResearchJob, ResearchMode } from "@/lib/types";
+
+const ACTIVE_JOB_STORAGE_KEY = "pz-deep-research-active-job";
 
 const modes: Array<{ value: ResearchMode; label: string; detail: string }> = [
   { value: "quick", label: "快速", detail: "3源短文" },
@@ -63,9 +73,28 @@ type SourceItem = {
 
 function getEventIcon(type: string) {
   if (type === "completed") return <CheckCircle2 size={16} />;
+  if (type === "cancelled") return <Square size={15} />;
   if (type.startsWith("tool")) return <Search size={16} />;
   if (type.startsWith("llm")) return <Bot size={16} />;
   return <Sparkles size={16} />;
+}
+
+function isProviderName(value: string): value is ProviderName {
+  return providers.some((item) => item.value === value);
+}
+
+function mergeEvent(current: ResearchEvent[], nextEvent: ResearchEvent) {
+  if (current.some((event) => event.id === nextEvent.id)) return current;
+  return [...current, nextEvent];
+}
+
+function jobStatusLabel(status: ResearchJob["status"] | "") {
+  if (status === "queued") return "等待开始";
+  if (status === "running") return "研究中";
+  if (status === "completed") return "已完成";
+  if (status === "failed") return "失败";
+  if (status === "cancelled") return "已取消";
+  return "尚未创建";
 }
 
 function parseSources(rawSources: unknown): SourceItem[] {
@@ -332,7 +361,10 @@ export function ResearchWorkspace() {
   const [report, setReport] = useState("");
   const [liveModelText, setLiveModelText] = useState("");
   const [jobId, setJobId] = useState("");
+  const [jobStatus, setJobStatus] = useState<ResearchJob["status"] | "">("");
   const [isRunning, setIsRunning] = useState(false);
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(true);
   const [error, setError] = useState("");
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -364,6 +396,105 @@ export function ResearchWorkspace() {
     ? model
     : currentModelOptions[0]?.id ?? "";
 
+  const connectToJob = useCallback((targetJobId: string, afterEventId?: string) => {
+    eventSourceRef.current?.close();
+    const eventSource = createResearchEventSource(targetJobId, afterEventId);
+    eventSourceRef.current = eventSource;
+
+    eventSource.onopen = () => {
+      setError((current) => (current.startsWith("事件流连接中断") ? "" : current));
+    };
+
+    eventSource.onmessage = (message) => {
+      const nextEvent = JSON.parse(message.data) as ResearchEvent;
+      if (nextEvent.type === "job_snapshot") {
+        const status = nextEvent.payload.status;
+        const finalReport = nextEvent.payload.final_report;
+        const draftReport = nextEvent.payload.draft_report;
+        if (typeof finalReport === "string" && finalReport) {
+          setReport(finalReport);
+        } else if (typeof draftReport === "string") {
+          setReport(draftReport);
+        }
+        if (
+          status === "queued" ||
+          status === "running" ||
+          status === "completed" ||
+          status === "failed" ||
+          status === "cancelled"
+        ) {
+          setJobStatus(status);
+          setIsRunning(status === "queued" || status === "running");
+          if (status === "failed" && typeof nextEvent.payload.error === "string") {
+            setError(nextEvent.payload.error);
+          }
+        }
+        return;
+      }
+      if (nextEvent.type === "llm_delta") {
+        const delta = nextEvent.payload.delta;
+        if (typeof delta === "string") {
+          setLiveModelText((current) => current + delta);
+        }
+        return;
+      }
+      if (nextEvent.type === "report_delta") {
+        const delta = nextEvent.payload.delta;
+        const draftReport = nextEvent.payload.draft_report;
+        if (typeof draftReport === "string") {
+          setReport(draftReport);
+        } else if (typeof delta === "string") {
+          setReport((current) => current + delta);
+        }
+        return;
+      }
+      if (nextEvent.type === "report_reset") {
+        setReport("");
+        setEvents((current) => mergeEvent(current, nextEvent));
+        return;
+      }
+
+      setEvents((current) => mergeEvent(current, nextEvent));
+      if (nextEvent.type === "llm_start") {
+        setLiveModelText("");
+      }
+      if (nextEvent.type === "completed") {
+        const finalReport = nextEvent.payload.final_report;
+        if (typeof finalReport === "string") {
+          setReport(finalReport);
+        }
+        setJobStatus("completed");
+        setIsRunning(false);
+        eventSource.close();
+        if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
+      }
+      if (nextEvent.type === "failed") {
+        setError(nextEvent.message);
+        setJobStatus("failed");
+        setIsRunning(false);
+        eventSource.close();
+        if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
+      }
+      if (nextEvent.type === "cancelled") {
+        setJobStatus("cancelled");
+        setIsRunning(false);
+        setIsCancelling(false);
+        eventSource.close();
+        if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
+      }
+    };
+
+    eventSource.onerror = () => {
+      if (eventSource.readyState !== EventSource.CLOSED) {
+        setError("事件流连接中断，正在自动重连...");
+        return;
+      }
+      setError("事件流连接已关闭，请刷新页面恢复任务");
+      setIsRunning(false);
+      if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
+    };
+  }, []);
+
   useEffect(() => {
     return () => {
       eventSourceRef.current?.close();
@@ -378,7 +509,7 @@ export function ResearchWorkspace() {
         if (ignore) return;
         setModelOptions({ ...fallbackModelOptions, ...payload.providers });
         const defaultProvider = payload.defaults.provider;
-        if (providers.some((item) => item.value === defaultProvider)) {
+        if (!window.localStorage.getItem(ACTIVE_JOB_STORAGE_KEY) && isProviderName(defaultProvider)) {
           setProvider(defaultProvider);
         }
       })
@@ -391,74 +522,95 @@ export function ResearchWorkspace() {
     };
   }, []);
 
+  useEffect(() => {
+    let ignore = false;
+    const storedJobId = window.localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
+    if (!storedJobId) {
+      const timer = window.setTimeout(() => {
+        if (!ignore) setIsRestoring(false);
+      }, 0);
+      return () => {
+        ignore = true;
+        window.clearTimeout(timer);
+      };
+    }
+
+    Promise.all([getResearchJob(storedJobId), getResearchEvents(storedJobId)])
+      .then(([job, restoredEvents]) => {
+        if (ignore) return;
+        setJobId(job.id);
+        setJobStatus(job.status);
+        setQuery(job.query);
+        setMode(job.mode);
+        if (isProviderName(job.provider)) setProvider(job.provider);
+        setModel(job.model || "");
+        setEvents(restoredEvents);
+        setReport(job.final_report || job.draft_report || "");
+        setLiveModelText("");
+        setError(job.error || "");
+
+        const shouldResume = job.status === "queued" || job.status === "running";
+        setIsRunning(shouldResume);
+        if (shouldResume) {
+          connectToJob(job.id, restoredEvents.at(-1)?.id);
+        }
+      })
+      .catch(() => {
+        if (ignore) return;
+        window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+        setJobId("");
+        setJobStatus("");
+      })
+      .finally(() => {
+        if (!ignore) setIsRestoring(false);
+      });
+
+    return () => {
+      ignore = true;
+    };
+  }, [connectToJob]);
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!query.trim() || isRunning) return;
+    if (!query.trim() || isRunning || isRestoring) return;
 
     setError("");
     setEvents([]);
     setReport("");
     setLiveModelText("");
     setIsRunning(true);
+    setJobStatus("queued");
 
     try {
       const job = await createResearchJob({ query, mode, provider, model: selectedModel || undefined });
       setJobId(job.id);
-      eventSourceRef.current?.close();
-      const eventSource = createResearchEventSource(job.id);
-      eventSourceRef.current = eventSource;
-
-      eventSource.onmessage = (message) => {
-        const nextEvent = JSON.parse(message.data) as ResearchEvent;
-        if (nextEvent.type === "llm_delta") {
-          const delta = nextEvent.payload.delta;
-          if (typeof delta === "string") {
-            setLiveModelText((current) => current + delta);
-          }
-          return;
-        }
-        if (nextEvent.type === "report_delta") {
-          const delta = nextEvent.payload.delta;
-          if (typeof delta === "string") {
-            setReport((current) => current + delta);
-          }
-          return;
-        }
-        if (nextEvent.type === "report_reset") {
-          setReport("");
-          setEvents((current) => [...current, nextEvent]);
-          return;
-        }
-        setEvents((current) => [...current, nextEvent]);
-        if (nextEvent.type === "llm_start") {
-          setLiveModelText("");
-        }
-        if (nextEvent.type === "completed") {
-          const finalReport = nextEvent.payload.final_report;
-          if (typeof finalReport === "string") {
-            setReport(finalReport);
-          }
-          setIsRunning(false);
-          eventSource.close();
-          eventSourceRef.current = null;
-        }
-        if (nextEvent.type === "failed") {
-          setError(nextEvent.message);
-          setIsRunning(false);
-          eventSource.close();
-          eventSourceRef.current = null;
-        }
-      };
-
-      eventSource.onerror = () => {
-        setError("事件流连接中断");
-        setIsRunning(false);
-        eventSource.close();
-        eventSourceRef.current = null;
-      };
+      setJobStatus(job.status);
+      window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, job.id);
+      connectToJob(job.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "创建研究任务失败");
       setIsRunning(false);
+      setJobStatus("failed");
+    }
+  }
+
+  async function handleCancel() {
+    if (!jobId || !isRunning || isCancelling) return;
+    setIsCancelling(true);
+    setError("");
+    try {
+      const cancelledJob = await cancelResearchJob(jobId);
+      const restoredEvents = await getResearchEvents(jobId);
+      setEvents(restoredEvents);
+      setReport(cancelledJob.final_report || cancelledJob.draft_report || "");
+      setJobStatus("cancelled");
+      setIsRunning(false);
+      eventSourceRef.current?.close();
+      eventSourceRef.current = null;
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "取消研究任务失败");
+    } finally {
+      setIsCancelling(false);
     }
   }
 
@@ -491,6 +643,7 @@ export function ResearchWorkspace() {
         <div className="sidebar-block">
           <span className="block-label">当前任务</span>
           <strong className="job-id-text">{jobId || "尚未创建"}</strong>
+          <span className={`job-status ${jobStatus || "idle"}`}>{jobStatusLabel(jobStatus)}</span>
         </div>
       </aside>
 
@@ -502,6 +655,7 @@ export function ResearchWorkspace() {
               <select
                 aria-label="模型 Provider"
                 value={provider}
+                disabled={isRunning || isRestoring}
                 onChange={(event) => {
                   setProvider(event.target.value as ProviderName);
                   setModel("");
@@ -516,7 +670,7 @@ export function ResearchWorkspace() {
               <select
                 aria-label="模型"
                 value={selectedModel}
-                disabled={provider === "mock"}
+                disabled={isRunning || isRestoring || provider === "mock"}
                 onChange={(event) => setModel(event.target.value)}
               >
                 {currentModelOptions.map((item) => (
@@ -531,6 +685,7 @@ export function ResearchWorkspace() {
           <textarea
             id="query"
             value={query}
+            disabled={isRunning || isRestoring}
             onChange={(event) => setQuery(event.target.value)}
             rows={5}
           />
@@ -544,6 +699,7 @@ export function ResearchWorkspace() {
                   role="tab"
                   aria-selected={mode === item.value}
                   type="button"
+                  disabled={isRunning || isRestoring}
                   onClick={() => setMode(item.value)}
                 >
                   <span>{item.label}</span>
@@ -552,10 +708,27 @@ export function ResearchWorkspace() {
               ))}
             </div>
 
-            <button className="submit-button" type="submit" disabled={isRunning || !query.trim()}>
-              {isRunning ? <Loader2 className="spin" size={18} /> : <ArrowRight size={18} />}
-              {isRunning ? "研究中" : "开始"}
-            </button>
+            <div className="action-buttons">
+              {isRunning ? (
+                <button
+                  className="cancel-button"
+                  type="button"
+                  disabled={isCancelling}
+                  onClick={handleCancel}
+                >
+                  {isCancelling ? <Loader2 className="spin" size={17} /> : <Square size={15} />}
+                  {isCancelling ? "正在停止" : "停止"}
+                </button>
+              ) : null}
+              <button
+                className="submit-button"
+                type="submit"
+                disabled={isRunning || isRestoring || !query.trim()}
+              >
+                {isRestoring ? <Loader2 className="spin" size={18} /> : <ArrowRight size={18} />}
+                {isRestoring ? "正在恢复" : "开始"}
+              </button>
+            </div>
           </div>
         </form>
 

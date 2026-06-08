@@ -38,6 +38,14 @@ def test_get_settings_expands_localhost_cors_aliases(monkeypatch) -> None:
     )
 
 
+def test_get_settings_reads_mock_provider_delay(monkeypatch) -> None:
+    monkeypatch.setenv("MOCK_PROVIDER_DELAY_SECONDS", "1.25")
+
+    settings = get_settings()
+
+    assert settings.mock_provider_delay_seconds == 1.25
+
+
 def test_get_settings_ignores_chinese_placeholders(monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "在这里填写你的OpenAI_API_Key")
     monkeypatch.setenv("OPENAI_MODEL", "在这里填写你要使用的OpenAI模型")

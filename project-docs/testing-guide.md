@@ -29,6 +29,10 @@
 - Runtime 需要识别错误工具顺序和同轮多个工具调用，并通过 `protocol_warning` 记录纠偏。
 - 真实 Provider 混合输出 `<tool_call>` 和 `<answer>` 时，证据不足阶段必须优先执行工具调用。
 - `llm_delta` 和 `report_delta` 只作为 SSE 实时事件，不写入历史事件存储。
+- `report_delta` 同时更新任务级累计草稿，刷新或 SSE 重连后不能重复拼接报告内容。
+- 排队或运行中的任务可以取消，重复取消保持幂等，已完成/失败任务不能再取消。
+- 取消必须中断后台研究协程，取消后不能再写入 `completed`。
+- SSE 支持持久事件游标和任务快照，刷新后只重放游标之后的事件。
 - Runtime 能从未闭合但内容完整的 `<tool_call>` / `<answer>` 中恢复结构化内容。
 - `visit` 工具能区分 full_text、partial_text、metadata_only / blocked 和 unavailable。
 - 前端能展示工具返回正文、来源证据强度和引用 hover 卡片。
@@ -41,6 +45,7 @@
 - API 输入校验有效。
 - 前端能通过 lint 和 build。
 - 前端能渲染 Markdown 格式研究报告。
+- Playwright 能在真实 Chromium 中验证任务取消、刷新续跑和完成后报告恢复。
 - 本地手动端到端流程可以跑通。
 
 暂时不引入复杂测试体系，避免过早增加维护成本。
@@ -108,13 +113,20 @@ backend/tests/
   - `/api/research-jobs` 可以创建 mock 研究任务。
   - 过短 query 会被 API 校验拒绝。
   - `run_research_job` 不会把 `llm_delta` 和 `report_delta` 写入历史事件存储。
+  - 报告 delta 会累计到任务草稿，`report_reset` 会清空草稿。
+  - 取消接口能取消排队/运行任务、记录单个 `cancelled` 事件，并保持重复请求幂等。
+  - 已完成任务不能取消。
+  - 取消接口会中断运行中的后台协程，任务不会随后变成完成。
+  - SSE 可以从指定事件游标继续，并发送包含报告草稿/最终报告的任务快照。
 - `test_config.py`
   - 空模型环境变量会回退到项目默认模型。
+  - `MOCK_PROVIDER_DELAY_SECONDS` 可以为浏览器测试提供可控延迟，默认值为 0，不影响正常运行。
   - 中文占位符不会被误判为真实 OpenAI API Key 或模型名。
   - 真实 Provider 缺少 API Key 和搜索 Key 时会被识别。
   - 配置齐全的真实 Provider 会通过配置检查。
 - `test_provider_factory.py`
   - 默认 Provider 创建正确。
+  - Mock Provider 能接收测试延迟配置。
   - OpenAI、Claude、Gemini 能读取共享默认模型。
   - Provider 专属模型优先级高于共享默认模型。
   - 未知 Provider 会被拒绝。
@@ -153,21 +165,42 @@ backend/.venv/bin/python -m pip install -r backend/requirements-lock.txt
 frontend/
 ```
 
-当前不单独引入 Jest 或 Playwright。第一阶段先使用 Next.js 的 lint 和 build 检查：
+前端使用 Next.js lint/build 做静态检查，并使用 Playwright 做核心浏览器端到端测试：
 
 ```bash
 cd frontend
 nvm use
 npm run lint
 npm run build
+npm run test:e2e
 ```
 
-这两项可以覆盖：
+这些检查覆盖：
 
 - TypeScript 类型问题。
 - React/Next.js 基础规范问题。
 - 生产构建是否能成功。
 - 页面是否能被 Next.js 正常编译。
+- 运行中任务可以从页面取消。
+- 页面刷新后可以通过任务 ID、事件游标和 SSE 快照恢复运行任务。
+- 任务完成后再次刷新仍能恢复最终报告。
+
+Playwright 配置位于：
+
+```text
+frontend/playwright.config.ts
+frontend/e2e/research-flow.spec.ts
+```
+
+端到端测试会自动在 `127.0.0.1:8000` 和 `127.0.0.1:3000` 启动 Mock 测试服务，不使用其他端口。运行前应先关闭占用这两个端口的开发服务。
+
+浏览器由 Playwright 安装到用户缓存：
+
+```text
+~/Library/Caches/ms-playwright/
+```
+
+浏览器二进制不写入 Git 仓库，也不修改系统 `/Applications`。项目依赖仍由 `frontend/package.json` 和 `frontend/package-lock.json` 固定。
 
 ## 本地手动端到端测试
 
@@ -217,6 +250,11 @@ http://localhost:3000
    - 调用 visit
    - 研究报告已生成
 6. 检查右侧是否出现最终报告和来源。
+7. 运行中点击“停止”，确认状态变为“已取消”，停止按钮消失，之后不会再出现“研究报告已生成”。
+8. 重新开始一个任务，在任务运行中刷新页面，确认任务 ID、问题、模式、时间线和报告草稿恢复，并继续接收后续事件。
+9. 任务完成后再次刷新页面，确认最终报告、来源和完整时间线仍能恢复。
+
+注意：当前刷新恢复依赖后端进程内存。重启后端后任务会丢失，这是持久化阶段尚未完成的已知边界。
 
 如果要测试 OpenAI 模型切换：
 
@@ -271,6 +309,20 @@ completed
 
 真实 OpenAI 流式任务会通过 SSE 推送 `llm_delta` 和 `report_delta`。这两类 token 级事件不会保存在 `/events` 历史接口里，前端在线连接时分别展示在“模型实时输出”和“研究报告”区域。
 
+取消任务：
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/research-jobs/{job_id}/cancel
+```
+
+从某个持久事件之后续接 SSE：
+
+```bash
+curl -N "http://127.0.0.1:8000/api/research-jobs/{job_id}/stream?after={event_id}"
+```
+
+续接响应会先包含 `job_snapshot`，然后只返回游标之后的持久事件。
+
 查询项目候选模型：
 
 ```bash
@@ -295,7 +347,6 @@ curl -s http://127.0.0.1:8000/api/models/openai
 - 真实 `/api/models/openai` 带 Key 配置后的人工验收。
 - SerpAPI Google Scholar 真实学术搜索测试。
 - Jina 真实网页读取测试。
-- SSE 浏览器自动化测试。
 - 视觉回归测试。
 - 文件上传和文件解析测试。
 - 登录、历史记录、额度和支付相关测试。
@@ -303,10 +354,9 @@ curl -s http://127.0.0.1:8000/api/models/openai
 ## 后续测试优先级
 
 1. 为真实 Provider 增加可选集成测试，只有配置 API Key 时才运行。
-2. 引入 Playwright，覆盖前端提交问题、接收进度和显示报告。
-3. 增加任务取消、失败恢复和任务级超时测试。
-4. 接入数据库后增加存储层测试。
-5. 增加 SSE 自动化测试和浏览器视觉回归测试。
+2. 增加真实网络断线、失败恢复、跨进程恢复和任务级超时测试。
+3. 接入数据库后增加存储层测试。
+4. 增加关键桌面/移动视口的浏览器视觉回归测试。
 
 ## 依赖升级测试要求
 
@@ -316,5 +366,5 @@ curl -s http://127.0.0.1:8000/api/models/openai
 
 ```bash
 PYTHONPATH=backend backend/.venv/bin/pytest backend/tests
-cd frontend && nvm use && npm run lint && npm run build
+cd frontend && nvm use && npm run lint && npm run build && npm run test:e2e
 ```
