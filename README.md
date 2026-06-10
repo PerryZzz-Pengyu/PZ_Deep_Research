@@ -18,7 +18,9 @@ A multi-model deep research web application for consumer users. It combines acad
 - Renders Markdown reports with Arabic-number inline citations, citation hover cards, and APA-style references.
 - Exits through a bounded fallback path when sources or full-text evidence are insufficient, avoiding repeated visits and infinite loops.
 - Persists research jobs, events, report drafts, and final reports in SQLite or PostgreSQL.
-- Provides per-visitor research history and report restoration before account authentication is introduced.
+- Provides per-visitor research history, report details, and reruns with the original configuration before account authentication is introduced.
+- Exports the currently displayed report directly as a UTF-8 Markdown file.
+- Generates paginated A4 PDF reports with task metadata and page numbers through backend Chromium.
 
 ## Research Pipeline
 
@@ -56,6 +58,7 @@ Actual source counts depend on search results and webpage accessibility. When th
 - Web retrieval: Jina Reader
 - Streaming: Server-Sent Events
 - Database: SQLite (local default), PostgreSQL (production option), SQLAlchemy, Alembic
+- Document export: Markdown Blob, Playwright Chromium PDF
 - Verification: pytest, Playwright, ESLint, Next.js production build
 
 ## Repository Structure
@@ -133,9 +136,12 @@ DATABASE_URL=postgresql://user:password@host:5432/database
 python3 -m venv backend/.venv
 backend/.venv/bin/python -m pip install --upgrade pip setuptools
 backend/.venv/bin/python -m pip install -r backend/requirements-lock.txt
+backend/.venv/bin/playwright install chromium
 cd backend && PYTHONPATH=. .venv/bin/alembic upgrade head && cd ..
-PYTHONPATH=backend backend/.venv/bin/uvicorn app.main:app --reload --port 8000
+PYTHONPATH=backend backend/.venv/bin/uvicorn app.main:app --reload --reload-dir backend/app --port 8000
 ```
+
+Linux production images can use `backend/.venv/bin/playwright install --with-deps chromium` to install Chromium and its system dependencies. The browser is stored in the Playwright user cache and is not committed to Git.
 
 Health and readiness checks:
 

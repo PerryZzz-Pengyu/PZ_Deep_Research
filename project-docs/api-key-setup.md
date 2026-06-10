@@ -72,12 +72,18 @@ SERPAPI_API_KEY=你的 SerpAPI API Key
 
 ```text
 ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_MODEL_OPTIONS=claude-sonnet-4-6,claude-opus-4-8,claude-opus-4-7,claude-opus-4-6,claude-haiku-4-5-20251001
+ANTHROPIC_EVIDENCE_MODEL=claude-haiku-4-5-20251001
 ```
+
+说明：默认使用速度、质量和成本较均衡的 Sonnet 4.6。需要最高研究质量时可测试 Opus 4.8；Haiku 4.5 用于低成本和低延迟对照。
 
 可选：
 
 ```text
 ANTHROPIC_MODEL=
+ANTHROPIC_MODEL_OPTIONS=
+ANTHROPIC_EVIDENCE_MODEL=
 JINA_API_KEY=
 ```
 
@@ -93,15 +99,33 @@ SERPAPI_API_KEY=你的 SerpAPI API Key
 项目已内置默认模型：
 
 ```text
-GEMINI_MODEL=gemini-2.5-flash
+GEMINI_MODEL=gemini-3.5-flash
+GEMINI_MODEL_OPTIONS=gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3-flash-preview,gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite
+GEMINI_EVIDENCE_MODEL=gemini-2.5-flash-lite
 ```
+
+说明：默认使用当前账号已确认可调用的 Gemini 3.5 Flash。候选列表同时保留 3.x 预览模型和 2.5 稳定模型，便于比较质量、速度、成本以及预览版本的稳定性。
 
 可选：
 
 ```text
 GEMINI_MODEL=
+GEMINI_MODEL_OPTIONS=
+GEMINI_EVIDENCE_MODEL=
 JINA_API_KEY=
 ```
+
+证据抽取模型只负责把单篇网页正文整理成紧凑证据卡片，不负责生成搜索词或最终报告。Claude 默认使用当前可用的低成本 Haiku 4.5；Gemini 默认使用官方标注为最小且最具成本效益、并已完成真实调用验证的稳定版 Gemini 2.5 Flash-Lite。切换前端主模型不会改变证据抽取模型。
+
+模型调用的临时错误重试配置：
+
+```text
+LLM_MAX_RETRIES=3
+LLM_RETRY_BASE_DELAY_SECONDS=2
+LLM_TIMEOUT_SECONDS=60
+```
+
+系统只对超时、429、5xx、`UNAVAILABLE`、`RESOURCE_EXHAUSTED` 等临时错误重试，等待时间默认依次为 2、4、8 秒。报告阶段重试会保留已经选定的来源和证据卡片，不重新执行搜索与访问。
 
 ## 如果三家模型都要在前端可选
 
@@ -167,10 +191,12 @@ curl http://127.0.0.1:8000/api/readiness
 curl http://127.0.0.1:8000/api/models
 ```
 
-如果已经填写 `OPENAI_API_KEY`，可以查询当前账号实际可访问的 OpenAI 模型 ID：
+如果已经填写对应 API Key，可以查询当前账号实际可访问的模型 ID：
 
 ```bash
 curl http://127.0.0.1:8000/api/models/openai
+curl http://127.0.0.1:8000/api/models/anthropic
+curl http://127.0.0.1:8000/api/models/gemini
 ```
 
 该接口只返回模型 ID，不会输出你的 API Key。返回里的 `configured_available` 用来判断项目候选模型里哪些在当前账号下可见。
@@ -181,6 +207,6 @@ curl http://127.0.0.1:8000/api/models/openai
 
 - OpenAI：`gpt-5.4-mini`
 - Claude：`claude-sonnet-4-6`
-- Gemini：`gemini-2.5-flash`
+- Gemini：`gemini-3.5-flash`
 
 这些默认值后续可以根据成本、质量和账号可用额度调整。只要调整默认模型，需要同步更新本文档和 `project-docs/changelog.md`。

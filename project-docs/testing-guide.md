@@ -194,6 +194,7 @@ npm run test:e2e
 - 页面刷新后可以通过任务 ID、事件游标和 SSE 快照恢复运行任务。
 - 任务完成后再次刷新仍能恢复最终报告。
 - 完成任务会出现在当前匿名访客的历史记录中，点击后可以恢复报告。
+- 历史详情可以下载 UTF-8 Markdown 和后端 Chromium 生成的正式 PDF。
 
 Playwright 配置位于：
 
@@ -211,6 +212,18 @@ frontend/e2e/research-flow.spec.ts
 ```
 
 浏览器二进制不写入 Git 仓库，也不修改系统 `/Applications`。项目依赖仍由 `frontend/package.json` 和 `frontend/package-lock.json` 固定。
+
+后端 PDF 导出与前端 E2E 使用相同版本的 Playwright `1.60.0` 和同一份用户缓存 Chromium。新环境需要执行：
+
+```bash
+backend/.venv/bin/playwright install chromium
+```
+
+Linux CI/生产镜像使用：
+
+```bash
+backend/.venv/bin/playwright install --with-deps chromium
+```
 
 ## 本地手动端到端测试
 
@@ -263,6 +276,10 @@ http://localhost:3000
 7. 运行中点击“停止”，确认状态变为“已取消”，停止按钮消失，之后不会再出现“研究报告已生成”。
 8. 重新开始一个任务，在任务运行中刷新页面，确认任务 ID、问题、模式、时间线和报告草稿恢复，并继续接收后续事件。
 9. 任务完成后再次刷新页面，确认最终报告、来源和完整时间线仍能恢复。
+10. 打开“历史”，点击已完成任务，确认进入“报告详情”，并显示研究配置、完整任务 ID、研究日志、来源和报告。
+11. 在报告详情点击“重新运行”，确认返回研究页、问题和配置不变、任务 ID 更新，并重新收到进度与最终报告。
+12. 报告为空时确认“导出 Markdown”按钮禁用；报告生成后点击下载，确认文件名来自研究问题、扩展名为 `.md`，中文、Markdown 标题、引用和参考文献可正常读取。
+13. 任务运行中确认“导出 PDF”禁用；进入已完成报告详情后下载 PDF，确认文件名、`%PDF` 文件头、`%%EOF` 文件尾和文件体积正常。
 
 注意：已完成任务、事件和报告会持久化。后端重启时仍在 queued/running 的任务无法恢复 Runtime 执行现场，会被标记为“服务重启导致中断”；后续引入独立 Worker 后再实现真正的任务续跑。
 
@@ -273,6 +290,15 @@ http://localhost:3000
 3. 页面 Provider 选择 “OpenAI”。
 4. 在模型下拉里依次选择 `gpt-5.4-mini`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-nano` 等候选模型。
 5. 每次点击“开始”，观察是否能完成研究、速度是否可接受、报告质量是否符合预期。
+
+Claude 和 Gemini 使用同一套测试方法：
+
+- Claude 建议依次比较 `claude-haiku-4-5-20251001`、`claude-sonnet-4-6`、`claude-opus-4-8`。
+- Gemini 建议依次比较 `gemini-2.5-flash-lite`、`gemini-3.5-flash`、`gemini-3.1-pro-preview`。
+- `preview` 模型可能调整或下线，生产默认模型优先选择已稳定验证的正式版本。
+- 可以访问 `/api/models/anthropic` 和 `/api/models/gemini`，确认候选模型是否在当前账号可用列表中。
+- 检查 `evidence_ready` 前后的模型调用时，Claude 证据卡片应使用 `claude-haiku-4-5-20251001`，Gemini 应使用 `gemini-2.5-flash-lite`；最终报告仍应显示前端选择的主模型。
+- 模拟或遇到 429/503 时，时间线应出现最多 3 条 `llm_retry`，默认等待 2、4、8 秒。报告阶段的重试文案应说明已保留来源和证据，只重试报告生成；同一任务不应再次出现 search/visit 调用。
 
 真实 Provider 页面验收还需要检查：
 
@@ -325,6 +351,25 @@ completed
 curl -s -X POST http://127.0.0.1:8000/api/research-jobs/{job_id}/cancel
 ```
 
+重新运行终态任务：
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/research-jobs/{job_id}/rerun \
+  -H "X-PZ-Visitor-ID: {visitor_uuid}"
+```
+
+返回的新任务应包含独立 `id` 和指向原任务的 `rerun_of_job_id`。其他访客访问或重跑该任务应返回 404；运行中任务应返回 409。
+
+导出 PDF：
+
+```bash
+curl -sS http://127.0.0.1:8000/api/research-jobs/{job_id}/export/pdf \
+  -H "X-PZ-Visitor-ID: {visitor_uuid}" \
+  -o report.pdf
+```
+
+空报告返回 409，其他访客返回 404，Chromium 生成失败或超时返回 503。
+
 从某个持久事件之后续接 SSE：
 
 ```bash
@@ -360,6 +405,8 @@ curl -s http://127.0.0.1:8000/api/models/openai
 - 视觉回归测试。
 - 文件上传和文件解析测试。
 - 登录后的匿名历史归并、跨设备历史、额度和支付相关测试。
+
+Markdown 导出已有 Playwright 覆盖，验证按钮状态、浏览器下载事件、安全文件名、UTF-8 中文内容、Markdown 标题和末尾换行。
 
 ## 后续测试优先级
 

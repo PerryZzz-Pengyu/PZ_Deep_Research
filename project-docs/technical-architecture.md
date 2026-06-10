@@ -136,14 +136,35 @@ npm 11.16.0
 - 来源卡片已展示证据强度标签，例如全文证据、部分正文、题录摘要、访问受限。
 - 已实现运行中停止按钮和任务状态标签。
 - 已使用 `localStorage` 保存当前任务 ID；刷新后重新获取任务与持久事件，并恢复问题、模式、Provider、时间线、来源、报告草稿或最终报告。
-- 已实现基础历史视图，按当前匿名访客加载任务列表，点击后恢复任务详情和报告。
-- 当前仍没有重新运行、追问、导出和登录交互。
+- 已实现基础历史视图，按当前匿名访客加载任务列表，点击后进入报告详情。
+- 已实现终态任务重新运行，新任务保留原研究配置并记录来源任务血缘。
+- 已实现 Markdown 导出：浏览器使用 `Blob` 和临时下载链接导出当前原始报告，文件名由研究问题生成并清理非法字符。
+- 已实现正式 PDF 导出：前端请求受访客权限保护的后端接口，由 Playwright Chromium 输出 A4 PDF。
+- 当前仍没有追问、Word/品牌模板导出和登录交互。
 
 后续可替换点：
 
 - UI 可升级为 shadcn/ui 组件体系。
 - 状态管理可从本地 state 升级为 SWR 或 React Query。
 - 登录态、跨设备历史和用户额度需要接入账号系统。
+
+Markdown 导出选择纯前端实现，位置为 `frontend/src/lib/markdown-export.ts`。原因是最终报告已经完整存在于前端状态和数据库恢复结果中，导出不需要后端重新生成文件，也不应产生新的模型调用或引用变化。当前文件使用 UTF-8 `text/markdown` Blob，内容与页面当前报告一致，末尾保证至少一个换行。
+
+PDF 导出位置：
+
+- `backend/app/reporting/pdf_export.py`
+- `GET /api/research-jobs/{job_id}/export/pdf`
+- `frontend/src/lib/api.ts`
+
+方案：
+
+- API 先使用当前访客 ID 查询任务，避免通过任务 ID 越权导出。
+- 后端用 `markdown-it-py` 渲染 Markdown，关闭原始 HTML、图片规则和 linkify。
+- Chromium Context 拦截并终止所有网络请求，不加载外部图片、脚本、字体或跟踪资源。
+- 打印 HTML 使用 A4 样式、任务元数据、表格/代码块样式和页码 footer。
+- PDF 导出默认最多并发 2 个，总超时 45 秒；可通过环境变量调整。
+- Chromium 默认复用 Playwright 用户缓存，也可用 `PDF_CHROMIUM_EXECUTABLE_PATH` 指定生产浏览器路径。
+- 选择后端生成而非 `window.print()`，是为了获得一致分页、可测试文件输出和受控的生产排版。
 
 ## Agent Runtime 方案
 
@@ -174,15 +195,15 @@ npm 11.16.0
   - expert：每次搜索 5 个高命中英文搜索词，先搜索/访问，再基于第一阶段证据卡片审查缺口后二次搜索/访问；最终选择 20 个来源，正文 3000-3500 字。
 - `MODE_POLICIES` 中仍保留 `max_rounds` 兼容字段，但当前访问漏斗不依赖模型轮数驱动，该字段不再是 visit 调度或防死循环机制，后续应清理或重命名。
 - 已实现模型调用超时控制，默认 `LLM_TIMEOUT_SECONDS=60`。
-- 已实现模型调用失败重试，默认 `LLM_MAX_RETRIES=1`。
+- 已实现临时模型错误重试，默认 `LLM_MAX_RETRIES=3`、`LLM_RETRY_BASE_DELAY_SECONDS=2`。仅对超时、429、408/409、5xx、`UNAVAILABLE`、`RESOURCE_EXHAUSTED`、过载和连接重置等可恢复错误按 2、4、8 秒指数退避；400 配置错误等永久错误直接失败。
 - 已实现 `llm_result` 事件，用于记录模型名、输入 token、输出 token、单轮估算成本和累计用量。
 - 已实现 `llm_delta` 事件，用于把支持原生 streaming 的 Provider 输出实时推送给前端。
 - 已实现报告级真流式输出：证据门槛满足后，如果模型开始输出 `<answer>`，Runtime 会在模型仍在生成时同步发送 `report_delta`。
 - 如果流式报告草稿后续没有通过引用或参考文献格式校验，Runtime 会发送 `report_reset`，前端清空草稿并等待重写。
-- 模型调用最终失败时 Runtime 会产出 `failed` 事件，让任务状态可以被存储层正确更新。
+- 模型调用最终失败时 Runtime 会产出 `failed` 事件，让任务状态可以被存储层正确更新。报告阶段的临时错误重试始终复用已选来源、证据卡片和报告上下文，`llm_retry` 标记 `resume_from=selected_evidence`，不会重新调用 search 或 visit。
 - 主流程固定为「生成搜索词 → search → Runtime visit → 证据卡片 → 选源 → 最终报告」；expert 在两轮检索之间额外执行一次证据缺口分析。
 - 访问漏斗（`_visit_funnel`）：search 候选按搜索原生相关性序，用并发 `visit` 滚动访问；full_text 数达到阶段目标（quick 3 / deep 10；expert 第一阶段 10、最终 20）即早停，否则访问完该次搜索返回的有限候选。候选耗尽即退出，不重复搜索或重访，因此不会因全文不足卡死。
-- 证据卡片裁剪：每条已访问来源由便宜模型（`EVIDENCE_EXTRACTION_MODEL`，默认 `gpt-5-nano`）抽成紧凑证据卡片，原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告，单轮请求 token 不随轮数膨胀。抽取调用带超时和重试，单条抽取失败时退回截断原文卡片，不使整项研究失败。
+- 证据卡片裁剪：每条已访问来源由 Provider 专属低成本模型抽取为紧凑证据卡片。OpenAI 使用 `EVIDENCE_EXTRACTION_MODEL=gpt-5-nano`，Claude 使用 `ANTHROPIC_EVIDENCE_MODEL=claude-haiku-4-5-20251001`，Gemini 使用 `GEMINI_EVIDENCE_MODEL=gemini-2.5-flash-lite`；搜索词与最终报告仍使用前端选择的主模型。原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告。报告阶段使用独立上下文，不携带搜索历史；每次格式/字数重写重新构造固定大小的 system/user 消息，只包含当前稿、证据卡片和校验要求，避免旧稿累计造成 token 膨胀。抽取调用带超时和重试，单条抽取失败时退回截断原文卡片，不使整项研究失败。
 - 选源（`selection.select_sources`）：「质量优先 → 数量补足 → 逃生降级」。按 `full_text > partial_text > metadata > failed` 排序后取前 N；总数不足则有多少用多少。最终来源重新连续编号 1..N。quick / deep / expert 的全文质量最低线分别为 1 / 3 / 5，低于最低线时通过 `full_text_shortfall` 要求报告说明证据局限，但不阻止任务完成。
 - expert 模式强制跑两轮 `search`。第一阶段访问和抽卡后，Runtime 把证据卡片交给模型审查缺口，再执行第二轮补充检索；最终选源覆盖两轮访问并集。
 - 搜索词按模式上限裁剪（quick 1 / deep 3 / expert 5）。
@@ -190,7 +211,7 @@ npm 11.16.0
 - 来源分级：`search` 返回的是候选来源（`source_kind=search_result`），使用罗马编号 `(i)`、`(ii)`、`(iii)`，只在中间「工具返回」展示、不能被引用；访问过程也只在中间展示。质量筛选完成后，`source_selected` 与 `completed` 仅携带最终入选来源并连续编号，右侧来源区只读取这两个事件。
 - 新增事件：`visit_progress`（访问进度 n/目标、全文证据数）、`evidence_ready`（已抽取卡片数）、`source_selected`（最终选中来源 + 降级标志）。
 - 真实 Provider 的最终报告需要包含阿拉伯 `[n]` 引用角标和 References / 参考文献章节；缺失、出现 `[^n]` 脚注、或引用了未在证据卡片中的来源时，Runtime 会产出 `citation_required` 并要求模型重写。
-- 真实 Provider 报告还会校验正文长度：quick 400-500、deep 1300-1500、expert 3000-3500；References / 参考文献整节和 `[n]` 引用标记不计入。重写两次仍不合格时任务明确失败，不无限重试。
+- 真实 Provider 报告还会校验正文长度：quick 400-500、deep 1300-1500、expert 3000-3500；References / 参考文献整节和 `[n]` 引用标记不计入。只有 `report_too_long` 时进入纯编辑压缩路径，仅提供上一稿并禁止新增事实或来源，根据当前计数给出目标保留比例和最少删除量；过短或同时存在其他格式问题时使用证据卡片重写。重写两次仍不合格时任务明确失败，不无限重试。
 - 最终报告会通过 `report_delta` 事件实时推送给前端，前端可以逐步显示报告内容；`report_delta` 不再写入历史事件存储，避免 token 级报告片段撑爆任务记录。
 
 后续可替换点：
@@ -320,7 +341,10 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 - 已能返回模型名、输入 token 和输出 token。
 - 已通过 ProviderFactory 测试覆盖默认模型和专属模型选择。
 - 当前默认模型为 `claude-sonnet-4-6`。
-- 尚未做真实 API Key 联调。
+- 当前候选模型为 `claude-sonnet-4-6`、`claude-opus-4-8`、`claude-opus-4-7`、`claude-opus-4-6`、`claude-haiku-4-5-20251001`。
+- 已新增 `/api/models/anthropic`，使用服务端 Key 查询当前账号实际可用模型，并与项目候选列表求交集。
+- 已使用本地 API Key 完成 Models API 联调，确认上述候选模型均在当前账号模型列表中。
+- 已使用默认 `claude-sonnet-4-6` 完成最小真实生成测试；无 system message 时省略 `system` 字段，兼容新版 Messages API 校验。
 - 尚未接入 Anthropic SDK 原生 streaming，当前通过兼容封装在完整响应后发送结果。
 
 后续注意：
@@ -336,8 +360,11 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 
 - 已有基础 SDK 调用结构。
 - 已通过 ProviderFactory 测试覆盖默认模型和专属模型选择。
-- 当前默认模型为 `gemini-2.5-flash`。
-- 尚未做真实 API Key 联调。
+- 当前默认模型为 `gemini-3.5-flash`。
+- 当前候选模型为 `gemini-3.5-flash`、`gemini-3.1-pro-preview`、`gemini-3-flash-preview`、`gemini-3.1-flash-lite`、`gemini-2.5-pro`、`gemini-2.5-flash`、`gemini-2.5-flash-lite`。
+- 已新增 `/api/models/gemini`，使用服务端 Key 查询支持 `generateContent` 的模型，移除 `models/` 前缀后与项目候选列表求交集。
+- 已使用本地 API Key 完成 Models API 联调，确认上述候选模型均在当前账号模型列表中。
+- 已使用默认 `gemini-3.5-flash` 完成最小真实生成测试。
 - 尚未接入 Gemini SDK 原生 streaming。
 - 尚未补齐与 OpenAI、Anthropic 一致的 token 用量采集。
 
@@ -421,7 +448,7 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 
 - 本地默认使用 `data/pz_deep_research.db`。
 - 通过 `DATABASE_URL` 可以切换 PostgreSQL；普通 `postgresql://` URL 会规范化为 `postgresql+psycopg://`。
-- `research_jobs` 保存任务状态、报告草稿、最终报告和归属字段。
+- `research_jobs` 保存任务状态、报告草稿、最终报告、归属字段和可空的 `rerun_of_job_id` 来源任务。
 - `research_events` 保存持久进度事件，使用任务外键和级联删除。
 - Alembic 是应用启动时的正式建表和升级路径；`create_all` 只用于独立存储单元测试，不参与产品数据库初始化。
 
@@ -430,8 +457,15 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 - 当前未接登录，前端生成随机匿名访客 ID，通过 `X-PZ-Visitor-ID` 请求头发送；EventSource 因无法设置自定义请求头，通过 `visitor_id` 查询参数发送。
 - 数据表同时保留 `anonymous_id` 和可空 `user_id`。匿名任务只写 `anonymous_id`。
 - 存储层提供 `claim_anonymous_jobs`，未来用户登录后可以在事务中把当前匿名历史迁移到账号 `user_id`。
-- API 的历史、详情、事件和取消操作都按当前匿名访客过滤。
+- API 的历史、详情、事件、取消和重新运行操作都按当前匿名访客过滤。
 - 匿名访客 ID 只是 MVP 数据分区键，不是认证凭证。公网部署必须由认证中间件提供可信 `user_id`，不能依赖客户端自报访客 ID 保护隐私。
+
+重新运行语义：
+
+- 只有 `completed`、`failed`、`cancelled` 终态任务可以重新运行；`queued` / `running` 返回 409，避免同一运行任务被重复复制。
+- 后端从数据库读取原任务的研究问题、模式、Provider 和模型，前端不能在重跑请求里篡改这些字段。
+- 新任务拥有独立 ID、独立事件流和独立报告，并通过 `rerun_of_job_id` 保留来源任务血缘。
+- 第二个 Alembic 迁移为现有数据库增加血缘列和索引；旧的无版本数据库若已由最新 Metadata 建表，迁移会识别已有列并安全跳过重复创建。
 
 重启语义：
 
@@ -494,17 +528,30 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 
 ```text
 DEFAULT_PROVIDER=mock
+LLM_MAX_RETRIES=3
+LLM_RETRY_BASE_DELAY_SECONDS=2
+LLM_TIMEOUT_SECONDS=60
 OPENAI_API_KEY=
 OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL=gpt-5.4-mini
 OPENAI_MODEL_OPTIONS=gpt-5.4-mini,gpt-5.5,gpt-5.4,gpt-5.4-nano,gpt-5-mini,gpt-5-nano
+EVIDENCE_EXTRACTION_MODEL=gpt-5-nano
 ANTHROPIC_API_KEY=
+ANTHROPIC_MODEL=claude-sonnet-4-6
+ANTHROPIC_MODEL_OPTIONS=claude-sonnet-4-6,claude-opus-4-8,claude-opus-4-7,claude-opus-4-6,claude-haiku-4-5-20251001
+ANTHROPIC_EVIDENCE_MODEL=claude-haiku-4-5-20251001
 GEMINI_API_KEY=
+GEMINI_MODEL=gemini-3.5-flash
+GEMINI_MODEL_OPTIONS=gemini-3.5-flash,gemini-3.1-pro-preview,gemini-3-flash-preview,gemini-3.1-flash-lite,gemini-2.5-pro,gemini-2.5-flash,gemini-2.5-flash-lite
+GEMINI_EVIDENCE_MODEL=gemini-2.5-flash-lite
 SEARCH_PROVIDER=serpapi
 ACADEMIC_SEARCH_ENGINE=google_scholar
 SERPAPI_API_KEY=
 JINA_API_KEY=
 DATABASE_URL=
+PDF_EXPORT_TIMEOUT_SECONDS=45
+PDF_EXPORT_MAX_CONCURRENCY=2
+PDF_CHROMIUM_EXECUTABLE_PATH=
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
@@ -531,12 +578,12 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 后端 Python 语法检查通过。
 - 后端 app 导入通过。
-- 后端 pytest 自动化测试通过，当前为 80 个用例。
+- 后端 pytest 自动化测试通过，当前为 92 个用例。
 - 前端 lint 通过。
 - 前端 build 通过。
-- Playwright Chromium 端到端测试通过，当前为 3 个用例，覆盖任务取消、刷新续跑、完成后报告恢复和历史详情恢复。
+- Playwright Chromium 端到端测试通过，当前为 6 个用例，覆盖任务取消、刷新续跑、完成后报告恢复、历史报告详情、重新运行、Markdown 下载和正式 PDF 下载。
 - SQLite 跨 Store 持久化、访客隔离、重启中断处理和匿名历史账号归并测试通过。
-- Alembic 初始迁移已在 SQLite 执行通过，并完成 PostgreSQL 离线 SQL 编译。
+- Alembic 初始迁移和重新运行血缘迁移已在 SQLite 执行通过，并完成离线 SQL 编译。
 - FastAPI 本地服务启动成功。
 - Next.js 本地服务启动成功。
 - mock 研究任务流跑通。
@@ -551,7 +598,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 - 真实 Claude、Gemini API 联调。
 - Claude、Gemini 原生 streaming、Gemini token 用量和真实模型成本计算。
 - 关键桌面/移动视口视觉回归验证。
-- 重新运行、Markdown 导出和登录后跨设备历史。
+- 登录后跨设备历史。
 - 真实 PostgreSQL、备份恢复和独立任务队列验证。
 - 文件上传和文件解析验证。
 
@@ -562,7 +609,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 - 匿名访客 ID 由客户端持有，只能用于无登录 MVP 的数据分区，不能作为公网环境的认证或授权机制。
 - SQLite 不支持多实例共享和高并发写入，生产多实例需要 PostgreSQL。
 - 搜索和网页读取依赖第三方服务，可能受 QPS、费用和可用性影响。
-- 前端已经支持取消、刷新恢复和匿名历史，但还没有重跑、导出、登录和跨设备历史。
+- 前端已经支持取消、刷新恢复、匿名历史、报告详情、重跑和 Markdown/PDF 导出，但还没有追问、登录和跨设备历史。
 - 当前引用校验能验证格式、编号和来源存在性，但不能证明每个事实都被对应来源支持。
 - APA 参考文献依赖搜索元数据和模型输出，缺少作者、年份、期刊等字段时只能降级展示。
 - 当前只有 SerpAPI + Jina 主链路，缺少搜索和正文读取的生产级备用服务。
@@ -570,7 +617,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 ## 后续技术优先级
 
-1. 完成重新运行、Markdown 导出和完整错误恢复交互。
+1. 完成完整错误恢复交互。
 2. 在真实 PostgreSQL 实例验证迁移、连接池、备份和恢复。
 3. 建立 OpenAI、Claude、Gemini 真实 Provider 回归矩阵，并补齐 Claude/Gemini 原生 streaming、Gemini 用量和成本计算。
 4. 增加关键视口视觉回归、真实断线恢复和 Worker 任务恢复测试。

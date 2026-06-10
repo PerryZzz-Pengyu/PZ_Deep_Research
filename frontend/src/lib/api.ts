@@ -92,6 +92,60 @@ export async function cancelResearchJob(jobId: string): Promise<ResearchJob> {
   return response.json();
 }
 
+export async function rerunResearchJob(jobId: string): Promise<ResearchJob> {
+  const response = await fetch(`${API_BASE_URL}/api/research-jobs/${jobId}/rerun`, {
+    method: "POST",
+    headers: visitorHeaders(),
+  });
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(message || "重新运行研究任务失败");
+  }
+  return response.json();
+}
+
+function filenameFromContentDisposition(value: string | null, fallback: string) {
+  if (!value) return fallback;
+  const encodedMatch = /filename\*=UTF-8''([^;]+)/i.exec(value);
+  if (encodedMatch) {
+    try {
+      return decodeURIComponent(encodedMatch[1]);
+    } catch {
+      return fallback;
+    }
+  }
+  const plainMatch = /filename="?([^";]+)"?/i.exec(value);
+  return plainMatch?.[1] || fallback;
+}
+
+async function responseError(response: Response, fallback: string) {
+  try {
+    const payload = (await response.json()) as { detail?: unknown };
+    if (typeof payload.detail === "string") return payload.detail;
+  } catch {
+    // 非 JSON 错误响应使用统一提示。
+  }
+  return fallback;
+}
+
+export async function exportResearchJobPdf(
+  jobId: string,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await fetch(`${API_BASE_URL}/api/research-jobs/${jobId}/export/pdf`, {
+    headers: visitorHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(await responseError(response, "导出 PDF 失败"));
+  }
+  return {
+    blob: await response.blob(),
+    filename: filenameFromContentDisposition(
+      response.headers.get("Content-Disposition"),
+      `pz-deep-research-${jobId.slice(0, 8)}.pdf`,
+    ),
+  };
+}
+
 export async function listResearchJobs(): Promise<ResearchJob[]> {
   const response = await fetch(`${API_BASE_URL}/api/research-jobs`, {
     headers: visitorHeaders(),

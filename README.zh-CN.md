@@ -18,7 +18,9 @@
 - 最终报告支持 Markdown、阿拉伯数字行内引用、来源悬浮卡片和 APA 风格参考文献。
 - 来源不足或全文证据不足时有界退出并明确降级，不重复访问造成死循环。
 - 使用 SQLite/PostgreSQL 持久化研究任务、事件、报告草稿和最终报告。
-- 支持按当前匿名访客查看研究历史并恢复报告。
+- 支持按当前匿名访客查看研究历史、打开报告详情并按原配置重新运行。
+- 支持将当前报告直接导出为 UTF-8 Markdown 文件。
+- 支持由后端 Chromium 生成带任务信息、分页和页码的 A4 PDF 报告。
 
 ## 研究流程
 
@@ -56,6 +58,7 @@
 - 网页读取：Jina Reader
 - 实时通信：Server-Sent Events
 - 数据库：SQLite（本地默认）、PostgreSQL（生产可选）、SQLAlchemy、Alembic
+- 文档导出：Markdown Blob、Playwright Chromium PDF
 - 测试：pytest、Playwright、ESLint、Next.js production build
 
 ## 项目结构
@@ -133,9 +136,12 @@ DATABASE_URL=postgresql://user:password@host:5432/database
 python3 -m venv backend/.venv
 backend/.venv/bin/python -m pip install --upgrade pip setuptools
 backend/.venv/bin/python -m pip install -r backend/requirements-lock.txt
+backend/.venv/bin/playwright install chromium
 cd backend && PYTHONPATH=. .venv/bin/alembic upgrade head && cd ..
-PYTHONPATH=backend backend/.venv/bin/uvicorn app.main:app --reload --port 8000
+PYTHONPATH=backend backend/.venv/bin/uvicorn app.main:app --reload --reload-dir backend/app --port 8000
 ```
+
+Linux 生产镜像可使用 `backend/.venv/bin/playwright install --with-deps chromium` 安装 Chromium 及系统依赖。浏览器默认安装到 Playwright 用户缓存，不进入 Git 仓库。
 
 健康检查：
 

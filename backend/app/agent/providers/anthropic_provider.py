@@ -36,14 +36,17 @@ class AnthropicProvider(LLMProvider):
             for message in messages
             if message.role in {"user", "assistant"}
         ]
-        client = AsyncAnthropic(api_key=self.api_key)
-        response = await client.messages.create(
-            model=selected_model,
-            system="\n\n".join(system_parts) or None,
-            messages=chat_messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
+        request_kwargs = {
+            "model": selected_model,
+            "messages": chat_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if system_parts:
+            request_kwargs["system"] = "\n\n".join(system_parts)
+
+        async with AsyncAnthropic(api_key=self.api_key) as client:
+            response = await client.messages.create(**request_kwargs)
         text_parts = [block.text for block in response.content if getattr(block, "type", "") == "text"]
         return LLMResult(
             content="\n".join(text_parts),

@@ -1,11 +1,14 @@
 "use client";
 
 import {
+  ArrowLeft,
   ArrowRight,
   Bot,
   CheckCircle2,
   Clock3,
+  Download,
   ExternalLink,
+  FileDown,
   FileText,
   History,
   Loader2,
@@ -15,6 +18,7 @@ import {
   Sparkles,
   Square,
   RefreshCw,
+  RotateCcw,
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
@@ -25,11 +29,14 @@ import {
   cancelResearchJob,
   createResearchEventSource,
   createResearchJob,
+  exportResearchJobPdf,
   getModelOptions,
   getResearchEvents,
   getResearchJob,
   listResearchJobs,
+  rerunResearchJob,
 } from "@/lib/api";
+import { downloadBlobFile, downloadMarkdownReport } from "@/lib/markdown-export";
 import type { ModelOption, ProviderName, ResearchEvent, ResearchJob, ResearchMode } from "@/lib/types";
 
 const ACTIVE_JOB_STORAGE_KEY = "pz-deep-research-active-job";
@@ -57,8 +64,22 @@ const fallbackModelOptions: Record<ProviderName, ModelOption[]> = {
     { id: "gpt-5-mini", label: "gpt-5-mini" },
     { id: "gpt-5-nano", label: "gpt-5-nano" },
   ],
-  anthropic: [{ id: "claude-sonnet-4-6", label: "claude-sonnet-4-6" }],
-  gemini: [{ id: "gemini-2.5-flash", label: "gemini-2.5-flash" }],
+  anthropic: [
+    { id: "claude-sonnet-4-6", label: "claude-sonnet-4-6" },
+    { id: "claude-opus-4-8", label: "claude-opus-4-8" },
+    { id: "claude-opus-4-7", label: "claude-opus-4-7" },
+    { id: "claude-opus-4-6", label: "claude-opus-4-6" },
+    { id: "claude-haiku-4-5-20251001", label: "claude-haiku-4-5-20251001" },
+  ],
+  gemini: [
+    { id: "gemini-3.5-flash", label: "gemini-3.5-flash" },
+    { id: "gemini-3.1-pro-preview", label: "gemini-3.1-pro-preview" },
+    { id: "gemini-3-flash-preview", label: "gemini-3-flash-preview" },
+    { id: "gemini-3.1-flash-lite", label: "gemini-3.1-flash-lite" },
+    { id: "gemini-2.5-pro", label: "gemini-2.5-pro" },
+    { id: "gemini-2.5-flash", label: "gemini-2.5-flash" },
+    { id: "gemini-2.5-flash-lite", label: "gemini-2.5-flash-lite" },
+  ],
 };
 
 type SourceItem = {
@@ -99,6 +120,19 @@ function jobStatusLabel(status: ResearchJob["status"] | "") {
   if (status === "failed") return "失败";
   if (status === "cancelled") return "已取消";
   return "尚未创建";
+}
+
+function modeLabel(mode: ResearchMode) {
+  if (mode === "quick") return "快速";
+  if (mode === "deep") return "深度";
+  return "专家";
+}
+
+function formatDateTime(value: string) {
+  return new Intl.DateTimeFormat("zh-CN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
 }
 
 function parseSources(rawSources: unknown): SourceItem[] {
@@ -368,9 +402,12 @@ export function ResearchWorkspace() {
   const [jobStatus, setJobStatus] = useState<ResearchJob["status"] | "">("");
   const [isRunning, setIsRunning] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
+  const [isRerunning, setIsRerunning] = useState(false);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
   const [isRestoring, setIsRestoring] = useState(true);
-  const [activeView, setActiveView] = useState<"research" | "history">("research");
+  const [activeView, setActiveView] = useState<"research" | "history" | "detail">("research");
   const [historyJobs, setHistoryJobs] = useState<ResearchJob[]>([]);
+  const [selectedJob, setSelectedJob] = useState<ResearchJob | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [error, setError] = useState("");
   const eventSourceRef = useRef<EventSource | null>(null);
@@ -509,6 +546,7 @@ export function ResearchWorkspace() {
         getResearchEvents(targetJobId),
       ]);
       setJobId(job.id);
+      setSelectedJob(job);
       setJobStatus(job.status);
       setQuery(job.query);
       setMode(job.mode);
@@ -618,6 +656,7 @@ export function ResearchWorkspace() {
     try {
       const job = await createResearchJob({ query, mode, provider, model: selectedModel || undefined });
       setJobId(job.id);
+      setSelectedJob(job);
       setJobStatus(job.status);
       window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, job.id);
       connectToJob(job.id);
@@ -638,6 +677,7 @@ export function ResearchWorkspace() {
       const restoredEvents = await getResearchEvents(jobId);
       setEvents(restoredEvents);
       setReport(cancelledJob.final_report || cancelledJob.draft_report || "");
+      setSelectedJob(cancelledJob);
       setJobStatus("cancelled");
       setIsRunning(false);
       eventSourceRef.current?.close();
@@ -646,6 +686,55 @@ export function ResearchWorkspace() {
       setError(err instanceof Error ? err.message : "取消研究任务失败");
     } finally {
       setIsCancelling(false);
+    }
+  }
+
+  async function handleRerun() {
+    if (!selectedJob || isRerunning || selectedJob.status === "queued" || selectedJob.status === "running") {
+      return;
+    }
+    setIsRerunning(true);
+    setError("");
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    try {
+      const rerunJob = await rerunResearchJob(selectedJob.id);
+      setSelectedJob(rerunJob);
+      setJobId(rerunJob.id);
+      setJobStatus(rerunJob.status);
+      setQuery(rerunJob.query);
+      setMode(rerunJob.mode);
+      if (isProviderName(rerunJob.provider)) setProvider(rerunJob.provider);
+      setModel(rerunJob.model || "");
+      setEvents([]);
+      setReport("");
+      setLiveModelText("");
+      setIsRunning(true);
+      window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, rerunJob.id);
+      setHistoryJobs((current) => [
+        rerunJob,
+        ...current.filter((item) => item.id !== rerunJob.id),
+      ]);
+      setActiveView("research");
+      connectToJob(rerunJob.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "重新运行研究任务失败");
+    } finally {
+      setIsRerunning(false);
+    }
+  }
+
+  async function handlePdfExport() {
+    if (!jobId || !report || isRunning || isExportingPdf) return;
+    setIsExportingPdf(true);
+    setError("");
+    try {
+      const pdf = await exportResearchJobPdf(jobId);
+      downloadBlobFile(pdf.blob, pdf.filename);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "导出 PDF 失败");
+    } finally {
+      setIsExportingPdf(false);
     }
   }
 
@@ -670,7 +759,7 @@ export function ResearchWorkspace() {
             研究
           </button>
           <button
-            className={activeView === "history" ? "nav-item active" : "nav-item"}
+            className={activeView === "history" || activeView === "detail" ? "nav-item active" : "nav-item"}
             type="button"
             onClick={() => {
               setActiveView("history");
@@ -735,9 +824,9 @@ export function ResearchWorkspace() {
                     onClick={() => {
                       setIsRestoring(true);
                       restoreJob(job.id)
-                        .then(() => setActiveView("research"))
+                        .then(() => setActiveView("detail"))
                         .catch((err) => {
-                          setError(err instanceof Error ? err.message : "恢复研究任务失败");
+                          setError(err instanceof Error ? err.message : "打开报告详情失败");
                         })
                         .finally(() => setIsRestoring(false));
                     }}
@@ -747,7 +836,7 @@ export function ResearchWorkspace() {
                       <span className={`job-status ${job.status}`}>{jobStatusLabel(job.status)}</span>
                     </span>
                     <span className="history-meta">
-                      {job.mode === "quick" ? "快速" : job.mode === "deep" ? "深度" : "专家"}
+                      {modeLabel(job.mode)}
                       <span>{job.provider}</span>
                       <time dateTime={job.updated_at}>
                         {new Date(job.updated_at).toLocaleString("zh-CN")}
@@ -755,6 +844,101 @@ export function ResearchWorkspace() {
                     </span>
                     <span className="history-id">{job.id}</span>
                   </button>
+                ))
+              )}
+            </div>
+          </div>
+        ) : activeView === "detail" && selectedJob ? (
+          <div className="detail-view">
+            <div className="detail-header">
+              <div>
+                <button
+                  className="back-button"
+                  type="button"
+                  onClick={() => {
+                    setActiveView("history");
+                    void refreshHistory();
+                  }}
+                >
+                  <ArrowLeft size={16} />
+                  返回历史
+                </button>
+                <h1>报告详情</h1>
+              </div>
+              <button
+                className="rerun-button"
+                type="button"
+                disabled={
+                  isRerunning ||
+                  selectedJob.status === "queued" ||
+                  selectedJob.status === "running"
+                }
+                onClick={() => void handleRerun()}
+              >
+                {isRerunning ? <Loader2 className="spin" size={17} /> : <RotateCcw size={17} />}
+                {isRerunning ? "正在创建" : "重新运行"}
+              </button>
+            </div>
+
+            {error ? <div className="error-line">{error}</div> : null}
+
+            <section className="detail-summary" aria-label="报告任务信息">
+              <div className="detail-title-row">
+                <h2>{selectedJob.query}</h2>
+                <span className={`job-status ${selectedJob.status}`}>
+                  {jobStatusLabel(selectedJob.status)}
+                </span>
+              </div>
+              <dl className="detail-metadata">
+                <div>
+                  <dt>研究模式</dt>
+                  <dd>{modeLabel(selectedJob.mode)}</dd>
+                </div>
+                <div>
+                  <dt>模型</dt>
+                  <dd>{selectedJob.model || selectedJob.provider}</dd>
+                </div>
+                <div>
+                  <dt>创建时间</dt>
+                  <dd>{formatDateTime(selectedJob.created_at)}</dd>
+                </div>
+                <div>
+                  <dt>更新时间</dt>
+                  <dd>{formatDateTime(selectedJob.updated_at)}</dd>
+                </div>
+                <div className="detail-id-row">
+                  <dt>任务 ID</dt>
+                  <dd>{selectedJob.id}</dd>
+                </div>
+                {selectedJob.rerun_of_job_id ? (
+                  <div className="detail-id-row">
+                    <dt>来源任务</dt>
+                    <dd>{selectedJob.rerun_of_job_id}</dd>
+                  </div>
+                ) : null}
+              </dl>
+            </section>
+
+            <div className="timeline detail-timeline">
+              <div className="section-title">
+                <Sparkles size={17} />
+                研究日志
+              </div>
+              {events.length === 0 ? (
+                <div className="empty-state">
+                  <PauseCircle size={18} />
+                  暂无研究日志
+                </div>
+              ) : (
+                events.map((event) => (
+                  <div className="event-row" key={event.id}>
+                    <div className="event-icon">{getEventIcon(event.type)}</div>
+                    <div>
+                      <strong>{event.message}</strong>
+                      <span>{new Date(event.created_at).toLocaleTimeString("zh-CN")}</span>
+                      <EventDetail event={event} />
+                    </div>
+                  </div>
                 ))
               )}
             </div>
@@ -885,9 +1069,33 @@ export function ResearchWorkspace() {
       </section>
 
       <aside className="report-panel">
-        <div className="section-title">
-          <FileText size={17} />
-          研究报告
+        <div className="report-header">
+          <div className="section-title">
+            <FileText size={17} />
+            研究报告
+          </div>
+          <div className="report-actions">
+            <button
+              className="icon-button report-export-button"
+              type="button"
+              aria-label="导出 Markdown"
+              title="导出 Markdown"
+              disabled={!report}
+              onClick={() => downloadMarkdownReport({ query, report, jobId })}
+            >
+              <Download size={17} />
+            </button>
+            <button
+              className="icon-button report-export-button"
+              type="button"
+              aria-label="导出 PDF"
+              title="导出 PDF"
+              disabled={!report || !jobId || isRunning || isExportingPdf}
+              onClick={() => void handlePdfExport()}
+            >
+              {isExportingPdf ? <Loader2 className="spin" size={17} /> : <FileDown size={17} />}
+            </button>
+          </div>
         </div>
         <article className="report-body">
           {report ? (

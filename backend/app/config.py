@@ -22,7 +22,26 @@ DEFAULT_OPENAI_MODEL_OPTIONS = (
     "gpt-5-nano",
 )
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-6"
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"
+DEFAULT_ANTHROPIC_MODEL_OPTIONS = (
+    "claude-sonnet-4-6",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-haiku-4-5-20251001",
+)
+DEFAULT_GEMINI_MODEL = "gemini-3.5-flash"
+DEFAULT_GEMINI_MODEL_OPTIONS = (
+    "gemini-3.5-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+)
+DEFAULT_OPENAI_EVIDENCE_MODEL = "gpt-5-nano"
+DEFAULT_ANTHROPIC_EVIDENCE_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_GEMINI_EVIDENCE_MODEL = "gemini-2.5-flash-lite"
 DEFAULT_SEARCH_PROVIDER = "serpapi"
 DEFAULT_ACADEMIC_SEARCH_ENGINE = "google_scholar"
 DEFAULT_DATABASE_URL = f"sqlite+aiosqlite:///{PROJECT_ROOT / 'data' / 'pz_deep_research.db'}"
@@ -38,7 +57,8 @@ class Settings:
     default_provider: str = "mock"
     default_model: str = ""
     mock_provider_delay_seconds: float = 0.0
-    llm_max_retries: int = 1
+    llm_max_retries: int = 3
+    llm_retry_base_delay_seconds: float = 2.0
     llm_timeout_seconds: float = 60.0
     openai_api_key: str = ""
     openai_base_url: str = DEFAULT_OPENAI_BASE_URL
@@ -46,16 +66,23 @@ class Settings:
     openai_model_options: tuple[str, ...] = DEFAULT_OPENAI_MODEL_OPTIONS
     anthropic_api_key: str = ""
     anthropic_model: str = ""
+    anthropic_model_options: tuple[str, ...] = DEFAULT_ANTHROPIC_MODEL_OPTIONS
     gemini_api_key: str = ""
     gemini_model: str = ""
+    gemini_model_options: tuple[str, ...] = DEFAULT_GEMINI_MODEL_OPTIONS
     search_provider: str = DEFAULT_SEARCH_PROVIDER
     academic_search_engine: str = DEFAULT_ACADEMIC_SEARCH_ENGINE
     serpapi_api_key: str = ""
     jina_api_key: str = ""
     visit_max_concurrency: int = 5
-    evidence_extraction_model: str = "gpt-5-nano"
+    evidence_extraction_model: str = DEFAULT_OPENAI_EVIDENCE_MODEL
+    anthropic_evidence_model: str = DEFAULT_ANTHROPIC_EVIDENCE_MODEL
+    gemini_evidence_model: str = DEFAULT_GEMINI_EVIDENCE_MODEL
     database_url: str = DEFAULT_DATABASE_URL
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
+    pdf_export_timeout_seconds: float = 45.0
+    pdf_export_max_concurrency: int = 2
+    pdf_chromium_executable_path: str = ""
 
 
 def _get_int_env(name: str, default: int) -> int:
@@ -119,7 +146,8 @@ def get_settings() -> Settings:
         default_provider=_get_env("DEFAULT_PROVIDER", "mock"),
         default_model=_get_env("DEFAULT_MODEL", ""),
         mock_provider_delay_seconds=_get_float_env("MOCK_PROVIDER_DELAY_SECONDS", 0.0),
-        llm_max_retries=_get_int_env("LLM_MAX_RETRIES", 1),
+        llm_max_retries=_get_int_env("LLM_MAX_RETRIES", 3),
+        llm_retry_base_delay_seconds=_get_float_env("LLM_RETRY_BASE_DELAY_SECONDS", 2.0),
         llm_timeout_seconds=_get_float_env("LLM_TIMEOUT_SECONDS", 60.0),
         openai_api_key=_get_env("OPENAI_API_KEY", ""),
         openai_base_url=_get_env("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL),
@@ -127,16 +155,38 @@ def get_settings() -> Settings:
         openai_model_options=_get_csv_env("OPENAI_MODEL_OPTIONS", DEFAULT_OPENAI_MODEL_OPTIONS),
         anthropic_api_key=_get_env("ANTHROPIC_API_KEY", ""),
         anthropic_model=_get_env("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL),
+        anthropic_model_options=_get_csv_env(
+            "ANTHROPIC_MODEL_OPTIONS",
+            DEFAULT_ANTHROPIC_MODEL_OPTIONS,
+        ),
         gemini_api_key=_get_env("GEMINI_API_KEY", ""),
         gemini_model=_get_env("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+        gemini_model_options=_get_csv_env(
+            "GEMINI_MODEL_OPTIONS",
+            DEFAULT_GEMINI_MODEL_OPTIONS,
+        ),
         search_provider=_get_env("SEARCH_PROVIDER", DEFAULT_SEARCH_PROVIDER).lower(),
         academic_search_engine=_get_env("ACADEMIC_SEARCH_ENGINE", DEFAULT_ACADEMIC_SEARCH_ENGINE),
         serpapi_api_key=_get_env("SERPAPI_API_KEY", ""),
         jina_api_key=_get_env("JINA_API_KEY", ""),
         visit_max_concurrency=_get_int_env("VISIT_MAX_CONCURRENCY", 5),
-        evidence_extraction_model=_get_env("EVIDENCE_EXTRACTION_MODEL", "gpt-5-nano"),
+        evidence_extraction_model=_get_env(
+            "EVIDENCE_EXTRACTION_MODEL",
+            DEFAULT_OPENAI_EVIDENCE_MODEL,
+        ),
+        anthropic_evidence_model=_get_env(
+            "ANTHROPIC_EVIDENCE_MODEL",
+            DEFAULT_ANTHROPIC_EVIDENCE_MODEL,
+        ),
+        gemini_evidence_model=_get_env(
+            "GEMINI_EVIDENCE_MODEL",
+            DEFAULT_GEMINI_EVIDENCE_MODEL,
+        ),
         database_url=_get_database_url(),
         cors_origins=_get_cors_origins(),
+        pdf_export_timeout_seconds=_get_float_env("PDF_EXPORT_TIMEOUT_SECONDS", 45.0),
+        pdf_export_max_concurrency=_get_int_env("PDF_EXPORT_MAX_CONCURRENCY", 2),
+        pdf_chromium_executable_path=_get_env("PDF_CHROMIUM_EXECUTABLE_PATH", ""),
     )
 
 

@@ -37,10 +37,10 @@ EVENT_COLUMNS = {"id", "job_id", "type", "message", "payload", "created_at"}
 
 def _validate_existing_table(inspector, table_name: str, expected_columns: set[str]) -> None:
     actual_columns = {column["name"] for column in inspector.get_columns(table_name)}
-    if actual_columns != expected_columns:
+    if not expected_columns.issubset(actual_columns):
         raise RuntimeError(
             f"Existing table {table_name} does not match the expected baseline schema. "
-            f"Expected {sorted(expected_columns)}, got {sorted(actual_columns)}."
+            f"Required {sorted(expected_columns)}, got {sorted(actual_columns)}."
         )
 
 

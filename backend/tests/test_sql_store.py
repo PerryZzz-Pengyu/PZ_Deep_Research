@@ -144,6 +144,42 @@ def test_sql_store_can_claim_anonymous_history_for_future_user_account(tmp_path)
     assert [item.id for item in user_history] == [job.id]
 
 
+def test_sql_store_persists_rerun_lineage(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'lineage.db'}"
+
+    async def run_scenario():
+        store = SqlJobStore(database_url)
+        await store.initialize()
+        original_request = ResearchRequest(
+            query="保存重新运行来源任务",
+            mode="deep",
+            provider="mock",
+        )
+        original = await store.create_job(
+            original_request,
+            provider="mock",
+            anonymous_id=VISITOR_A,
+        )
+        rerun = await store.create_job(
+            original_request,
+            provider="mock",
+            anonymous_id=VISITOR_A,
+            rerun_of_job_id=original.id,
+        )
+        await store.dispose()
+
+        restored_store = SqlJobStore(database_url)
+        await restored_store.initialize()
+        restored = await restored_store.get_job(rerun.id, anonymous_id=VISITOR_A)
+        await restored_store.dispose()
+        return original, restored
+
+    original, restored = asyncio.run(run_scenario())
+
+    assert restored is not None
+    assert restored.rerun_of_job_id == original.id
+
+
 def test_alembic_upgrade_creates_versioned_product_schema(tmp_path) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'migrated.db'}"
 
@@ -161,7 +197,7 @@ def test_alembic_upgrade_creates_versioned_product_schema(tmp_path) -> None:
     job, version = asyncio.run(run_scenario())
 
     assert job.query == "迁移后创建任务"
-    assert version == "20260608_01"
+    assert version == "20260609_02"
 
 
 def test_alembic_upgrade_baselines_matching_unversioned_schema(tmp_path) -> None:
@@ -180,4 +216,4 @@ def test_alembic_upgrade_baselines_matching_unversioned_schema(tmp_path) -> None
         await migrated_store.dispose()
         return version
 
-    assert asyncio.run(run_scenario()) == "20260608_01"
+    assert asyncio.run(run_scenario()) == "20260609_02"

@@ -31,6 +31,7 @@ jobs = Table(
     "research_jobs",
     metadata,
     Column("id", String(32), primary_key=True),
+    Column("rerun_of_job_id", String(32), nullable=True),
     Column("query", Text, nullable=False),
     Column("mode", String(16), nullable=False),
     Column("provider", String(32), nullable=False),
@@ -63,6 +64,7 @@ events = Table(
 
 Index("ix_research_jobs_anonymous_updated", jobs.c.anonymous_id, jobs.c.updated_at)
 Index("ix_research_jobs_user_updated", jobs.c.user_id, jobs.c.updated_at)
+Index("ix_research_jobs_rerun_of", jobs.c.rerun_of_job_id)
 Index("ix_research_events_job_created", events.c.job_id, events.c.created_at)
 
 
@@ -75,6 +77,7 @@ def _as_utc(value: datetime) -> datetime:
 def _job_from_row(row) -> ResearchJob:
     return ResearchJob(
         id=row.id,
+        rerun_of_job_id=row.rerun_of_job_id,
         query=row.query,
         mode=row.mode,
         provider=row.provider,
@@ -149,9 +152,11 @@ class SqlJobStore:
         *,
         anonymous_id: str = "local-development",
         user_id: Optional[str] = None,
+        rerun_of_job_id: Optional[str] = None,
     ) -> ResearchJob:
         await self._ready()
         job = ResearchJob(
+            rerun_of_job_id=rerun_of_job_id,
             query=request.query,
             mode=request.mode,
             provider=provider,
@@ -161,6 +166,7 @@ class SqlJobStore:
             await connection.execute(
                 insert(jobs).values(
                     id=job.id,
+                    rerun_of_job_id=job.rerun_of_job_id,
                     query=job.query,
                     mode=job.mode,
                     provider=job.provider,

@@ -3,6 +3,7 @@ export type ProviderName = "mock" | "openai" | "anthropic" | "gemini";
 
 export type ResearchJob = {
   id: string;
+  rerun_of_job_id?: string | null;
   query: string;
   mode: ResearchMode;
   provider: string;

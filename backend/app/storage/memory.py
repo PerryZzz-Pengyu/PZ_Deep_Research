@@ -27,8 +27,10 @@ class InMemoryJobStore:
         *,
         anonymous_id: str = "local-development",
         user_id: Optional[str] = None,
+        rerun_of_job_id: Optional[str] = None,
     ) -> ResearchJob:
         job = ResearchJob(
+            rerun_of_job_id=rerun_of_job_id,
             query=request.query,
             mode=request.mode,
             provider=provider,

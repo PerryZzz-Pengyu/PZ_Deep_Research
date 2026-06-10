@@ -8,8 +8,15 @@ def test_get_settings_uses_provider_default_models_when_env_is_blank(monkeypatch
         "DEFAULT_MODEL",
         "OPENAI_MODEL",
         "OPENAI_MODEL_OPTIONS",
+        "EVIDENCE_EXTRACTION_MODEL",
         "ANTHROPIC_MODEL",
+        "ANTHROPIC_MODEL_OPTIONS",
+        "ANTHROPIC_EVIDENCE_MODEL",
         "GEMINI_MODEL",
+        "GEMINI_MODEL_OPTIONS",
+        "GEMINI_EVIDENCE_MODEL",
+        "LLM_MAX_RETRIES",
+        "LLM_RETRY_BASE_DELAY_SECONDS",
     ]:
         monkeypatch.setenv(name, "")
 
@@ -24,7 +31,22 @@ def test_get_settings_uses_provider_default_models_when_env_is_blank(monkeypatch
         "gpt-5.4-nano",
     )
     assert settings.anthropic_model == "claude-sonnet-4-6"
-    assert settings.gemini_model == "gemini-2.5-flash"
+    assert settings.anthropic_model_options[:3] == (
+        "claude-sonnet-4-6",
+        "claude-opus-4-8",
+        "claude-opus-4-7",
+    )
+    assert settings.gemini_model == "gemini-3.5-flash"
+    assert settings.gemini_model_options[:3] == (
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
+        "gemini-3-flash-preview",
+    )
+    assert settings.llm_max_retries == 3
+    assert settings.llm_retry_base_delay_seconds == 2.0
+    assert settings.evidence_extraction_model == "gpt-5-nano"
+    assert settings.anthropic_evidence_model == "claude-haiku-4-5-20251001"
+    assert settings.gemini_evidence_model == "gemini-2.5-flash-lite"
 
 
 def test_get_settings_expands_localhost_cors_aliases(monkeypatch) -> None:

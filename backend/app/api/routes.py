@@ -2,16 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from app.agent.providers import ProviderFactory
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import ResearchEvent, ResearchJob, ResearchRequest
 from app.agent.tools import build_default_tool_registry
 from app.config import missing_provider_requirements, missing_search_requirements, provider_model, get_settings
+from app.reporting import PdfExportError, PdfExporter, pdf_export_filename
 from app.storage import SqlJobStore, upgrade_database
 
 
@@ -22,9 +24,20 @@ runtime = AgentRuntime(
     provider_factory=ProviderFactory(settings),
     tool_registry=build_default_tool_registry(settings),
     max_llm_retries=settings.llm_max_retries,
+    llm_retry_base_delay_seconds=settings.llm_retry_base_delay_seconds,
     llm_timeout_seconds=settings.llm_timeout_seconds,
     evidence_extraction_model=settings.evidence_extraction_model,
+    evidence_extraction_models={
+        "openai": settings.evidence_extraction_model,
+        "anthropic": settings.anthropic_evidence_model,
+        "gemini": settings.gemini_evidence_model,
+    },
     evidence_extraction_concurrency=settings.visit_max_concurrency,
+)
+pdf_exporter = PdfExporter(
+    timeout_seconds=settings.pdf_export_timeout_seconds,
+    max_concurrency=settings.pdf_export_max_concurrency,
+    chromium_executable_path=settings.pdf_chromium_executable_path,
 )
 live_event_queues: dict[str, set[asyncio.Queue[ResearchEvent]]] = {}
 live_event_lock = asyncio.Lock()
@@ -162,10 +175,12 @@ async def get_model_options() -> dict[str, object]:
                 for model in settings.openai_model_options
             ],
             "anthropic": [
-                {"id": settings.anthropic_model, "label": settings.anthropic_model},
+                {"id": model, "label": model}
+                for model in settings.anthropic_model_options
             ],
             "gemini": [
-                {"id": settings.gemini_model, "label": settings.gemini_model},
+                {"id": model, "label": model}
+                for model in settings.gemini_model_options
             ],
         },
         "defaults": {
@@ -221,6 +236,89 @@ async def get_openai_available_models() -> dict[str, object]:
     }
 
 
+@router.get("/models/anthropic")
+async def get_anthropic_available_models() -> dict[str, object]:
+    missing = missing_provider_requirements(settings, "anthropic", require_real_search=False)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Claude 配置不完整，请先补齐环境变量",
+                "missing": missing,
+            },
+        )
+
+    from anthropic import AsyncAnthropic
+
+    try:
+        async with AsyncAnthropic(api_key=settings.anthropic_api_key) as client:
+            response = await client.models.list(limit=100)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "无法从 Anthropic 获取模型列表",
+                "error": str(exc),
+            },
+        ) from exc
+
+    configured = list(settings.anthropic_model_options)
+    available = sorted(
+        model.id
+        for model in response.data
+        if getattr(model, "id", "")
+    )
+    available_set = set(available)
+    return {
+        "configured": configured,
+        "available": available,
+        "configured_available": [model for model in configured if model in available_set],
+    }
+
+
+@router.get("/models/gemini")
+async def get_gemini_available_models() -> dict[str, object]:
+    missing = missing_provider_requirements(settings, "gemini", require_real_search=False)
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Gemini 配置不完整，请先补齐环境变量",
+                "missing": missing,
+            },
+        )
+
+    from google import genai
+
+    client = genai.Client(api_key=settings.gemini_api_key)
+    try:
+        pager = await client.aio.models.list(config={"page_size": 100})
+        available = sorted([
+            model.name.removeprefix("models/")
+            async for model in pager
+            if getattr(model, "name", "")
+            and "generateContent" in (getattr(model, "supported_actions", None) or [])
+        ])
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": "无法从 Gemini 获取模型列表",
+                "error": str(exc),
+            },
+        ) from exc
+    finally:
+        await client.aio.aclose()
+
+    configured = list(settings.gemini_model_options)
+    available_set = set(available)
+    return {
+        "configured": configured,
+        "available": available,
+        "configured_available": [model for model in configured if model in available_set],
+    }
+
+
 @router.get("/research-jobs/{job_id}", response_model=ResearchJob)
 async def get_research_job(
     job_id: str,
@@ -246,6 +344,84 @@ async def list_research_jobs(
         limit=limit,
         offset=offset,
     )
+
+
+@router.get("/research-jobs/{job_id}/export/pdf")
+async def export_research_job_pdf(
+    job_id: str,
+    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+) -> Response:
+    visitor_id = validate_visitor_id(visitor_id)
+    job = await job_store.get_job(job_id, anonymous_id=visitor_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="研究任务不存在")
+
+    report = job.final_report or job.draft_report
+    if not report:
+        raise HTTPException(status_code=409, detail="报告尚未生成，无法导出 PDF")
+
+    try:
+        pdf = await pdf_exporter.render(job, report)
+    except PdfExportError as exc:
+        raise HTTPException(status_code=503, detail="PDF 生成失败，请稍后重试") from exc
+
+    filename = pdf_export_filename(job.query, job.id)
+    fallback_filename = f"pz-deep-research-{job.id[:8]}.pdf"
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": (
+                f'attachment; filename="{fallback_filename}"; '
+                f"filename*=UTF-8''{quote(filename)}"
+            ),
+        },
+    )
+
+
+@router.post("/research-jobs/{job_id}/rerun", response_model=ResearchJob)
+async def rerun_research_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+) -> ResearchJob:
+    visitor_id = validate_visitor_id(visitor_id)
+    source_job = await job_store.get_job(job_id, anonymous_id=visitor_id)
+    if not source_job:
+        raise HTTPException(status_code=404, detail="研究任务不存在")
+    if source_job.status in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail="任务仍在运行，无法重新运行")
+
+    missing = missing_provider_requirements(
+        settings,
+        source_job.provider,
+        model_override=source_job.model,
+    )
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "原任务使用的研究配置当前不可用，请先补齐环境变量",
+                "provider": source_job.provider,
+                "missing": missing,
+            },
+        )
+
+    request = ResearchRequest(
+        query=source_job.query,
+        mode=source_job.mode,
+        provider=source_job.provider,
+        model=source_job.model,
+    )
+    rerun_job = await job_store.create_job(
+        request,
+        provider=source_job.provider,
+        anonymous_id=visitor_id,
+        rerun_of_job_id=source_job.id,
+    )
+    background_tasks.add_task(run_research_job, rerun_job.id, request)
+    return rerun_job
 
 
 @router.post("/research-jobs/{job_id}/cancel", response_model=ResearchJob)

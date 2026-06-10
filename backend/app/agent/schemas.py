@@ -34,6 +34,7 @@ class ResearchEvent(BaseModel):
 
 class ResearchJob(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
+    rerun_of_job_id: Optional[str] = None
     query: str
     mode: ResearchMode
     provider: str

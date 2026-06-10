@@ -33,12 +33,15 @@ class GeminiProvider(LLMProvider):
 
         prompt = "\n\n".join(f"{message.role}: {message.content}" for message in messages)
         client = genai.Client(api_key=self.api_key)
-        response = await client.aio.models.generate_content(
-            model=selected_model,
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=temperature,
-                max_output_tokens=max_tokens,
-            ),
-        )
+        try:
+            response = await client.aio.models.generate_content(
+                model=selected_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                ),
+            )
+        finally:
+            await client.aio.aclose()
         return LLMResult(content=response.text or "", model=selected_model)

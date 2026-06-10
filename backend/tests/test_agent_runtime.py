@@ -84,9 +84,10 @@ class StreamingProvider(LLMProvider):
 class SequenceProvider(LLMProvider):
     name = "openai"
 
-    def __init__(self, results: list[LLMResult]) -> None:
+    def __init__(self, results: list[LLMResult | Exception]) -> None:
         self.results = results
         self.calls = 0
+        self.message_history: list[list[LLMMessage]] = []
 
     async def generate(
         self,
@@ -96,8 +97,11 @@ class SequenceProvider(LLMProvider):
         temperature: float = 0.3,
         max_tokens: int = 4096,
     ) -> LLMResult:
+        self.message_history.append(list(messages))
         result = self.results[min(self.calls, len(self.results) - 1)]
         self.calls += 1
+        if isinstance(result, Exception):
+            raise result
         return result
 
 
@@ -464,6 +468,101 @@ def test_runtime_retries_provider_failure_before_succeeding() -> None:
     assert "llm_retry" in event_types
     assert events[-1].type == "completed"
     assert events[-1].payload["final_report"] == "重试后成功"
+
+
+def test_report_transient_failure_retries_from_selected_evidence() -> None:
+    async def run_runtime():
+        provider = SequenceProvider(
+            [
+                LLMResult(
+                    content=(
+                        '<tool_call>\n{"name":"search","arguments":{"query":'
+                        '["agent architecture survey"]}}\n</tool_call>'
+                    ),
+                    model="openai-test",
+                ),
+                RuntimeError("503 UNAVAILABLE: high demand"),
+                LLMResult(
+                    content=make_valid_answer("重试后报告", "quick"),
+                    model="openai-test",
+                ),
+            ]
+        )
+        search_tool = FixedTool(
+            "search",
+            ToolResult(name="search", content="搜索结果", sources=make_sources(3)),
+        )
+        visit_tool = FixedTool(
+            "visit",
+            ToolResult(name="visit", content="网页正文", sources=make_visit_sources(3)),
+        )
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry([search_tool, visit_tool]),
+            max_llm_retries=3,
+            llm_retry_base_delay_seconds=0,
+        )
+        request = ResearchRequest(
+            query="Agent 架构",
+            mode="quick",
+            provider="openai",
+        )
+        events = [event async for event in runtime.run("report-retry-job", request)]
+        return search_tool, visit_tool, events
+
+    search_tool, visit_tool, events = asyncio.run(run_runtime())
+    retry_events = [event for event in events if event.type == "llm_retry"]
+
+    assert len(search_tool.calls) == 1
+    assert len(visit_tool.calls) == 1
+    assert len(retry_events) == 1
+    assert retry_events[0].payload["stage"] == "report"
+    assert retry_events[0].payload["resume_from"] == "selected_evidence"
+    assert "仅重试报告生成" in retry_events[0].message
+    assert events[-1].type == "completed"
+
+
+def test_non_transient_provider_error_does_not_retry() -> None:
+    async def run_runtime():
+        provider = SequenceProvider([RuntimeError("400 invalid model configuration")])
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry([]),
+            max_llm_retries=3,
+        )
+        request = ResearchRequest(query="错误配置", mode="quick", provider="openai")
+        events = [event async for event in runtime.run("non-transient-job", request)]
+        return provider, events
+
+    provider, events = asyncio.run(run_runtime())
+
+    assert provider.calls == 1
+    assert not any(event.type == "llm_retry" for event in events)
+    assert events[-1].type == "failed"
+    assert events[-1].payload["transient"] is False
+
+
+def test_provider_specific_evidence_models_use_cheapest_configured_model() -> None:
+    runtime = AgentRuntime(
+        provider_factory=FixedProviderFactory(SequenceProvider([])),
+        tool_registry=ToolRegistry([]),
+        evidence_extraction_model="gpt-5-nano",
+        evidence_extraction_models={
+            "openai": "gpt-5-nano",
+            "anthropic": "claude-haiku-4-5-20251001",
+            "gemini": "gemini-2.5-flash-lite",
+        },
+    )
+
+    assert runtime._evidence_model_for_provider("openai", "gpt-5.5") == "gpt-5-nano"
+    assert (
+        runtime._evidence_model_for_provider("anthropic", "claude-sonnet-4-6")
+        == "claude-haiku-4-5-20251001"
+    )
+    assert (
+        runtime._evidence_model_for_provider("gemini", "gemini-3.5-flash")
+        == "gemini-2.5-flash-lite"
+    )
 
 
 def test_runtime_timeout_emits_failed_event() -> None:
@@ -988,3 +1087,76 @@ def test_real_provider_must_rewrite_report_with_references() -> None:
     assert "citation_required" in event_types
     assert events[-1].type == "completed"
     assert "## References" in events[-1].payload["final_report"]
+
+
+def test_report_rewrite_uses_bounded_fresh_context() -> None:
+    async def run_runtime():
+        too_long_answer = (
+            "<answer>\n"
+            + ("研" * 1600)
+            + " [1]\n\n## References\n"
+            + "Source. (n.d.). Evidence source. https://example.com/paper-1\n"
+            + "</answer>"
+        )
+        provider = SequenceProvider(
+            [
+                LLMResult(
+                    content=(
+                        '<tool_call>\n{"name":"search","arguments":{"query":'
+                        '["agent architecture survey","LLM agent workflow","multi-agent systems"]}}\n'
+                        "</tool_call>"
+                    ),
+                    model="openai-test",
+                ),
+                LLMResult(content=too_long_answer, model="openai-test"),
+                LLMResult(
+                    content=make_valid_answer("压缩后的报告", "deep"),
+                    model="openai-test",
+                ),
+            ]
+        )
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry(
+                [
+                    FixedTool(
+                        "search",
+                        ToolResult(name="search", content="搜索结果", sources=make_sources(10)),
+                    ),
+                    FixedTool(
+                        "visit",
+                        ToolResult(
+                            name="visit",
+                            content="网页正文",
+                            sources=make_visit_sources(10),
+                        ),
+                    ),
+                ]
+            ),
+        )
+        request = ResearchRequest(
+            query="各种架构 Agent 的运行原理",
+            mode="deep",
+            provider="openai",
+        )
+        events = [event async for event in runtime.run("bounded-report-context", request)]
+        return provider, events
+
+    provider, events = asyncio.run(run_runtime())
+
+    assert events[-1].type == "completed"
+    assert len(provider.message_history) == 3
+
+    initial_report_messages = provider.message_history[1]
+    rewrite_messages = provider.message_history[2]
+    assert len(initial_report_messages) == 2
+    assert len(rewrite_messages) == 2
+    assert all("<tool_response>" not in message.content for message in initial_report_messages)
+    assert all("<tool_response>" not in message.content for message in rewrite_messages)
+    assert "<previous_report>" in rewrite_messages[1].content
+    assert "压缩到约 1400 字" in rewrite_messages[1].content
+    assert "保留上一稿约 88% 的正文" in rewrite_messages[1].content
+    assert "必须至少删除 200 个计数字符" in rewrite_messages[1].content
+    assert "可引用来源（证据卡片）" not in rewrite_messages[1].content
+    assert "full text evidence" not in rewrite_messages[1].content
+    assert rewrite_messages[1].content.count("<previous_report>") == 1

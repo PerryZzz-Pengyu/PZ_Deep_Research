@@ -119,15 +119,22 @@ class AgentRuntime:
         tool_registry: ToolRegistry,
         *,
         max_llm_retries: int = 1,
+        llm_retry_base_delay_seconds: float = 0.0,
         llm_timeout_seconds: float = 60.0,
         evidence_extraction_model: str = "gpt-5-nano",
+        evidence_extraction_models: Optional[dict[str, str]] = None,
         evidence_extraction_concurrency: int = 5,
     ) -> None:
         self.provider_factory = provider_factory
         self.tool_registry = tool_registry
         self.max_llm_retries = max(0, max_llm_retries)
+        self.llm_retry_base_delay_seconds = max(0.0, llm_retry_base_delay_seconds)
         self.llm_timeout_seconds = max(0.1, llm_timeout_seconds)
         self.evidence_extraction_model = evidence_extraction_model
+        self.evidence_extraction_models = {
+            "openai": evidence_extraction_model,
+            **(evidence_extraction_models or {}),
+        }
         self.evidence_extraction_concurrency = max(1, evidence_extraction_concurrency)
 
     async def run(self, job_id: str, request: ResearchRequest) -> AsyncIterator[ResearchEvent]:
@@ -139,8 +146,7 @@ class AgentRuntime:
         search_stages = int(mode_policy.get("search_rounds", 1))
         goal = request.query
         real_provider = provider.name in {"openai", "anthropic", "gemini"}
-        # 抽取卡片用便宜模型；非 OpenAI Provider 没有 gpt-5-nano，退回主模型。
-        extraction_model = self.evidence_extraction_model if provider.name == "openai" else request.model
+        extraction_model = self._evidence_model_for_provider(provider.name, request.model)
         extractor = EvidenceExtractor(
             provider,
             model=extraction_model,
@@ -173,7 +179,7 @@ class AgentRuntime:
             holder: dict[str, Any] = {}
             async for event in self._model_round(
                 provider, messages, request, job_id, round_index, usage,
-                allow_report_stream=False, holder=holder,
+                allow_report_stream=False, holder=holder, stage="search",
             ):
                 yield event
             result = holder.get("result")
@@ -291,12 +297,11 @@ class AgentRuntime:
         )
 
         # ===== 报告阶段 =====
-        messages.append(
-            LLMMessage(
-                role="user",
-                content=self._build_report_request(request.mode, selected_cards, selection),
-            )
-        )
+        report_request = self._build_report_request(request.mode, selected_cards, selection)
+        report_messages = [
+            LLMMessage(role="system", content=SYSTEM_PROMPT),
+            LLMMessage(role="user", content=report_request),
+        ]
         report_attempts = 0
         min_body_chars = int(mode_policy["min_report_chars"])
         max_body_chars = int(mode_policy["max_report_chars"])
@@ -304,8 +309,8 @@ class AgentRuntime:
             round_index += 1
             holder = {}
             async for event in self._model_round(
-                provider, messages, request, job_id, round_index, usage,
-                allow_report_stream=True, holder=holder,
+                provider, report_messages, request, job_id, round_index, usage,
+                allow_report_stream=True, holder=holder, stage="report",
             ):
                 yield event
             result = holder.get("result")
@@ -320,13 +325,17 @@ class AgentRuntime:
                     answer = content  # 兜底：直接用模型输出，避免卡死
                 else:
                     report_attempts += 1
-                    messages.append(LLMMessage(role="assistant", content=content))
-                    messages.append(
+                    report_messages = [
+                        LLMMessage(role="system", content=SYSTEM_PROMPT),
                         LLMMessage(
                             role="user",
-                            content="请用 <answer>...</answer> 包裹最终研究报告，正文引用只能使用 [1]、[2] 这种阿拉伯角标。",
-                        )
-                    )
+                            content=(
+                                f"{report_request}\n\n"
+                                "上一轮没有使用要求的 <answer>...</answer> 包裹报告。"
+                                "请重新生成，只输出一个完整的 <answer>，正文引用只能使用 [1]、[2] 这种阿拉伯角标。"
+                            ),
+                        ),
+                    ]
                     continue
 
             body_char_count = self._count_report_body_chars(answer)
@@ -374,8 +383,8 @@ class AgentRuntime:
                         "content_preview": answer[:1000],
                     },
                 )
-                messages.append(LLMMessage(role="assistant", content=content))
-                messages.append(
+                report_messages = [
+                    LLMMessage(role="system", content=SYSTEM_PROMPT),
                     LLMMessage(
                         role="user",
                         content=self._build_report_rewrite_request(
@@ -384,9 +393,10 @@ class AgentRuntime:
                             min_body_chars=min_body_chars,
                             max_body_chars=max_body_chars,
                             body_char_count=body_char_count,
+                            previous_answer=answer,
                         ),
-                    )
-                )
+                    ),
+                ]
                 continue
 
             if not streamed_report:
@@ -416,6 +426,7 @@ class AgentRuntime:
         *,
         allow_report_stream: bool,
         holder: dict[str, Any],
+        stage: str,
     ) -> AsyncIterator[ResearchEvent]:
         """执行一次模型流式调用，封装重试/超时/流式报告，结果写入 holder。"""
         yield ResearchEvent(
@@ -426,10 +437,11 @@ class AgentRuntime:
         )
         result = None
         streamed_report = False
-        answer_stream = TagContentStream("<answer>", "</answer>")
         last_error: Exception | None = None
         error_message = ""
         for attempt in range(self.max_llm_retries + 1):
+            answer_stream = TagContentStream("<answer>", "</answer>")
+            attempt_streamed_report = False
             try:
                 stream = provider.stream_generate(messages, model=request.model)
                 while True:
@@ -441,7 +453,7 @@ class AgentRuntime:
                         if allow_report_stream:
                             report_delta = answer_stream.feed(stream_event.delta)
                             if report_delta:
-                                streamed_report = True
+                                attempt_streamed_report = True
                                 yield ResearchEvent(
                                     job_id=job_id,
                                     type="report_delta",
@@ -464,13 +476,14 @@ class AgentRuntime:
                 if allow_report_stream:
                     trailing = answer_stream.flush()
                     if trailing:
-                        streamed_report = True
+                        attempt_streamed_report = True
                         yield ResearchEvent(
                             job_id=job_id,
                             type="report_delta",
                             message="正在生成研究报告",
                             payload={"delta": trailing, "streaming": True},
                         )
+                streamed_report = attempt_streamed_report
                 break
             except TimeoutError as exc:
                 error_message = f"模型调用超时（超过 {self.llm_timeout_seconds:g} 秒）"
@@ -479,19 +492,46 @@ class AgentRuntime:
                 error_message = f"模型调用失败：{exc}"
                 last_error = exc
 
-            if attempt < self.max_llm_retries:
+            transient = self._is_transient_llm_error(last_error)
+            if attempt_streamed_report:
+                yield ResearchEvent(
+                    job_id=job_id,
+                    type="report_reset",
+                    message="报告流式输出中断，准备从已选证据重新生成",
+                    payload={"round": round_index, "attempt": attempt + 1},
+                )
+
+            if transient and attempt < self.max_llm_retries:
+                retry_delay = min(
+                    self.llm_retry_base_delay_seconds * (2**attempt),
+                    15.0,
+                )
+                retry_message = f"{error_message}，将在 {retry_delay:g} 秒后重试"
+                resume_from = None
+                if stage == "report":
+                    retry_message = (
+                        f"{error_message}，已保留已选来源和证据卡片，"
+                        f"将在 {retry_delay:g} 秒后仅重试报告生成"
+                    )
+                    resume_from = "selected_evidence"
                 yield ResearchEvent(
                     job_id=job_id,
                     type="llm_retry",
-                    message=f"{error_message}，准备重试",
+                    message=retry_message,
                     payload={
                         "round": round_index,
                         "attempt": attempt + 1,
                         "max_retries": self.max_llm_retries,
                         "provider": provider.name,
                         "error": str(last_error),
+                        "transient": True,
+                        "retry_in_seconds": retry_delay,
+                        "stage": stage,
+                        "resume_from": resume_from,
                     },
                 )
+                if retry_delay:
+                    await asyncio.sleep(retry_delay)
                 continue
 
             yield ResearchEvent(
@@ -503,6 +543,8 @@ class AgentRuntime:
                     "attempts": attempt + 1,
                     "provider": provider.name,
                     "error": str(last_error),
+                    "transient": transient,
+                    "stage": stage,
                 },
             )
             holder["result"] = None
@@ -543,6 +585,47 @@ class AgentRuntime:
         )
         holder["result"] = result
         holder["streamed_report"] = streamed_report
+
+    @staticmethod
+    def _is_transient_llm_error(error: Exception | None) -> bool:
+        if error is None:
+            return False
+        if isinstance(error, TimeoutError):
+            return True
+        status = getattr(error, "status_code", None) or getattr(error, "code", None)
+        try:
+            if int(status) in {408, 409, 429, 500, 502, 503, 504, 529}:
+                return True
+        except (TypeError, ValueError):
+            pass
+        message = str(error).upper()
+        transient_markers = (
+            "408",
+            "409",
+            "429",
+            "500",
+            "502",
+            "503",
+            "504",
+            "529",
+            "UNAVAILABLE",
+            "RESOURCE_EXHAUSTED",
+            "RATE_LIMIT",
+            "OVERLOADED",
+            "HIGH DEMAND",
+            "TEMPORAR",
+            "TIMEOUT",
+            "TIMED OUT",
+            "CONNECTION RESET",
+        )
+        return any(marker in message for marker in transient_markers)
+
+    def _evidence_model_for_provider(
+        self,
+        provider_name: str,
+        request_model: Optional[str],
+    ) -> Optional[str]:
+        return self.evidence_extraction_models.get(provider_name) or request_model
 
     async def _visit_funnel(
         self,
@@ -802,11 +885,47 @@ class AgentRuntime:
         min_body_chars: int,
         max_body_chars: int,
         body_char_count: int,
+        previous_answer: str,
     ) -> str:
         cards_text = "\n\n".join(render_card(card) for card in selected_cards) or "（无可用证据卡片）"
         missing_text = "、".join(missing_report_format)
+        target_body_chars = (min_body_chars + max_body_chars) // 2
+        if missing_report_format == ["report_too_long"]:
+            delete_count = max(1, body_char_count - target_body_chars)
+            retention_percent = max(1, min(99, round(target_body_chars / body_char_count * 100)))
+            return (
+                "这是一次纯编辑压缩任务，不是重新研究或重新写作。\n"
+                f"上一稿正文按系统口径计为 {body_char_count} 字，允许范围为 "
+                f"{min_body_chars}-{max_body_chars} 字。\n"
+                f"请把正文压缩到约 {target_body_chars} 字，即保留上一稿约 "
+                f"{retention_percent}% 的正文；必须至少删除 {delete_count} 个计数字符。\n"
+                "编辑规则：\n"
+                "1. 只能删减、合并和缩写上一稿，不得新增事实、例子、章节或来源。\n"
+                "2. 优先删除引言套话、重复定义、次要例子、重复结论和冗余过渡句。\n"
+                "3. 保留关键架构分类、运行机制、主要局限及其原有 [n] 引用编号。\n"
+                "4. References 整节原样保留，不增加或改写参考文献。\n"
+                "5. 计数时汉字、英文字母和数字计入；Markdown 标记、标点、"
+                "References 整节与 [n] 引用标记不计入。\n"
+                "6. 只输出一个完整的 <answer>...</answer>，不要解释编辑过程。\n"
+                "<previous_report>\n"
+                f"{previous_answer}\n"
+                "</previous_report>"
+            )
+        if "report_too_long" in missing_report_format:
+            length_instruction = (
+                f"上一稿超出上限 {body_char_count - max_body_chars} 字。"
+                f"请至少删减 {max(1, body_char_count - target_body_chars)} 个计数字符，"
+                f"将正文压缩到约 {target_body_chars} 字；删除重复解释、次要例子和冗余过渡句，不要扩写。"
+            )
+        elif "report_too_short" in missing_report_format:
+            length_instruction = (
+                f"上一稿低于下限 {min_body_chars - body_char_count} 字。"
+                f"请补充关键架构、运行机制和证据比较，将正文扩展到约 {target_body_chars} 字。"
+            )
+        else:
+            length_instruction = f"请将正文控制在约 {target_body_chars} 字。"
         return (
-            f"你刚才的最终报告格式不合格，缺少：{missing_text}。请重写 <answer>。\n"
+            f"下面的上一稿未通过校验，问题是：{missing_text}。请执行编辑重写，不要沿用对话继续扩写。\n"
             "硬性要求：\n"
             "1. 关键事实、数据、疗效、安全性和适用人群结论后必须使用 [1]、[2] 这种来源角标。\n"
             "   禁止使用 [^1]、[^2] 这种 Markdown 脚注格式。\n"
@@ -815,7 +934,13 @@ class AgentRuntime:
             "4. 如果来源标记为 blocked、metadata_only 或 metadata，只能说明它是题录/摘要/受限访问证据，不能写成已阅读全文。\n"
             "5. 只能引用下面列出的来源，不要编造来源。\n"
             f"6. 正文必须为 {min_body_chars}-{max_body_chars} 字，"
-            f"不包含 References/参考文献列表与 [n] 引用标记；上一稿正文为 {body_char_count} 字。\n"
+            "计数时汉字、英文字母和数字计入，Markdown 标记、标点、References/参考文献列表与 [n] 引用标记不计入；"
+            f"上一稿正文为 {body_char_count} 字。{length_instruction}\n"
+            "7. 只输出一个完整的 <answer>...</answer>，不要在标签外解释修改过程。\n"
+            "<previous_report>\n"
+            f"{previous_answer}\n"
+            "</previous_report>\n"
+            "可引用来源（证据卡片）：\n"
             f"{cards_text}"
         )
 

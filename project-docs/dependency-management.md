@@ -99,6 +99,8 @@ aiosqlite 0.22.1
 psycopg 3.3.4
 greenlet 3.5.1
 alembic 1.18.4
+markdown-it-py 4.2.0
+playwright 1.60.0
 ```
 
 安装建议：
@@ -107,6 +109,7 @@ alembic 1.18.4
 python3 -m venv backend/.venv
 backend/.venv/bin/python -m pip install --upgrade pip setuptools
 backend/.venv/bin/python -m pip install -r backend/requirements-lock.txt
+backend/.venv/bin/playwright install chromium
 ```
 
 如果是主动做依赖升级，可以改用：
@@ -121,6 +124,7 @@ backend/.venv/bin/python -m pip install -r backend/requirements.txt
 - 真实 Provider 尚未完成 API Key 联调，所以 SDK 升级后仍需要后续集成测试。
 - SQLAlchemy 异步接口在当前 Python 3.14 环境需要显式安装 `greenlet`，已写入范围依赖和锁文件。
 - SQLite 使用 `aiosqlite`，PostgreSQL 使用 psycopg 3；Alembic 负责两种数据库的结构迁移。
+- 后端 Playwright 与前端 `@playwright/test` 均固定为 1.60.0，共用用户缓存 Chromium；`markdown-it-py` 用于安全生成 PDF 打印 HTML。
 - 当前 `pip check` 无破损依赖。
 
 ## 前端依赖状态

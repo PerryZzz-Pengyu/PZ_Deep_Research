@@ -14,6 +14,318 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+## 2026-06-09 16:57 CST +0800
+
+### 问题来源
+
+- 任务 `6d27a3fb230948fa89f3e43053163053` 已完成搜索、10 个全文来源访问、证据卡片和来源筛选。
+- 最终报告调用 `gemini-3.5-flash` 时连续返回 `503 UNAVAILABLE / high demand`；旧配置仅重试 1 次且没有退避，因此任务失败。
+- Gemini 和 Claude 的证据抽取此前回退到前端选择的主模型，成本较高，也会增加主模型的负载与临时过载概率。
+
+### 修改
+
+- 默认 `LLM_MAX_RETRIES` 从 1 调整为 3，新增 `LLM_RETRY_BASE_DELAY_SECONDS=2`。
+- Runtime 新增临时错误分类，只对超时、429、408/409、5xx、`UNAVAILABLE`、`RESOURCE_EXHAUSTED`、过载和连接重置等错误重试，默认指数退避 2、4、8 秒。
+- 400 模型名错误、参数错误等永久错误不再重复请求。
+- 报告生成的临时错误重试复用已选来源和证据卡片；`llm_retry` 事件记录 `stage=report`、`resume_from=selected_evidence`，不会重新搜索或访问。
+- 流式报告中途失败时先发送 `report_reset`，清除不完整草稿后从同一证据上下文重新生成。
+
+### 证据模型
+
+- OpenAI：`EVIDENCE_EXTRACTION_MODEL=gpt-5-nano`。
+- Claude：新增 `ANTHROPIC_EVIDENCE_MODEL=claude-haiku-4-5-20251001`。
+- Gemini：新增 `GEMINI_EVIDENCE_MODEL=gemini-2.5-flash-lite`。
+- 前端选择的模型只用于搜索词与最终报告，证据抽取固定使用各 Provider 的低成本模型；并发数保持不变。
+
+### 测试
+
+- 新增 503 报告重试测试，确认 search 和 visit 均只执行一次，报告从 `selected_evidence` 继续。
+- 新增永久错误不重试测试。
+- 新增三家 Provider 证据模型选择测试。
+- 重试与证据模型定向测试通过。
+- Gemini Models API 虽仍列出 `gemini-2.0-flash-lite`，但真实生成接口返回 404 已下线；因此没有采用这个更便宜但不可调用的旧型号，改用当前可调用的最低成本稳定型号 `gemini-2.5-flash-lite`。
+- 使用真实 API Key 完成证据抽取冒烟测试：
+  - `claude-haiku-4-5-20251001` 成功返回非空证据卡片。
+  - `gemini-2.5-flash-lite` 成功返回非空证据卡片。
+- 后端全量 pytest：100 个通过，另有 1 个既有 Starlette/TestClient 弃用警告。
+- 重启后端并确认运行配置已加载：`LLM_MAX_RETRIES=3`、退避基数 2 秒，以及三家低成本证据抽取模型均已生效。
+- `http://127.0.0.1:8000/health` 返回 `{"status":"ok"}`，前端可以继续连接现有 8000 后端测试。
+
+### 影响文件
+
+- `.env`
+- `.env.example`
+- `backend/app/config.py`
+- `backend/app/api/routes.py`
+- `backend/app/agent/runtime.py`
+- `backend/tests/test_config.py`
+- `backend/tests/test_agent_runtime.py`
+- `project-docs/api-key-setup.md`
+- `project-docs/technical-architecture.md`
+- `project-docs/testing-guide.md`
+- `project-docs/changelog.md`
+
+## 2026-06-09 16:35 CST +0800
+
+### 问题定位
+
+- 检查重跑任务 `6540b86bc608495eb4b916b90cd8154f`：
+  - 3 个英文搜索词、13 条滚动访问、13 张证据卡片均正常。
+  - 最终选择 10 个来源，全部为 `full_text`，无降级或全文不足。
+  - 修复后的报告上下文已不再无限累积：报告轮输入 token 为 6943、9683、9571，明显低于旧任务后两轮的 17600、26728。
+  - Claude 三稿正文仍为 1778、1662、1665，唯一失败项仍是 `report_too_long`。
+- 原因是普通重写请求仍附带完整证据卡片，Claude倾向根据证据重新扩写整篇报告，而不是只编辑上一稿。
+
+### 修复
+
+- 新增仅针对单一 `report_too_long` 的纯编辑压缩路径：
+  - 只提供上一稿，不再重复注入证据卡片。
+  - 禁止新增事实、案例、章节、来源或参考文献。
+  - 要求保留原引用编号和 References 整节。
+  - 根据当前正文计数动态计算目标保留比例和必须删除的最少字符数。
+  - 明确要求删除引言套话、重复定义、次要案例、重复结论和冗余过渡句。
+- 其他格式错误、引用错误或过短报告仍使用证据卡片重写路径，避免丢失事实依据。
+
+### 验证
+
+- 报告相关定向测试：8 个通过。
+- 使用真实 `claude-sonnet-4-6` 验证纯压缩提示：
+  - 1835 字样稿压缩为 1379 字，落入 deep 模式 1300-1500 区间。
+  - `## References` 和 `[1]`、`[2]` 引用均保留。
+
+### 影响文件
+
+- `backend/app/agent/runtime.py`
+- `backend/tests/test_agent_runtime.py`
+- `project-docs/changelog.md`
+
+## 2026-06-09 16:24 CST +0800
+
+### 问题定位
+
+- 检查任务 `a1f1ee1a6d604f44b7a3e1c8b2fed9f8` 的持久日志：
+  - deep 模式完成 3 个搜索词、10 个来源访问、10 张证据卡片和 10 个最终来源筛选。
+  - 9 个来源为全文证据，来源数量与最低全文证据线均达标。
+  - 任务唯一失败项为 `report_too_long`；三次报告正文分别计数 1685、1820、1759，超过 1300-1500 的要求。
+  - 报告重写把旧稿和整套证据持续追加进同一消息历史，单轮输入 token 从 8606 增至 17600、26728，导致费用和指令稀释同步增加。
+
+### 修复
+
+- 报告生成阶段改用独立上下文，不再携带搜索对话和工具候选历史。
+- 每次报告重写都重新构造固定大小的 system/user 消息，不累计此前失败稿。
+- 重写请求只保留当前待编辑稿、证据卡片和校验要求。
+- 超长报告会明确给出超出量、至少删减量和区间中点目标；过短报告会给出缺少量和扩写目标。
+- 字数提示与 Runtime 的实际计数口径对齐：汉字、英文字母和数字计入，Markdown 标记、标点、引用标记和 References 不计入。
+
+### 测试
+
+- 新增报告上下文有界回归测试，确认初稿和重写调用都只有独立的 system/user 消息。
+- 验证报告阶段不再包含 `<tool_response>` 搜索历史。
+- 验证 1600 字 deep 报告会收到“至少删减 200 个计数字符、压缩到约 1400 字”的定向要求。
+- 报告与重写相关测试：8 个通过。
+
+### 影响文件
+
+- `backend/app/agent/runtime.py`
+- `backend/tests/test_agent_runtime.py`
+- `project-docs/technical-architecture.md`
+- `project-docs/changelog.md`
+
+## 2026-06-09 16:14 CST +0800
+
+### 修改
+
+- Claude 模型配置扩展为“默认模型 + 候选列表”：
+  - 默认模型保持 `claude-sonnet-4-6`。
+  - 新增 `ANTHROPIC_MODEL_OPTIONS`，候选包含 Sonnet 4.6、Opus 4.8 / 4.7 / 4.6 和 Haiku 4.5。
+- Gemini 默认模型从 `gemini-2.5-flash` 升级为 `gemini-3.5-flash`。
+- 新增 `GEMINI_MODEL_OPTIONS`，候选覆盖 Gemini 3.5 Flash、3.1 Pro Preview、3 Flash Preview、3.1 Flash-Lite 和 2.5 稳定系列。
+- `/api/models` 现在向前端返回三家 Provider 的完整候选列表，Claude 和 Gemini 不再只有单一选项。
+- 前端离线回退模型列表与后端默认配置同步。
+
+### 新增
+
+- 新增 `/api/models/anthropic`，通过 Anthropic Models API 查询当前账号实际可见模型。
+- 新增 `/api/models/gemini`，通过 Gemini Models API 查询当前账号中支持 `generateContent` 的模型。
+- 两个接口均返回 `configured`、`available` 和 `configured_available`，不输出 API Key。
+- 新增 Claude、Gemini 候选配置和缺少 API Key 的接口测试。
+- 新增 Anthropic Provider 请求结构测试，覆盖无 system message 时省略 `system` 字段，以及多条 system message 合并发送。
+
+### 修复
+
+- Anthropic Provider 不再向新版 Messages API 发送 `system=None`，修复无 system message 时真实调用返回 400 的问题。
+- Claude、Gemini SDK 临时客户端在请求结束后显式关闭，避免连接泄漏和事件循环关闭警告。
+- 修复 Gemini Models API 异步分页结果收集方式，避免 `/api/models/gemini` 返回 502。
+
+### 联调
+
+- 使用本地 `.env` 中的 Key 查询模型列表成功，未输出或修改 Key。
+- Anthropic 当前账号确认可见 `claude-opus-4-8`、`claude-opus-4-7`、`claude-sonnet-4-6`、`claude-opus-4-6` 和 `claude-haiku-4-5-20251001`。
+- Gemini 当前账号确认可见 `gemini-3.5-flash`、`gemini-3.1-pro-preview`、`gemini-3-flash-preview`、`gemini-3.1-flash-lite` 和 Gemini 2.5 系列候选。
+- `/api/models/anthropic` 与 `/api/models/gemini` 真实接口均返回 200，配置候选全部出现在 `configured_available`。
+- `claude-sonnet-4-6` 和 `gemini-3.5-flash` 均完成最小真实生成冒烟测试并返回 `OK`。
+- 后端全量 pytest：96 个通过；前端 ESLint 和 Next.js 生产构建通过。
+- 使用项目 Playwright Chromium 打开 `http://127.0.0.1:3000`，确认 Claude 5 个、Gemini 7 个模型选项完整显示，页面无 console error 或 page error。
+- 8000 后端已重启并加载新 `.env`，`/health` 正常，`/api/models` 默认 Gemini 已更新为 `gemini-3.5-flash`；3000 前端保持运行。
+
+### 影响文件
+
+- `.env`
+- `.env.example`
+- `backend/app/agent/providers/anthropic_provider.py`
+- `backend/app/agent/providers/gemini_provider.py`
+- `backend/app/config.py`
+- `backend/app/api/routes.py`
+- `backend/tests/test_anthropic_provider.py`
+- `backend/tests/test_config.py`
+- `backend/tests/test_api.py`
+- `frontend/src/components/research-workspace.tsx`
+- `project-docs/api-key-setup.md`
+- `project-docs/technical-architecture.md`
+- `project-docs/testing-guide.md`
+- `project-docs/changelog.md`
+
+## 2026-06-09 14:53 CST +0800
+
+### 新增
+
+- 新增受访客权限保护的 PDF 导出接口：`GET /api/research-jobs/{job_id}/export/pdf`。
+- 新增后端 `PdfExporter`：
+  - 使用 `markdown-it-py 4.2.0` 将报告转换为安全打印 HTML。
+  - 使用 Playwright `1.60.0` 和用户目录 Chromium 生成 A4 PDF。
+  - PDF 包含产品名、研究问题、研究模式、模型、生成时间、任务 ID、分页和页码。
+  - 原始 HTML 不执行，图片规则禁用，Chromium Context 阻断全部网络请求。
+  - 默认并发上限 2、总超时 45 秒。
+- 新增前端 PDF 下载按钮、生成中状态和错误提示。
+- 新增 PDF 文件名清理、API 权限、空报告、渲染失败、安全 HTML 和真实 Chromium 文件测试。
+
+### 修改
+
+- CORS 暴露 `Content-Disposition`，前端可以读取 UTF-8 下载文件名。
+- `.env.example` 新增 PDF 并发、超时和可选 Chromium 路径配置。
+- 后端锁定 `playwright 1.60.0`、`markdown-it-py 4.2.0`、`pyee 13.0.1` 和 `mdurl 0.1.2`。
+- README 启动命令增加 Chromium 安装，并把 Uvicorn reload 范围收窄到 `backend/app`，避免依赖安装触发重复热重载。
+- 更新产品文档、项目计划、技术架构、测试指南和依赖管理。
+
+### 验证
+
+- 后端全量 pytest：92 个通过，包含真实 Chromium PDF 生成。
+- 前端 ESLint 通过。
+- 前端 Next.js 生产构建通过。
+- Playwright Chromium：6 个 E2E 全部通过，包含正式 PDF 下载。
+- `pip check`：无破损依赖。
+- 使用真实 Chromium 生成中文样例 PDF 并完成首屏视觉检查；标题、任务元数据、列表、表格、References、页边距和页码显示正常。
+
+### 当前边界
+
+- 每次 PDF 导出会启动一个短生命周期 Chromium；当前以并发上限控制资源，后续高并发部署可改为浏览器池或独立导出 Worker。
+- 生产环境必须安装与 Playwright 版本匹配的 Chromium 和系统依赖。
+- 当前 PDF 使用固定 PZ Deep Research 样式，尚未提供用户自定义封面、品牌模板或 Word 导出。
+
+### 影响文件
+
+- `.env.example`
+- `backend/app/reporting/`
+- `backend/app/api/routes.py`
+- `backend/app/config.py`
+- `backend/app/main.py`
+- `backend/requirements.txt`
+- `backend/requirements-lock.txt`
+- `backend/tests/`
+- `frontend/src/lib/`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/src/app/globals.css`
+- `frontend/e2e/research-flow.spec.ts`
+- `README.md`
+- `README.zh-CN.md`
+- `project-docs/`
+
+## 2026-06-09 14:18 CST +0800
+
+### 新增
+
+- 新增研究报告 Markdown 导出按钮，报告为空时禁用，存在报告时可直接下载。
+- 新增 `frontend/src/lib/markdown-export.ts`：
+  - 使用 UTF-8 `text/markdown` Blob 导出当前原始报告。
+  - 文件名根据研究问题生成，保留中文并清理跨平台非法字符。
+  - 报告末尾保证至少一个换行。
+- 新增 Playwright Markdown 下载测试，校验按钮状态、文件名、扩展名、中文内容、Markdown 标题和换行。
+
+### 修改
+
+- ESLint 忽略 `playwright-report/` 和 `test-results/`，避免失败测试生成的第三方报告代码污染项目 lint。
+- 更新中英文 README、产品文档、项目计划、技术架构和测试指南，将 Markdown 导出标记为阶段 4 已完成能力。
+
+### 方案说明
+
+- 导出采用纯前端实现，不新增后端 API，不重新调用模型，也不修改当前报告中的引用和参考文献。
+- 历史详情恢复出的报告与刚完成的报告共用同一导出入口。
+
+### 验证
+
+- 后端全量 pytest：85 个通过。
+- 前端 ESLint 通过。
+- 前端 Next.js 生产构建通过。
+- Playwright Chromium：5 个 E2E 全部通过，包含历史详情恢复后的 Markdown 下载。
+
+### 影响文件
+
+- `frontend/src/lib/markdown-export.ts`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/src/app/globals.css`
+- `frontend/e2e/research-flow.spec.ts`
+- `frontend/eslint.config.mjs`
+- `README.md`
+- `README.zh-CN.md`
+- `project-docs/`
+
+## 2026-06-09 10:03 CST +0800
+
+### 新增
+
+- 新增终态研究任务重新运行 API：按原问题、模式、Provider 和模型创建独立任务。
+- 新增 `rerun_of_job_id` 任务血缘字段、数据库索引和第二个 Alembic 迁移。
+- 新增报告详情视图，展示状态、研究模式、模型、创建/更新时间、完整任务 ID、来源任务 ID 和研究日志。
+- 新增前端“重新运行”交互，新任务创建后自动切回研究页并续接 SSE。
+- 新增后端重跑、访客隔离、运行中拒绝重跑和 SQL 血缘持久化测试。
+- 新增 Playwright 报告详情与重新运行端到端验收。
+
+### 修改
+
+- 历史记录点击行为从“直接回填研究表单”改为进入独立报告详情。
+- 重新运行只允许 `completed`、`failed`、`cancelled` 终态任务；`queued` / `running` 返回 409。
+- 初始 Alembic 基线校验改为要求必需列子集，允许旧数据库已包含后续迁移列，避免重复迁移卡住。
+- 更新中英文 README、产品文档、项目计划、技术架构和测试指南。
+
+### 验证
+
+- 后端全量 pytest：85 个通过。
+- 前端 ESLint 通过。
+- 前端 Next.js 生产构建通过。
+- Playwright Chromium：4 个 E2E 全部通过。
+- Alembic SQLite 升级和离线 SQL 生成通过。
+
+### 当前边界
+
+- 当前历史仍绑定浏览器匿名访客 ID，不是账号体系；未来登录后需要把匿名任务归并到可信 `user_id`。
+- 重新运行会创建全新任务，不覆盖原报告；原任务和新任务都保留在历史中。
+- 阶段 4 仍需完成 Markdown 导出、真实多模型回归、真实 PostgreSQL 验收和关键视口视觉回归。
+
+### 影响文件
+
+- `backend/app/agent/schemas.py`
+- `backend/app/api/routes.py`
+- `backend/app/storage/`
+- `backend/migrations/`
+- `backend/tests/`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/src/lib/`
+- `frontend/src/app/globals.css`
+- `frontend/e2e/research-flow.spec.ts`
+- `README.md`
+- `README.zh-CN.md`
+- `project-docs/`
+
 ## 2026-06-08 20:21 CST +0800
 
 ### 新增
@@ -28,7 +340,7 @@
 - 新增按匿名访客隔离的研究历史 API 和前端历史视图。
 - 新增匿名历史归并到未来账号 `user_id` 的存储层能力。
 - 新增服务重启恢复规则：遗留 queued/running 任务标记为失败并记录 `service_restarted` 事件。
-- 新增 4 个数据库测试和历史 API/归属测试。
+- 新增 6 个数据库测试和历史 API/归属测试。
 - Playwright 新增历史记录端到端用例。
 
 ### 修改
@@ -41,7 +353,7 @@
 
 ### 验证
 
-- 后端全量 pytest：80 个通过，1 个 Starlette/TestClient deprecation warning。
+- 后端全量 pytest：81 个通过，1 个 Starlette/TestClient deprecation warning。
 - 前端 ESLint 通过。
 - 前端 Next.js 生产构建通过。
 - Playwright Chromium：3 个 E2E 全部通过。
