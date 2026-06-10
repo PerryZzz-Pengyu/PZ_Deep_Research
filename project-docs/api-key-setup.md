@@ -12,10 +12,10 @@
 
 如果只跑开发模式，不需要任何 API Key。
 
-如果要跑真实深度研究，至少需要：
+当前开发版本以单个主 Provider 运行一次研究任务。如果要测试真实深度研究，至少需要：
 
 ```text
-一个模型 Provider 的 API Key
+当前任务所选模型 Provider 的 API Key
 SERPAPI_API_KEY
 ```
 
@@ -24,6 +24,8 @@ SERPAPI_API_KEY
 `JINA_API_KEY` 不是强制必填，但建议配置。它用于 Jina Reader 网页正文读取；不配置时工具仍会尝试读取，但稳定性和额度可能受限。
 
 当前搜索链路为：SerpAPI Google Scholar 负责找论文和学术来源，Jina Reader 负责读取搜索结果 URL 的正文内容。
+
+正式 C 端产品不会让用户选择 Provider 或模型。后续完成分阶段质量测试后，后台会分别为意图识别与追问、搜索词与工具规划、证据卡片生成和最终报告撰写配置模型。届时部署环境需要提供实际生产路由和故障降级所涉及 Provider 的 Key，而不是由用户自行选择使用哪一家。
 
 ## 按 Provider 配置
 
@@ -44,7 +46,7 @@ OPENAI_BASE_URL=https://api.openai.com/v1
 OPENAI_MODEL_OPTIONS=gpt-5.4-mini,gpt-5.5,gpt-5.4,gpt-5.4-nano,gpt-5-mini,gpt-5-nano
 ```
 
-说明：OpenAI 当前官方文档建议复杂推理和 coding 从 `gpt-5.5` 开始；如果优先考虑延迟和成本，可以使用 `gpt-5.4-mini` 或 `gpt-5.4-nano`。本项目默认先使用成本更可控的 `gpt-5.4-mini`，前端提供候选列表方便逐个测试效果。
+说明：OpenAI 当前官方文档建议复杂推理和 coding 从 `gpt-5.5` 开始；如果优先考虑延迟和成本，可以使用 `gpt-5.4-mini` 或 `gpt-5.4-nano`。本项目开发默认先使用成本更可控的 `gpt-5.4-mini`，候选列表仅用于内部联调和质量测试，不代表正式 C 端会开放切换。
 
 可选：
 
@@ -115,7 +117,7 @@ GEMINI_EVIDENCE_MODEL=
 JINA_API_KEY=
 ```
 
-证据抽取模型只负责把单篇网页正文整理成紧凑证据卡片，不负责生成搜索词或最终报告。Claude 默认使用当前可用的低成本 Haiku 4.5；Gemini 默认使用官方标注为最小且最具成本效益、并已完成真实调用验证的稳定版 Gemini 2.5 Flash-Lite。切换前端主模型不会改变证据抽取模型。
+证据抽取模型只负责把单篇网页正文整理成紧凑证据卡片，不负责生成搜索词或最终报告。Claude 默认使用当前可用的低成本 Haiku 4.5；Gemini 默认使用官方标注为最小且最具成本效益、并已完成真实调用验证的稳定版 Gemini 2.5 Flash-Lite。当前开发界面切换主模型不会改变证据抽取模型。
 
 模型调用的临时错误重试配置：
 
@@ -127,7 +129,7 @@ LLM_TIMEOUT_SECONDS=60
 
 系统只对超时、429、5xx、`UNAVAILABLE`、`RESOURCE_EXHAUSTED` 等临时错误重试，等待时间默认依次为 2、4、8 秒。报告阶段重试会保留已经选定的来源和证据卡片，不重新执行搜索与访问。
 
-## 如果三家模型都要在前端可选
+## 如果要启用三家后台候选模型
 
 建议填写：
 
@@ -141,7 +143,7 @@ SERPAPI_API_KEY=
 JINA_API_KEY=
 ```
 
-模型名可以先使用项目默认值。后续如果要按成本或效果调整，再改：
+这些配置适用于内部对比测试，也为后续生产后台路由和 Provider 故障降级做准备。模型名可以先使用项目默认值；如果要按质量、延迟或成本调整，再改：
 
 ```text
 OPENAI_MODEL=
@@ -201,12 +203,12 @@ curl http://127.0.0.1:8000/api/models/gemini
 
 该接口只返回模型 ID，不会输出你的 API Key。返回里的 `configured_available` 用来判断项目候选模型里哪些在当前账号下可见。
 
-## 当前默认模型来源
+## 当前开发默认模型
 
-当前默认模型选择遵循“能用于生产、成本相对可控、适合 Agent / 深度研究”的原则：
+当前开发默认模型遵循“可调用、成本相对可控、适合 Agent / 深度研究”的原则：
 
 - OpenAI：`gpt-5.4-mini`
 - Claude：`claude-sonnet-4-6`
 - Gemini：`gemini-3.5-flash`
 
-这些默认值后续可以根据成本、质量和账号可用额度调整。只要调整默认模型，需要同步更新本文档和 `project-docs/changelog.md`。
+这些值用于当前单主模型联调，并不是最终生产路由结论。下一阶段会通过四类质量测试分别确定意图识别与追问、搜索词与工具规划、证据卡片生成、最终报告撰写所使用的模型。只要调整默认模型或生产路由，需要同步更新本文档和 `project-docs/changelog.md`。

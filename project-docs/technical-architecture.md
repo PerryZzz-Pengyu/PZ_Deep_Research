@@ -177,9 +177,16 @@ PDF 导出位置：
 选择原因：
 
 - 用户明确要求不使用 Qwen 模型。
-- C 端产品需要多模型切换和后续模型路由。
+- 后台需要保留多 Provider 能力，以支持分阶段模型路由、成本控制和故障降级；C 端不暴露模型切换。
 - 不把模型调用写死在 Agent 循环里，后续维护成本更低。
 - 可以单独测试 Agent 逻辑、模型 Provider 和工具层。
+
+模型路由状态：
+
+- 当前开发版仍由请求中的 `provider` 和 `model` 指定搜索词与报告主模型，证据抽取使用各 Provider 的低成本模型。
+- 正式 C 端目标是不提交用户可选的 Provider/模型，而是由后台按意图识别与追问、搜索词与工具规划、证据卡片、最终报告四种职责读取版本化路由配置。
+- 分阶段质量测试和路由配置尚未实现，因此现阶段不能把“后台自动路由”描述为已上线能力。
+- 路由完成后，任务需要保存 `routing_version` 及各阶段实际模型，支持重跑一致性、质量回溯、成本统计和 Provider 故障降级。
 
 当前状态：
 
@@ -203,7 +210,7 @@ PDF 导出位置：
 - 模型调用最终失败时 Runtime 会产出 `failed` 事件，让任务状态可以被存储层正确更新。报告阶段的临时错误重试始终复用已选来源、证据卡片和报告上下文，`llm_retry` 标记 `resume_from=selected_evidence`，不会重新调用 search 或 visit。
 - 主流程固定为「生成搜索词 → search → Runtime visit → 证据卡片 → 选源 → 最终报告」；expert 在两轮检索之间额外执行一次证据缺口分析。
 - 访问漏斗（`_visit_funnel`）：search 候选按搜索原生相关性序，用并发 `visit` 滚动访问；full_text 数达到阶段目标（quick 3 / deep 10；expert 第一阶段 10、最终 20）即早停，否则访问完该次搜索返回的有限候选。候选耗尽即退出，不重复搜索或重访，因此不会因全文不足卡死。
-- 证据卡片裁剪：每条已访问来源由 Provider 专属低成本模型抽取为紧凑证据卡片。OpenAI 使用 `EVIDENCE_EXTRACTION_MODEL=gpt-5-nano`，Claude 使用 `ANTHROPIC_EVIDENCE_MODEL=claude-haiku-4-5-20251001`，Gemini 使用 `GEMINI_EVIDENCE_MODEL=gemini-2.5-flash-lite`；搜索词与最终报告仍使用前端选择的主模型。原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告。报告阶段使用独立上下文，不携带搜索历史；每次格式/字数重写重新构造固定大小的 system/user 消息，只包含当前稿、证据卡片和校验要求，避免旧稿累计造成 token 膨胀。抽取调用带超时和重试，单条抽取失败时退回截断原文卡片，不使整项研究失败。
+- 证据卡片裁剪：每条已访问来源由 Provider 专属低成本模型抽取为紧凑证据卡片。OpenAI 使用 `EVIDENCE_EXTRACTION_MODEL=gpt-5-nano`，Claude 使用 `ANTHROPIC_EVIDENCE_MODEL=claude-haiku-4-5-20251001`，Gemini 使用 `GEMINI_EVIDENCE_MODEL=gemini-2.5-flash-lite`。当前开发界面仍可选择主模型，后续生产版本将由后台分别为意图识别、工具规划、证据卡片和报告撰写配置模型。原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告。报告阶段使用独立上下文，不携带搜索历史；每次格式/字数重写重新构造固定大小的 system/user 消息，只包含当前稿、证据卡片和校验要求，避免旧稿累计造成 token 膨胀。抽取调用带超时和重试，单条抽取失败时退回截断原文卡片，不使整项研究失败。
 - 选源（`selection.select_sources`）：「质量优先 → 数量补足 → 逃生降级」。按 `full_text > partial_text > metadata > failed` 排序后取前 N；总数不足则有多少用多少。最终来源重新连续编号 1..N。quick / deep / expert 的全文质量最低线分别为 1 / 3 / 5，低于最低线时通过 `full_text_shortfall` 要求报告说明证据局限，但不阻止任务完成。
 - expert 模式强制跑两轮 `search`。第一阶段访问和抽卡后，Runtime 把证据卡片交给模型审查缺口，再执行第二轮补充检索；最终选源覆盖两轮访问并集。
 - 搜索词按模式上限裁剪（quick 1 / deep 3 / expert 5）。
@@ -322,7 +329,7 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 - 已通过 ProviderFactory 测试覆盖默认模型和专属模型选择。
 - 当前默认模型为 `gpt-5.4-mini`。
 - 当前候选模型列表为 `gpt-5.4-mini`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-nano`、`gpt-5-mini`、`gpt-5-nano`。
-- 已新增 `/api/models` 返回项目配置的模型候选列表，供前端模型下拉使用。
+- 已新增 `/api/models` 返回项目配置的模型候选列表，当前供内部开发界面的模型下拉和质量测试使用；正式 C 端不暴露该入口。
 - 已新增 `/api/models/openai` 使用后端保存的 `OPENAI_API_KEY` 查询当前账号实际可访问的模型 ID，用于人工联调和排查模型不可用问题。
 
 后续注意：
@@ -463,7 +470,7 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 重新运行语义：
 
 - 只有 `completed`、`failed`、`cancelled` 终态任务可以重新运行；`queued` / `running` 返回 409，避免同一运行任务被重复复制。
-- 后端从数据库读取原任务的研究问题、模式、Provider 和模型，前端不能在重跑请求里篡改这些字段。
+- 当前后端从数据库读取原任务的研究问题、模式、Provider 和模型，前端不能在重跑请求里篡改这些字段；生产模型路由完成后，应改为读取原任务路由版本和各阶段模型记录。
 - 新任务拥有独立 ID、独立事件流和独立报告，并通过 `rerun_of_job_id` 保留来源任务血缘。
 - 第二个 Alembic 迁移为现有数据库增加血缘列和索引；旧的无版本数据库若已由最新 Metadata 建表，迁移会识别已有列并安全跳过重复创建。
 
@@ -578,7 +585,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 后端 Python 语法检查通过。
 - 后端 app 导入通过。
-- 后端 pytest 自动化测试通过，当前为 92 个用例。
+- 后端 pytest 自动化测试通过，当前为 100 个用例。
 - 前端 lint 通过。
 - 前端 build 通过。
 - Playwright Chromium 端到端测试通过，当前为 6 个用例，覆盖任务取消、刷新续跑、完成后报告恢复、历史报告详情、重新运行、Markdown 下载和正式 PDF 下载。
@@ -594,8 +601,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 当前未完成：
 
-- OpenAI 已完成人工真实任务联调，但尚未形成可重复执行的质量回归套件。
-- 真实 Claude、Gemini API 联调。
+- OpenAI、Claude、Gemini 已完成不同程度的人工真实调用，但尚未形成覆盖四类任务职责的可重复质量测试集。
 - Claude、Gemini 原生 streaming、Gemini token 用量和真实模型成本计算。
 - 关键桌面/移动视口视觉回归验证。
 - 登录后跨设备历史。
@@ -619,9 +625,11 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 1. 完成完整错误恢复交互。
 2. 在真实 PostgreSQL 实例验证迁移、连接池、备份和恢复。
-3. 建立 OpenAI、Claude、Gemini 真实 Provider 回归矩阵，并补齐 Claude/Gemini 原生 streaming、Gemini 用量和成本计算。
-4. 增加关键视口视觉回归、真实断线恢复和 Worker 任务恢复测试。
-5. 增加搜索与网页访问备用链路、结构化学术元数据、语义去重和事实级引用校验。
-6. 把后台任务迁移到独立 Worker 队列，支持多实例和可恢复执行。
-7. 增加用户认证、匿名历史归并、数据隔离、限流、额度、成本预算、内容安全和可观测性。
-8. 增加 CI/CD、生产密钥管理、备份、部署和回滚说明。
+3. 建立意图识别、工具规划、证据卡片、报告撰写四类质量测试集，按准确率、格式服从度、延迟和成本确定生产模型路由。
+4. 移除生产 C 端的 Provider/模型选择器，保留内部测试开关、管理员配置、路由版本记录和 Provider 故障降级。
+5. 补齐 Claude/Gemini 原生 streaming、Gemini 用量和成本计算。
+6. 增加关键视口视觉回归、真实断线恢复和 Worker 任务恢复测试。
+7. 增加搜索与网页访问备用链路、结构化学术元数据、语义去重和事实级引用校验。
+8. 把后台任务迁移到独立 Worker 队列，支持多实例和可恢复执行。
+9. 增加用户认证、匿名历史归并、数据隔离、限流、额度、成本预算、内容安全和可观测性。
+10. 增加 CI/CD、生产密钥管理、备份、部署和回滚说明。

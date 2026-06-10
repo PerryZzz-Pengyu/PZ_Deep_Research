@@ -2,14 +2,16 @@
 
 **English** | [简体中文](README.zh-CN.md)
 
-A multi-model deep research web application for consumer users. It combines academic search, webpage retrieval, evidence extraction, source selection, and citation validation to produce structured research reports with traceable sources.
+A consumer-facing deep research web application. Its backend supports OpenAI, Claude, and Gemini while combining academic search, webpage retrieval, evidence extraction, source selection, and citation validation to produce structured reports with traceable sources.
+
+The production product is intended to expose only the research question and Quick, Deep, or Expert mode. Provider and model selection will remain internal: stage-specific quality evaluations will choose models for intent clarification, search and tool planning, evidence-card extraction, and final report writing. The current MVP still exposes provider/model selectors for development and evaluation only.
 
 > [!WARNING]
 > This project is an experimental MVP. Model-generated content may contain omissions, errors, or inaccurate citations and should not be used directly for medical, legal, financial, or other high-stakes decisions.
 
 ## Key Features
 
-- Supports OpenAI, Anthropic Claude, Google Gemini, and an offline mock provider.
+- Supports OpenAI, Anthropic Claude, Google Gemini, and an offline mock provider on the backend.
 - Searches academic sources through SerpAPI Google Scholar.
 - Retrieves webpage content through Jina Reader and classifies evidence availability.
 - Provides Quick, Deep, and Expert research modes.
@@ -38,6 +40,8 @@ User question
 ```
 
 The Runtime controls webpage visits. The model only generates search queries and the final report; it does not autonomously loop over `visit` calls. This keeps tasks bounded, stabilizes citation numbering, and reduces duplicate retrieval.
+
+The current Runtime still uses one development-selected primary model for search-query generation and report writing, while evidence extraction uses provider-specific low-cost models. Stage-specific production routing is planned but is not yet implemented as the live execution configuration.
 
 ## Research Modes
 
@@ -182,9 +186,15 @@ npm run test:e2e
 
 See the [testing guide](project-docs/testing-guide.md) for the complete test strategy and manual acceptance flow. Project documentation is currently maintained in Chinese.
 
+Latest local verification on June 10, 2026:
+
+- 100 backend pytest cases passed.
+- 6 Playwright Chromium end-to-end cases passed.
+- The local `8000/3000` services and frontend smoke check passed without a Next.js error overlay or browser console errors.
+
 ## Privacy, Cost, and Security
 
-- User questions are sent to the selected model provider.
+- User questions are sent to the provider selected by the internal task configuration or model router. The current development UI allows manual selection; the production consumer UI is intended to hide it.
 - Search queries are sent to SerpAPI; visited URLs and webpage content are processed through Jina Reader.
 - API usage costs and third-party service quotas are the responsibility of the operator.
 - Public deployments should add authentication, per-user quotas, rate limiting, abuse prevention, and cost alerts.

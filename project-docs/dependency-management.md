@@ -121,7 +121,7 @@ backend/.venv/bin/python -m pip install -r backend/requirements.txt
 注意：
 
 - `backend/.venv/` 是本地生成物，不提交到仓库。
-- 真实 Provider 尚未完成 API Key 联调，所以 SDK 升级后仍需要后续集成测试。
+- OpenAI、Claude、Gemini 已完成不同程度的真实 API Key 人工联调和最小生成验证，但尚未形成可重复执行的分阶段质量测试集；SDK 升级后仍需要重新做真实调用验证。
 - SQLAlchemy 异步接口在当前 Python 3.14 环境需要显式安装 `greenlet`，已写入范围依赖和锁文件。
 - SQLite 使用 `aiosqlite`，PostgreSQL 使用 psycopg 3；Alembic 负责两种数据库的结构迁移。
 - 后端 Playwright 与前端 `@playwright/test` 均固定为 1.60.0，共用用户缓存 Chromium；`markdown-it-py` 用于安全生成 PDF 打印 HTML。

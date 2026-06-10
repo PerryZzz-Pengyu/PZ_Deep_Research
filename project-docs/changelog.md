@@ -14,6 +14,71 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+## 2026-06-10 19:26 CST +0800
+
+### 全量文档一致性更新
+
+- 统一中英文 README 的产品定位：后台保留 OpenAI、Claude、Gemini，多模型能力不直接暴露给正式 C 端。
+- 明确当前 MVP 的 Provider/模型选择器仅用于开发联调和质量评测；分阶段生产模型路由已经进入计划，但尚未实现。
+- 将后续模型测试从全面 Provider/模式回归矩阵调整为四类任务质量测试：
+  - 意图识别与追问
+  - 搜索词与工具规划
+  - 证据卡片生成
+  - 最终报告撰写
+- 重写测试指南中的旧 ReAct 工具纠偏描述，使其与当前 Runtime 驱动的有界访问漏斗一致。
+- 更新当前验证状态：后端 pytest 100 个用例通过，Playwright Chromium 6 个 E2E 用例通过。
+- 更新 OpenAI、Claude、Gemini 的真实调用状态：三家已完成不同程度的人工验证，但尚未形成可重复分阶段质量测试集。
+- 明确当前重新运行沿用内部 Provider/模型配置；生产路由完成后需要保存并复用 `routing_version` 和各阶段实际模型。
+- API Key 文档区分当前单主模型开发联调与未来后台多阶段路由所需的部署配置。
+- 更新依赖文档中的真实 Provider 联调状态，并保留 SDK 升级后重新验证的要求。
+- 明确当前只有 OpenAI 接入原生 token streaming，Claude/Gemini 仍使用兼容封装。
+
+### 影响文件
+
+- `README.md`
+- `README.zh-CN.md`
+- `project-docs/project-plan.md`
+- `project-docs/product-doc.md`
+- `project-docs/technical-architecture.md`
+- `project-docs/testing-guide.md`
+- `project-docs/dependency-management.md`
+- `project-docs/api-key-setup.md`
+- `project-docs/changelog.md`
+
+### 未修改文件
+
+- `LICENSE`：本次没有许可变更。
+- `NOTICE`：本次没有上游参考、归属或第三方声明变更。
+- `.env.example`：分阶段模型路由尚未工程实现，本次不提前增加无效环境变量。
+
+## 2026-06-10 19:18 CST +0800
+
+### 前端端到端验证
+
+- 使用 mock Provider 在固定端口 `8000/3000` 运行 Playwright Chromium 测试。
+- 6 个用例全部通过，覆盖任务取消、刷新续跑、完成报告恢复、历史详情、重新运行、Markdown 导出和 PDF 导出。
+- 本轮测试不调用真实模型、SerpAPI 或 Jina，不产生第三方 API 费用。
+- 测试结束后已恢复真实开发服务：后端 `http://127.0.0.1:8000`，前端 `http://127.0.0.1:3000`。
+- 对恢复后的页面完成 Chromium 冒烟检查：页面有有效内容、核心工作台正常渲染，无 Next.js 错误覆盖层或浏览器控制台错误。
+
+## 2026-06-10 19:12 CST +0800
+
+### 产品与测试策略调整
+
+- 暂不实施以“所有 Provider × 所有研究模式”为中心的全面回归测试矩阵。
+- 下一阶段改为分职责质量测试，分别评估意图识别与追问、搜索词与工具规划、证据卡片生成、最终报告撰写。
+- 每个环节根据准确率、结构化输出稳定性、引用与格式服从度、延迟和成本选择生产模型。
+- 正式 C 端产品目标是不提供 Provider 或模型切换；用户只选择研究模式，后续由 Runtime 在后台自动完成模型编排。该路由能力尚未工程实现。
+- 当前前端的 Provider/模型下拉框继续作为开发联调工具，后续从生产界面移除；内部测试、管理员配置和故障降级仍保留多 Provider 能力。
+- Provider、模型和路由版本继续写入任务日志，用于质量追踪、成本分析和问题回溯。
+
+### 影响文件
+
+- `project-docs/project-plan.md`
+- `project-docs/product-doc.md`
+- `project-docs/technical-architecture.md`
+- `project-docs/changelog.md`
+
 ## 2026-06-09 16:57 CST +0800
 
 ### 问题来源
@@ -1065,7 +1130,7 @@
 - Runtime 在最终报告输出前会检查来源引用和参考文献格式，降低模型没有使用搜索结果就直接写报告的风险。
 - 前端不再把 `llm_delta` 和 `report_delta` 当作普通进度卡片堆进时间线，而是分别进入实时输出区域和报告区域。
 - 报告正文中的 `[1]`、`[2]` 会先转换为 Markdown citation link，再由 Markdown 渲染器输出 hover 引用角标。
-- 引用转换规则避免重复改写已经是 Markdown 链接的 `[1](url)`。
+- 引用转换规则避免重复改写已经是 Markdown 链接的 `[1](https://example.com)`。
 - 更新技术架构和测试说明，补充流式输出、Markdown 渲染、引用校验和新增测试。
 
 ### 影响文件
