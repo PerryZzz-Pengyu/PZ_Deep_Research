@@ -14,6 +14,52 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+## 2026-06-11 11:04 CST +0800
+
+### GPT 生产路由与 Neon 重启恢复验收
+
+- 按“先测试、后实现”增加生产路由测试，确认生产模式忽略客户端 Provider/模型参数，内部手动模式仍可用于 mock 和模型联调。
+- 默认生产路由固定为 `openai-default-v1`：
+  - 搜索词规划和最终报告：OpenAI `gpt-5.4-mini`
+  - 证据卡片：OpenAI `gpt-5-nano`
+- 新增 `MODEL_ROUTING_MODE`、`PRODUCTION_PROVIDER`、`PRODUCTION_MODEL`、`MODEL_ROUTING_VERSION`。
+- 生产模式下前端不提交 Provider/模型，并隐藏研究页、历史列表和报告详情中的模型选择或实现信息。
+- 新增 `research_jobs.routing_version` 和 Alembic `20260611_04`；重跑与失败重试复用原任务路由版本。
+- 内部手动模式使用 `MODEL_ROUTING_MODE=manual`；Playwright mock E2E 已显式切换为该模式。
+- Playwright 服务同时覆盖 `DATABASE_URL` 与 `DATABASE_MIGRATION_URL` 到同一个临时 SQLite，避免测试运行库与迁移库分离、误连接 Neon。
+- 在真实 Neon PostgreSQL 执行 `20260611_04` 迁移并重启后端。
+- 重启恢复验证通过：任务 `c5db24ca5f5c4ffcbf9166b2e019272a` 保持 `completed`，3298 字报告和 16 条事件均可通过 API 完整恢复。
+- 新增 `project-docs/neon-backup-restore.md`，规定使用非生产恢复分支进行时间点恢复演练，并预留 `pg_dump` 独立备份方案。
+- 模型质量测试暂缓；后续恢复时以 `openai-default-v1` 为基线发布新路由版本。
+
+### 验证
+
+- 后端 pytest：114 个用例通过。
+- 前端 `npm run lint` 通过。
+- 前端 `npm run build` 通过。
+- Playwright Chromium：7 个 E2E 用例通过。
+- Chromium 冒烟验证：研究界面正常，Provider/模型选择器为 0，控制台错误为 0。
+- `/api/models` 返回 `selection_enabled=false`、`routing_version=openai-default-v1`、默认 Provider `openai`。
+- `backend/scripts/check_database.py` 返回 `database=ready`、`backend=postgresql`。
+
+### 影响文件
+
+- `.env.example`
+- `README.md`
+- `README.zh-CN.md`
+- `backend/app/config.py`
+- `backend/app/agent/schemas.py`
+- `backend/app/api/routes.py`
+- `backend/app/storage/memory.py`
+- `backend/app/storage/sql.py`
+- `backend/migrations/versions/20260611_04_add_model_routing_version.py`
+- `backend/tests/`
+- `frontend/playwright.config.ts`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/src/lib/api.ts`
+- `frontend/src/lib/types.ts`
+- `project-docs/`
+
 ## 2026-06-10 23:58 CST +0800
 
 ### Neon PostgreSQL 已启用

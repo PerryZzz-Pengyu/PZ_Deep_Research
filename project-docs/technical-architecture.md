@@ -124,7 +124,7 @@ npm 11.16.0
 
 - 已实现研究问题输入。
 - 已实现研究模式选择。
-- 已实现 Provider 选择。
+- 生产界面已隐藏 Provider/模型选择；设置 `MODEL_ROUTING_MODE=manual` 时可为内部测试恢复选择器。
 - 已实现进度事件展示。
 - 已实现最终报告展示。
 - 已实现来源卡片展示，包含引用编号、favicon、域名、标题、摘要和 URL。
@@ -185,10 +185,11 @@ PDF 导出位置：
 
 模型路由状态：
 
-- 当前开发版仍由请求中的 `provider` 和 `model` 指定搜索词与报告主模型，证据抽取使用各 Provider 的低成本模型。
-- 正式 C 端目标是不提交用户可选的 Provider/模型，而是由后台按意图识别与追问、搜索词与工具规划、证据卡片、最终报告四种职责读取版本化路由配置。
-- 分阶段质量测试和路由配置尚未实现，因此现阶段不能把“后台自动路由”描述为已上线能力。
-- 路由完成后，任务需要保存 `routing_version` 及各阶段实际模型，支持重跑一致性、质量回溯、成本统计和 Provider 故障降级。
+- `MODEL_ROUTING_MODE=production` 为默认模式。后端忽略客户端传入的 Provider/模型，使用 `PRODUCTION_PROVIDER=openai` 和 `PRODUCTION_MODEL=gpt-5.4-mini` 生成搜索词与报告。
+- OpenAI 证据卡片继续使用 `EVIDENCE_EXTRACTION_MODEL=gpt-5-nano`，因此当前生产路由是“主模型 `gpt-5.4-mini` + 证据模型 `gpt-5-nano`”。
+- 路由版本为 `MODEL_ROUTING_VERSION=openai-default-v1`，写入 `research_jobs.routing_version`。重跑和失败重试复用原任务 Provider、模型和路由版本。
+- `MODEL_ROUTING_MODE=manual` 仅用于 mock E2E、内部模型联调和后续质量测试；此时请求中的 Provider/模型才会生效，前端才显示选择器。
+- 分阶段质量测试暂缓。后续完成评测后发布新路由版本，不直接覆盖历史任务的路由标识。
 
 当前状态：
 
@@ -213,7 +214,7 @@ PDF 导出位置：
 - Runtime 在完成选源后生成私有 `report_checkpoint`，包含最终来源、证据卡片和选源降级状态。API 层只把该检查点写入任务数据库，不写历史事件、不发送给前端。任务若在报告阶段最终失败，用户点击“重试”会创建独立新任务并从检查点继续报告；搜索、访问或证据阶段失败则执行完整研究重试。
 - 主流程固定为「生成搜索词 → search → Runtime visit → 证据卡片 → 选源 → 最终报告」；expert 在两轮检索之间额外执行一次证据缺口分析。
 - 访问漏斗（`_visit_funnel`）：search 候选按搜索原生相关性序，用并发 `visit` 滚动访问；full_text 数达到阶段目标（quick 3 / deep 10；expert 第一阶段 10、最终 20）即早停，否则访问完该次搜索返回的有限候选。候选耗尽即退出，不重复搜索或重访，因此不会因全文不足卡死。
-- 证据卡片裁剪：每条已访问来源由 Provider 专属低成本模型抽取为紧凑证据卡片。OpenAI 使用 `EVIDENCE_EXTRACTION_MODEL=gpt-5-nano`，Claude 使用 `ANTHROPIC_EVIDENCE_MODEL=claude-haiku-4-5-20251001`，Gemini 使用 `GEMINI_EVIDENCE_MODEL=gemini-2.5-flash-lite`。当前开发界面仍可选择主模型，后续生产版本将由后台分别为意图识别、工具规划、证据卡片和报告撰写配置模型。原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告。报告阶段使用独立上下文，不携带搜索历史；每次格式/字数重写重新构造固定大小的 system/user 消息，只包含当前稿、证据卡片和校验要求，避免旧稿累计造成 token 膨胀。抽取调用带超时和重试，单条抽取失败时退回截断原文卡片，不使整项研究失败。
+- 证据卡片裁剪：每条已访问来源由 Provider 专属低成本模型抽取为紧凑证据卡片。生产路由使用 OpenAI `EVIDENCE_EXTRACTION_MODEL=gpt-5-nano`；内部手动模式选择 Claude 或 Gemini 时，分别使用 `ANTHROPIC_EVIDENCE_MODEL=claude-haiku-4-5-20251001` 和 `GEMINI_EVIDENCE_MODEL=gemini-2.5-flash-lite`。原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告。报告阶段使用独立上下文，不携带搜索历史；每次格式/字数重写重新构造固定大小的 system/user 消息，只包含当前稿、证据卡片和校验要求，避免旧稿累计造成 token 膨胀。抽取调用带超时和重试，单条抽取失败时退回截断原文卡片，不使整项研究失败。
 - 选源（`selection.select_sources`）：「质量优先 → 数量补足 → 逃生降级」。按 `full_text > partial_text > metadata > failed` 排序后取前 N；总数不足则有多少用多少。最终来源重新连续编号 1..N。quick / deep / expert 的全文质量最低线分别为 1 / 3 / 5，低于最低线时通过 `full_text_shortfall` 要求报告说明证据局限，但不阻止任务完成。
 - expert 模式强制跑两轮 `search`。第一阶段访问和抽卡后，Runtime 把证据卡片交给模型审查缺口，再执行第二轮补充检索；最终选源覆盖两轮访问并集。
 - 搜索词按模式上限裁剪（quick 1 / deep 3 / expert 5）。
@@ -485,7 +486,7 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 - 通过 `DATABASE_URL` 可以切换 PostgreSQL；普通 `postgresql://` URL 会规范化为 `postgresql+psycopg://`。
 - Neon 推荐把 pooled connection string 填入 `DATABASE_URL`，把 direct connection string 填入 `DATABASE_MIGRATION_URL`。应用请求使用连接池地址，Alembic 启动迁移使用直连地址。
 - PostgreSQL 默认启用 `pool_pre_ping`，并提供 `DATABASE_POOL_SIZE`、`DATABASE_MAX_OVERFLOW`、`DATABASE_POOL_TIMEOUT_SECONDS`、`DATABASE_POOL_RECYCLE_SECONDS`。
-- `research_jobs` 保存任务状态、报告草稿、最终报告、产品错误元数据、报告重试检查点、归属字段和可空的 `rerun_of_job_id` 来源任务。
+- `research_jobs` 保存任务状态、报告草稿、最终报告、产品错误元数据、报告重试检查点、`routing_version`、归属字段和可空的 `rerun_of_job_id` 来源任务。
 - `research_events` 保存持久进度事件，使用任务外键和级联删除。
 - Alembic 是应用启动时的正式建表和升级路径；`create_all` 只用于独立存储单元测试，不参与产品数据库初始化。
 
@@ -500,16 +501,19 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 重新运行语义：
 
 - 只有 `completed`、`failed`、`cancelled` 终态任务可以重新运行；`queued` / `running` 返回 409，避免同一运行任务被重复复制。
-- 当前后端从数据库读取原任务的研究问题、模式、Provider 和模型，前端不能在重跑请求里篡改这些字段；生产模型路由完成后，应改为读取原任务路由版本和各阶段模型记录。
+- 当前后端从数据库读取原任务的研究问题、模式、Provider、模型和 `routing_version`，前端不能在重跑请求里篡改这些字段。
 - 新任务拥有独立 ID、独立事件流和独立报告，并通过 `rerun_of_job_id` 保留来源任务血缘。
 - 第二个 Alembic 迁移为现有数据库增加血缘列和索引；旧的无版本数据库若已由最新 Metadata 建表，迁移会识别已有列并安全跳过重复创建。
 - 第三个 Alembic 迁移增加 `error_code`、`error_retryable`、`error_stage` 和 `retry_context`，支持产品化错误与报告检查点恢复。
+- 第四个 Alembic 迁移增加 `routing_version`，用于路由回溯与重跑一致性。
 
 Neon 迁移路径：
 
 - Neon 本质是标准 PostgreSQL，项目没有使用 Neon 专有 SQL 或 ORM API。
 - 后续迁移到 RDS、Cloud SQL、Supabase、自建 PostgreSQL 时，只需提供新的 PostgreSQL URL、迁移数据并运行 Alembic；业务模型和 SQLAlchemy 存储层不需要重写。
 - `backend/scripts/check_database.py` 只执行连接检查并输出 `database=ready` 与数据库类型，不打印 URL 或密码。
+- 2026-06-11 已在真实 Neon 实例执行 `20260611_04` 迁移并完成后端重启恢复验证：任务、3298 字最终报告和 16 条事件均可通过 API 完整恢复。
+- Neon 时间点恢复与独立备份演练步骤记录在 `project-docs/neon-backup-restore.md`；第一次演练必须使用非生产恢复分支，不能直接修改生产分支。
 
 重启语义：
 
@@ -566,12 +570,16 @@ Neon 迁移路径：
 
 - API Key 不能写进代码。
 - 多环境部署时可以区分本地、测试、生产配置。
-- 默认 `mock` Provider 可以无 Key 启动。
+- 设置 `MODEL_ROUTING_MODE=manual`、`DEFAULT_PROVIDER=mock`、`SEARCH_PROVIDER=mock` 后可以无 Key 启动离线测试。
 
 当前关键变量：
 
 ```text
 DEFAULT_PROVIDER=mock
+MODEL_ROUTING_MODE=production
+PRODUCTION_PROVIDER=openai
+PRODUCTION_MODEL=gpt-5.4-mini
+MODEL_ROUTING_VERSION=openai-default-v1
 LLM_MAX_RETRIES=3
 LLM_RETRY_BASE_DELAY_SECONDS=2
 LLM_TIMEOUT_SECONDS=60
@@ -622,7 +630,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 后端 Python 语法检查通过。
 - 后端 app 导入通过。
-- 后端 pytest 自动化测试通过，当前为 111 个用例。
+- 后端 pytest 自动化测试通过，当前为 114 个用例。
 - 前端 lint 通过。
 - 前端 build 通过。
 - Playwright Chromium 端到端测试通过，当前为 7 个用例，覆盖任务取消、刷新续跑、完成后报告恢复、历史报告详情、重新运行、产品化错误重试、Markdown 下载和正式 PDF 下载。
@@ -660,12 +668,11 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 ## 后续技术优先级
 
-1. 在真实 Neon PostgreSQL 实例验证迁移、连接池、备份和恢复。
-2. 建立意图识别、工具规划、证据卡片、报告撰写四类质量测试集，按准确率、格式服从度、延迟和成本确定生产模型路由。
-4. 移除生产 C 端的 Provider/模型选择器，保留内部测试开关、管理员配置、路由版本记录和 Provider 故障降级。
-5. 补齐 Claude/Gemini 原生 streaming、Gemini 用量和成本计算。
-6. 增加关键视口视觉回归、真实断线恢复和 Worker 任务恢复测试。
-7. 增加搜索与网页访问备用链路、结构化学术元数据、语义去重和事实级引用校验。
-8. 把后台任务迁移到独立 Worker 队列，支持多实例和可恢复执行。
-9. 增加用户认证、匿名历史归并、数据隔离、限流、额度、成本预算、内容安全和可观测性。
-10. 增加 CI/CD、生产密钥管理、备份、部署和回滚说明。
+1. 在 Neon 非生产分支完成备份/时间点恢复演练，并记录 RPO、RTO 和数据完整性结果。
+2. 增加关键视口视觉回归、真实断线恢复和 Worker 任务恢复测试。
+3. 模型质量测试暂缓；恢复后以 `openai-default-v1` 为基线评测并发布新路由版本。
+4. 补齐 Claude/Gemini 原生 streaming、Gemini 用量和成本计算。
+5. 增加搜索与网页访问备用链路、结构化学术元数据、语义去重和事实级引用校验。
+6. 把后台任务迁移到独立 Worker 队列，支持多实例和可恢复执行。
+7. 增加用户认证、匿名历史归并、数据隔离、限流、额度、成本预算、内容安全和可观测性。
+8. 增加 CI/CD、生产密钥管理、备份、部署和回滚说明。

@@ -34,6 +34,7 @@ jobs = Table(
     metadata,
     Column("id", String(32), primary_key=True),
     Column("rerun_of_job_id", String(32), nullable=True),
+    Column("routing_version", String(64), nullable=True),
     Column("query", Text, nullable=False),
     Column("mode", String(16), nullable=False),
     Column("provider", String(32), nullable=False),
@@ -84,6 +85,7 @@ def _job_from_row(row) -> ResearchJob:
     return ResearchJob(
         id=row.id,
         rerun_of_job_id=row.rerun_of_job_id,
+        routing_version=row.routing_version,
         query=row.query,
         mode=row.mode,
         provider=row.provider,
@@ -189,10 +191,12 @@ class SqlJobStore:
         anonymous_id: str = "local-development",
         user_id: Optional[str] = None,
         rerun_of_job_id: Optional[str] = None,
+        routing_version: Optional[str] = None,
     ) -> ResearchJob:
         await self._ready()
         job = ResearchJob(
             rerun_of_job_id=rerun_of_job_id,
+            routing_version=routing_version,
             query=request.query,
             mode=request.mode,
             provider=provider,
@@ -203,6 +207,7 @@ class SqlJobStore:
                 insert(jobs).values(
                     id=job.id,
                     rerun_of_job_id=job.rerun_of_job_id,
+                    routing_version=job.routing_version,
                     query=job.query,
                     mode=job.mode,
                     provider=job.provider,

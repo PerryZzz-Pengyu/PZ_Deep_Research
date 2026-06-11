@@ -39,6 +39,7 @@
 - 前端能展示工具返回正文、来源证据强度和引用 hover 卡片。
 - ProviderFactory 能正确创建多模型 Provider。
 - 配置层能提供默认模型，并识别真实 Provider 缺少的 API Key。
+- 生产路由必须忽略客户端 Provider/模型并固定到版本化 GPT 配置；内部手动模式仍可用于 mock 与模型联调。
 - API 能返回 `/api/readiness` 配置体检信息。
 - `/api/readiness` 能返回数据库连接状态和数据库类型，不泄露连接信息。
 - API 能返回供内部联调使用的 `/api/models` 模型候选列表。
@@ -56,7 +57,7 @@
 
 暂时不引入复杂测试体系，避免过早增加维护成本。
 
-截至 2026-06-10，后端 pytest 共 111 个用例通过，前端 Playwright Chromium 共 7 个端到端用例通过。
+截至 2026-06-11，后端 pytest 共 114 个用例通过，前端 Playwright Chromium 共 7 个端到端用例通过。
 
 ## 测试优先开发原则
 
@@ -120,6 +121,7 @@ backend/tests/
   - `/health` 健康检查正常。
   - `/api/readiness` 可以返回 Provider 和工具配置状态。
   - `/api/models` 可以返回 OpenAI 候选模型。
+  - 生产模式会隐藏模型选择，创建任务时忽略客户端指定的 Claude/Gemini 并使用 `openai-default-v1`。
   - `/api/models/openai` 在缺少 OpenAI Key 时返回配置错误。
   - `/api/research-jobs` 可以创建 mock 研究任务。
   - 过短 query 会被 API 校验拒绝。
@@ -139,6 +141,7 @@ backend/tests/
   - 中文占位符不会被误判为真实 OpenAI API Key 或模型名。
   - 真实 Provider 缺少 API Key 和搜索 Key 时会被识别。
   - 配置齐全的真实 Provider 会通过配置检查。
+  - 默认生产路由为 OpenAI `gpt-5.4-mini`，内部 `manual` 模式保留请求模型选择。
 - `test_provider_factory.py`
   - 默认 Provider 创建正确。
   - Mock Provider 能接收测试延迟配置。
@@ -152,6 +155,7 @@ backend/tests/
   - 匿名历史可以在未来登录时归并到 `user_id`。
   - 重新运行任务血缘和 Alembic 版本化迁移可以持久化。
   - 产品错误元数据、报告检查点、数据库 `SELECT 1` 和第三个 Alembic 迁移可以持久化。
+  - `routing_version` 和第四个 Alembic 迁移可以跨数据库重连持久化。
 - `test_error_handling.py`
   - 超时、网络、Provider 鉴权、来源读取失败能映射为稳定产品错误码。
   - 用户事件和 payload 不包含原始 API Key 或 Provider 错误正文。
@@ -320,7 +324,7 @@ http://localhost:3000
 
 ## 内部模型质量测试计划
 
-正式 C 端不提供 Provider 或模型切换。当前开发页面的模型选择器仅用于内部联调；下一阶段质量测试按任务职责组织，而不是穷举“每个 Provider × 每个模式”的所有组合。
+正式 C 端不提供 Provider 或模型切换。模型质量测试当前暂缓；恢复测试时，需要先设置 `MODEL_ROUTING_MODE=manual`，模型选择器才会在内部开发页面出现。测试仍按任务职责组织，而不是穷举“每个 Provider × 每个模式”的所有组合。
 
 四类测试任务：
 
@@ -343,9 +347,9 @@ http://localhost:3000
 - 人工质量评分、延迟、token 和估算费用。
 - 是否重试、是否降级以及最终失败原因。
 
-在生产路由确定前，如果要从当前开发页面比较 OpenAI 模型：
+后续恢复质量测试并从内部开发页面比较 OpenAI 模型时：
 
-1. 在 `.env` 里填写 `OPENAI_API_KEY`、`SERPAPI_API_KEY`，建议同时填写 `JINA_API_KEY`。
+1. 在 `.env` 里设置 `MODEL_ROUTING_MODE=manual`，填写 `OPENAI_API_KEY`、`SERPAPI_API_KEY`，建议同时填写 `JINA_API_KEY`。
 2. 重启后端服务。
 3. 在内部开发界面选择 OpenAI。
 4. 在模型下拉里依次选择 `gpt-5.4-mini`、`gpt-5.5`、`gpt-5.4`、`gpt-5.4-nano` 等候选模型。
@@ -357,7 +361,7 @@ Claude 和 Gemini 使用同一套测试方法：
 - Gemini 建议依次比较 `gemini-2.5-flash-lite`、`gemini-3.5-flash`、`gemini-3.1-pro-preview`。
 - `preview` 模型可能调整或下线，生产默认模型优先选择已稳定验证的正式版本。
 - 可以访问 `/api/models/anthropic` 和 `/api/models/gemini`，确认候选模型是否在当前账号可用列表中。
-- 检查 `evidence_ready` 前后的模型调用时，Claude 证据卡片应使用 `claude-haiku-4-5-20251001`，Gemini 应使用 `gemini-2.5-flash-lite`；当前开发版本的最终报告仍使用内部界面选择的主模型。
+- 检查 `evidence_ready` 前后的模型调用时，Claude 证据卡片应使用 `claude-haiku-4-5-20251001`，Gemini 应使用 `gemini-2.5-flash-lite`；手动模式的最终报告使用内部界面选择的主模型。
 - 模拟或遇到 429/503 时，时间线应出现最多 3 条 `llm_retry`，默认等待 2、4、8 秒。报告阶段的重试文案应说明已保留来源和证据，只重试报告生成；同一任务不应再次出现 search/visit 调用。
 
 真实 Provider 页面验收还需要检查：

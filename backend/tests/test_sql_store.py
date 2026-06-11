@@ -20,7 +20,12 @@ def test_sql_store_persists_jobs_events_and_report_drafts(tmp_path) -> None:
         first_store = SqlJobStore(database_url)
         await first_store.initialize()
         request = ResearchRequest(query="测试数据库重启恢复", mode="quick", provider="mock")
-        job = await first_store.create_job(request, provider="mock", anonymous_id=VISITOR_A)
+        job = await first_store.create_job(
+            request,
+            provider="mock",
+            anonymous_id=VISITOR_A,
+            routing_version="manual",
+        )
         await first_store.start_job(job.id)
         await first_store.append_report_delta(job.id, "第一段")
         event = ResearchEvent(job_id=job.id, type="status", message="已开始研究")
@@ -41,6 +46,7 @@ def test_sql_store_persists_jobs_events_and_report_drafts(tmp_path) -> None:
     assert restored_job.id == job.id
     assert restored_job.status == "running"
     assert restored_job.draft_report == "第一段"
+    assert restored_job.routing_version == "manual"
     assert [item.id for item in restored_events] == [event.id]
     assert [item.id for item in history] == [job.id]
 
@@ -260,7 +266,7 @@ def test_alembic_upgrade_creates_versioned_product_schema(tmp_path) -> None:
     job, version = asyncio.run(run_scenario())
 
     assert job.query == "迁移后创建任务"
-    assert version == "20260610_03"
+    assert version == "20260611_04"
 
 
 def test_alembic_upgrade_baselines_matching_unversioned_schema(tmp_path) -> None:
@@ -279,4 +285,4 @@ def test_alembic_upgrade_baselines_matching_unversioned_schema(tmp_path) -> None
         await migrated_store.dispose()
         return version
 
-    assert asyncio.run(run_scenario()) == "20260610_03"
+    assert asyncio.run(run_scenario()) == "20260611_04"

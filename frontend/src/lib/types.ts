@@ -12,6 +12,7 @@ export type ProductErrorCode =
 export type ResearchJob = {
   id: string;
   rerun_of_job_id?: string | null;
+  routing_version?: string | null;
   query: string;
   mode: ResearchMode;
   provider: string;
@@ -42,6 +43,8 @@ export type ModelOption = {
 };
 
 export type ModelOptionsResponse = {
+  selection_enabled: boolean;
+  routing_version: string;
   providers: Record<ProviderName, ModelOption[]>;
   defaults: {
     provider: ProviderName;
