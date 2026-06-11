@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     JSON,
     Column,
     DateTime,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     insert,
     select,
     update,
+    text,
 )
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -40,6 +42,10 @@ jobs = Table(
     Column("draft_report", Text, nullable=False, default=""),
     Column("final_report", Text, nullable=True),
     Column("error", Text, nullable=True),
+    Column("error_code", String(64), nullable=True),
+    Column("error_retryable", Boolean, nullable=False, default=False),
+    Column("error_stage", String(32), nullable=True),
+    Column("retry_context", JSON, nullable=True),
     Column("anonymous_id", String(128), nullable=True),
     Column("user_id", String(128), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
@@ -86,6 +92,9 @@ def _job_from_row(row) -> ResearchJob:
         draft_report=row.draft_report or "",
         final_report=row.final_report,
         error=row.error,
+        error_code=row.error_code,
+        error_retryable=bool(row.error_retryable),
+        error_stage=row.error_stage,
         created_at=_as_utc(row.created_at),
         updated_at=_as_utc(row.updated_at),
     )
@@ -103,10 +112,28 @@ def _event_from_row(row) -> ResearchEvent:
 
 
 class SqlJobStore:
-    def __init__(self, database_url: str, *, auto_create_schema: bool = True) -> None:
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        auto_create_schema: bool = True,
+        pool_size: int = 5,
+        max_overflow: int = 5,
+        pool_timeout_seconds: int = 30,
+        pool_recycle_seconds: int = 300,
+    ) -> None:
         self.database_url = database_url
         self.auto_create_schema = auto_create_schema
-        self.engine: AsyncEngine = create_async_engine(database_url)
+        engine_options: dict[str, object] = {}
+        if not database_url.startswith("sqlite"):
+            engine_options.update(
+                pool_pre_ping=True,
+                pool_size=max(1, pool_size),
+                max_overflow=max(0, max_overflow),
+                pool_timeout=max(1, pool_timeout_seconds),
+                pool_recycle=max(30, pool_recycle_seconds),
+            )
+        self.engine: AsyncEngine = create_async_engine(database_url, **engine_options)
         self._initialized = False
         self._initialize_lock = asyncio.Lock()
 
@@ -128,6 +155,15 @@ class SqlJobStore:
     async def dispose(self) -> None:
         await self.engine.dispose()
         self._initialized = False
+
+    async def check_connection(self) -> bool:
+        await self._ready()
+        async with self.engine.connect() as connection:
+            return (await connection.scalar(text("SELECT 1"))) == 1
+
+    @property
+    def backend_name(self) -> str:
+        return self.engine.url.get_backend_name()
 
     async def _ready(self) -> None:
         if not self._initialized:
@@ -175,6 +211,10 @@ class SqlJobStore:
                     draft_report=job.draft_report,
                     final_report=job.final_report,
                     error=job.error,
+                    error_code=job.error_code,
+                    error_retryable=job.error_retryable,
+                    error_stage=job.error_stage,
+                    retry_context=None,
                     anonymous_id=None if user_id else anonymous_id,
                     user_id=user_id,
                     created_at=job.created_at,
@@ -240,9 +280,19 @@ class SqlJobStore:
                 status="completed",
                 final_report=final_report,
                 draft_report=final_report or jobs.c.draft_report,
+                error=None,
+                error_code=None,
+                error_retryable=False,
+                error_stage=None,
             )
         elif event.type == "failed":
-            values.update(status="failed", error=event.message)
+            values.update(
+                status="failed",
+                error=event.message,
+                error_code=event.payload.get("error_code"),
+                error_retryable=bool(event.payload.get("retryable", False)),
+                error_stage=event.payload.get("stage"),
+            )
         elif event.type == "cancelled":
             values.update(status="cancelled")
         elif event.type == "report_reset":
@@ -269,7 +319,14 @@ class SqlJobStore:
             result = await connection.execute(
                 update(jobs)
                 .where(and_(jobs.c.id == job_id, jobs.c.status == "queued"))
-                .values(status="running", updated_at=utc_now())
+                .values(
+                    status="running",
+                    error=None,
+                    error_code=None,
+                    error_retryable=False,
+                    error_stage=None,
+                    updated_at=utc_now(),
+                )
             )
         return bool(result.rowcount)
 
@@ -322,10 +379,27 @@ class SqlJobStore:
                 .values(status=status, updated_at=utc_now())
             )
 
+    async def save_retry_context(self, job_id: str, context: dict[str, object]) -> None:
+        await self._ready()
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                update(jobs)
+                .where(jobs.c.id == job_id)
+                .values(retry_context=context, updated_at=utc_now())
+            )
+
+    async def get_retry_context(self, job_id: str) -> Optional[dict[str, object]]:
+        await self._ready()
+        async with self.engine.connect() as connection:
+            value = await connection.scalar(
+                select(jobs.c.retry_context).where(jobs.c.id == job_id)
+            )
+        return dict(value) if isinstance(value, dict) else None
+
     async def recover_incomplete_jobs(self) -> int:
         await self._ready()
         now = utc_now()
-        failure_message = "服务重启，未完成的研究任务已中断"
+        failure_message = "研究服务暂时繁忙，请稍后重试。"
         async with self.engine.begin() as connection:
             rows = (
                 await connection.execute(
@@ -338,7 +412,14 @@ class SqlJobStore:
             await connection.execute(
                 update(jobs)
                 .where(jobs.c.id.in_(job_ids))
-                .values(status="failed", error=failure_message, updated_at=now)
+                .values(
+                    status="failed",
+                    error=failure_message,
+                    error_code="service_unavailable",
+                    error_retryable=True,
+                    error_stage=None,
+                    updated_at=now,
+                )
             )
             await connection.execute(
                 insert(events),
@@ -348,12 +429,20 @@ class SqlJobStore:
                             job_id=job_id,
                             type="failed",
                             message=failure_message,
-                            payload={"reason": "service_restarted"},
+                            payload={
+                                "error_code": "service_unavailable",
+                                "retryable": True,
+                                "stage": None,
+                            },
                         ).id,
                         "job_id": job_id,
                         "type": "failed",
                         "message": failure_message,
-                        "payload": {"reason": "service_restarted"},
+                        "payload": {
+                            "error_code": "service_unavailable",
+                            "retryable": True,
+                            "stage": None,
+                        },
                         "created_at": now,
                     }
                     for job_id in job_ids

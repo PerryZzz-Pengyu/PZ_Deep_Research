@@ -92,6 +92,7 @@ npm 11.16.0
 
 - 已实现 `/health` 健康检查。
 - 已实现 `/api/readiness` 配置体检，返回 Provider、默认模型、缺失环境变量和工具配置状态。
+- `/api/readiness` 同时执行数据库 `SELECT 1`，只返回 `ready` 和数据库类型，不暴露主机、用户名或连接密码。
 - 已实现 research job 创建、查询、取消、事件查询和 SSE 流接口。
 - 已实现按匿名访客归属过滤的研究历史列表和任务详情接口。
 - 创建真实 Provider 任务前会检查必要环境变量，避免任务创建后才失败。
@@ -138,6 +139,7 @@ npm 11.16.0
 - 已使用 `localStorage` 保存当前任务 ID；刷新后重新获取任务与持久事件，并恢复问题、模式、Provider、时间线、来源、报告草稿或最终报告。
 - 已实现基础历史视图，按当前匿名访客加载任务列表，点击后进入报告详情。
 - 已实现终态任务重新运行，新任务保留原研究配置并记录来源任务血缘。
+- 已实现失败任务产品化重试：用户只看到统一错误提示和一个“重试”按钮；成功或取消任务详情仍保留“重新运行”。
 - 已实现 Markdown 导出：浏览器使用 `Blob` 和临时下载链接导出当前原始报告，文件名由研究问题生成并清理非法字符。
 - 已实现正式 PDF 导出：前端请求受访客权限保护的后端接口，由 Playwright Chromium 输出 A4 PDF。
 - 当前仍没有追问、Word/品牌模板导出和登录交互。
@@ -208,6 +210,7 @@ PDF 导出位置：
 - 已实现报告级真流式输出：证据门槛满足后，如果模型开始输出 `<answer>`，Runtime 会在模型仍在生成时同步发送 `report_delta`。
 - 如果流式报告草稿后续没有通过引用或参考文献格式校验，Runtime 会发送 `report_reset`，前端清空草稿并等待重写。
 - 模型调用最终失败时 Runtime 会产出 `failed` 事件，让任务状态可以被存储层正确更新。报告阶段的临时错误重试始终复用已选来源、证据卡片和报告上下文，`llm_retry` 标记 `resume_from=selected_evidence`，不会重新调用 search 或 visit。
+- Runtime 在完成选源后生成私有 `report_checkpoint`，包含最终来源、证据卡片和选源降级状态。API 层只把该检查点写入任务数据库，不写历史事件、不发送给前端。任务若在报告阶段最终失败，用户点击“重试”会创建独立新任务并从检查点继续报告；搜索、访问或证据阶段失败则执行完整研究重试。
 - 主流程固定为「生成搜索词 → search → Runtime visit → 证据卡片 → 选源 → 最终报告」；expert 在两轮检索之间额外执行一次证据缺口分析。
 - 访问漏斗（`_visit_funnel`）：search 候选按搜索原生相关性序，用并发 `visit` 滚动访问；full_text 数达到阶段目标（quick 3 / deep 10；expert 第一阶段 10、最终 20）即早停，否则访问完该次搜索返回的有限候选。候选耗尽即退出，不重复搜索或重访，因此不会因全文不足卡死。
 - 证据卡片裁剪：每条已访问来源由 Provider 专属低成本模型抽取为紧凑证据卡片。OpenAI 使用 `EVIDENCE_EXTRACTION_MODEL=gpt-5-nano`，Claude 使用 `ANTHROPIC_EVIDENCE_MODEL=claude-haiku-4-5-20251001`，Gemini 使用 `GEMINI_EVIDENCE_MODEL=gemini-2.5-flash-lite`。当前开发界面仍可选择主模型，后续生产版本将由后台分别为意图识别、工具规划、证据卡片和报告撰写配置模型。原文按 url 在任务级内存暂存、不进模型上下文；模型只读卡片写报告。报告阶段使用独立上下文，不携带搜索历史；每次格式/字数重写重新构造固定大小的 system/user 消息，只包含当前稿、证据卡片和校验要求，避免旧稿累计造成 token 膨胀。抽取调用带超时和重试，单条抽取失败时退回截断原文卡片，不使整项研究失败。
@@ -441,6 +444,31 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 - 增加 PDF、新闻站、动态网页和反爬处理。
 - 增加来源可信度评分。
 
+## 错误处理方案
+
+位置：
+
+- `backend/app/error_handling.py`
+- `backend/app/api/routes.py`
+- `frontend/src/lib/api.ts`
+- `frontend/src/components/research-workspace.tsx`
+
+错误分为两层：
+
+| 工程错误 | 产品错误码 | C 端提示 | 默认可重试 |
+| --- | --- | --- | --- |
+| DNS、连接重置、fetch/网络异常 | `network_error` | 网络连接不稳定，请检查网络后重试 | 是 |
+| 429、5xx、Provider 过载、服务重启 | `service_unavailable` | 研究服务暂时繁忙，请稍后重试 | 是 |
+| 模型或任务超时 | `task_timeout` | 本次研究未能在规定时间内完成，请重试 | 是 |
+| search、visit、Reader 无法取得足够资料 | `source_unavailable` | 暂时无法获取足够的可用资料 | 是 |
+| 产品积分余额不足 | `insufficient_credits` | 当前积分不足，无法继续研究 | 否 |
+| 内容安全或暂不支持的内容 | `content_unsupported` | 当前问题暂时无法处理 | 否 |
+| 未分类异常、报告校验最终失败 | `system_error` | 研究过程中出现异常，请稍后重试 | 是 |
+
+工程日志记录 `job_id`、Provider、模型、阶段、原始异常和事件 payload，便于排查；日志写入前会遮蔽疑似 API Key。普通任务 API、SSE、历史记录和前端不返回原始异常、堆栈、Provider 响应正文或环境变量名称。
+
+失败任务保存 `error_code`、`error_retryable` 和 `error_stage`。前端只在 `failed + error_retryable=true` 时显示错误旁的单一“重试”按钮。HTTP 请求层也会把断网和非 JSON 服务器错误映射为产品化提示，不再直接显示 `response.text()`。
+
 ## 数据存储方案
 
 ### SQLAlchemy + SQLite/PostgreSQL
@@ -455,7 +483,9 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 
 - 本地默认使用 `data/pz_deep_research.db`。
 - 通过 `DATABASE_URL` 可以切换 PostgreSQL；普通 `postgresql://` URL 会规范化为 `postgresql+psycopg://`。
-- `research_jobs` 保存任务状态、报告草稿、最终报告、归属字段和可空的 `rerun_of_job_id` 来源任务。
+- Neon 推荐把 pooled connection string 填入 `DATABASE_URL`，把 direct connection string 填入 `DATABASE_MIGRATION_URL`。应用请求使用连接池地址，Alembic 启动迁移使用直连地址。
+- PostgreSQL 默认启用 `pool_pre_ping`，并提供 `DATABASE_POOL_SIZE`、`DATABASE_MAX_OVERFLOW`、`DATABASE_POOL_TIMEOUT_SECONDS`、`DATABASE_POOL_RECYCLE_SECONDS`。
+- `research_jobs` 保存任务状态、报告草稿、最终报告、产品错误元数据、报告重试检查点、归属字段和可空的 `rerun_of_job_id` 来源任务。
 - `research_events` 保存持久进度事件，使用任务外键和级联删除。
 - Alembic 是应用启动时的正式建表和升级路径；`create_all` 只用于独立存储单元测试，不参与产品数据库初始化。
 
@@ -473,11 +503,18 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 - 当前后端从数据库读取原任务的研究问题、模式、Provider 和模型，前端不能在重跑请求里篡改这些字段；生产模型路由完成后，应改为读取原任务路由版本和各阶段模型记录。
 - 新任务拥有独立 ID、独立事件流和独立报告，并通过 `rerun_of_job_id` 保留来源任务血缘。
 - 第二个 Alembic 迁移为现有数据库增加血缘列和索引；旧的无版本数据库若已由最新 Metadata 建表，迁移会识别已有列并安全跳过重复创建。
+- 第三个 Alembic 迁移增加 `error_code`、`error_retryable`、`error_stage` 和 `retry_context`，支持产品化错误与报告检查点恢复。
+
+Neon 迁移路径：
+
+- Neon 本质是标准 PostgreSQL，项目没有使用 Neon 专有 SQL 或 ORM API。
+- 后续迁移到 RDS、Cloud SQL、Supabase、自建 PostgreSQL 时，只需提供新的 PostgreSQL URL、迁移数据并运行 Alembic；业务模型和 SQLAlchemy 存储层不需要重写。
+- `backend/scripts/check_database.py` 只执行连接检查并输出 `database=ready` 与数据库类型，不打印 URL 或密码。
 
 重启语义：
 
 - 已完成、失败、取消任务及其报告和事件可以跨后端重启恢复。
-- queued/running 任务的 Runtime 执行现场尚未持久化；服务启动时将其标记为失败并写入 `service_restarted` 事件，避免永久显示“研究中”。
+- queued/running 任务的完整 Runtime 执行现场尚未持久化；服务启动时将其标记为可重试的服务异常，避免永久显示“研究中”。报告选源后的证据检查点已经单独持久化。
 
 后续方案：
 
@@ -585,12 +622,12 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 后端 Python 语法检查通过。
 - 后端 app 导入通过。
-- 后端 pytest 自动化测试通过，当前为 100 个用例。
+- 后端 pytest 自动化测试通过，当前为 111 个用例。
 - 前端 lint 通过。
 - 前端 build 通过。
-- Playwright Chromium 端到端测试通过，当前为 6 个用例，覆盖任务取消、刷新续跑、完成后报告恢复、历史报告详情、重新运行、Markdown 下载和正式 PDF 下载。
+- Playwright Chromium 端到端测试通过，当前为 7 个用例，覆盖任务取消、刷新续跑、完成后报告恢复、历史报告详情、重新运行、产品化错误重试、Markdown 下载和正式 PDF 下载。
 - SQLite 跨 Store 持久化、访客隔离、重启中断处理和匿名历史账号归并测试通过。
-- Alembic 初始迁移和重新运行血缘迁移已在 SQLite 执行通过，并完成离线 SQL 编译。
+- Alembic 三个版本迁移已在 SQLite 执行通过，包含任务历史、重跑血缘、产品错误和报告检查点字段。
 - FastAPI 本地服务启动成功。
 - Next.js 本地服务启动成功。
 - mock 研究任务流跑通。
@@ -623,9 +660,8 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 ## 后续技术优先级
 
-1. 完成完整错误恢复交互。
-2. 在真实 PostgreSQL 实例验证迁移、连接池、备份和恢复。
-3. 建立意图识别、工具规划、证据卡片、报告撰写四类质量测试集，按准确率、格式服从度、延迟和成本确定生产模型路由。
+1. 在真实 Neon PostgreSQL 实例验证迁移、连接池、备份和恢复。
+2. 建立意图识别、工具规划、证据卡片、报告撰写四类质量测试集，按准确率、格式服从度、延迟和成本确定生产模型路由。
 4. 移除生产 C 端的 Provider/模型选择器，保留内部测试开关、管理员配置、路由版本记录和 Provider 故障降级。
 5. 补齐 Claude/Gemini 原生 streaming、Gemini 用量和成本计算。
 6. 增加关键视口视觉回归、真实断线恢复和 Worker 任务恢复测试。

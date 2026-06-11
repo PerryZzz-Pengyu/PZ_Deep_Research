@@ -70,10 +70,22 @@ def test_get_settings_reads_mock_provider_delay(monkeypatch) -> None:
 
 def test_get_settings_normalizes_postgresql_database_url(monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:password@localhost/research")
+    monkeypatch.setenv(
+        "DATABASE_MIGRATION_URL",
+        "postgres://user:password@direct.example/research",
+    )
+    monkeypatch.setenv("DATABASE_POOL_SIZE", "7")
+    monkeypatch.setenv("DATABASE_MAX_OVERFLOW", "3")
 
     settings = get_settings()
 
     assert settings.database_url == "postgresql+psycopg://user:password@localhost/research"
+    assert (
+        settings.database_migration_url
+        == "postgresql+psycopg://user:password@direct.example/research"
+    )
+    assert settings.database_pool_size == 7
+    assert settings.database_max_overflow == 3
 
 
 def test_get_settings_ignores_chinese_placeholders(monkeypatch) -> None:

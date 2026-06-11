@@ -132,3 +132,91 @@ test("可以从报告详情导出正式 PDF 文件", async ({ page }) => {
   expect(content.subarray(-1024).toString("latin1")).toContain("%%EOF");
   expect(content.length).toBeGreaterThan(8_000);
 });
+
+test("失败任务只显示产品化错误并通过单一重试按钮恢复", async ({ page }) => {
+  const failedJob = {
+    id: "failed-job",
+    rerun_of_job_id: null,
+    query: "验证产品化错误重试",
+    mode: "quick",
+    provider: "mock",
+    model: null,
+    status: "failed",
+    draft_report: "",
+    final_report: null,
+    error: "网络连接不稳定，请检查网络后重试。",
+    error_code: "network_error",
+    error_retryable: true,
+    error_stage: "search",
+    created_at: "2026-06-10T12:00:00Z",
+    updated_at: "2026-06-10T12:01:00Z",
+  };
+  const retryJob = {
+    ...failedJob,
+    id: "retry-job",
+    rerun_of_job_id: failedJob.id,
+    status: "queued",
+    error: null,
+    error_code: null,
+    error_retryable: false,
+    error_stage: null,
+    updated_at: "2026-06-10T12:02:00Z",
+  };
+
+  await page.route("**/api/research-jobs/failed-job", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(failedJob) });
+  });
+  await page.route("**/api/research-jobs/failed-job/retry", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(retryJob) });
+  });
+  await page.route("**/api/research-jobs/failed-job/events", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        {
+          id: "failed-event",
+          job_id: failedJob.id,
+          type: "failed",
+          message: failedJob.error,
+          payload: {
+            error_code: failedJob.error_code,
+            retryable: true,
+            stage: failedJob.error_stage,
+          },
+          created_at: failedJob.updated_at,
+        },
+      ]),
+    });
+  });
+  await page.route("**/api/research-jobs/retry-job/stream**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: `data: ${JSON.stringify({
+        id: "retry-status",
+        job_id: retryJob.id,
+        type: "status",
+        message: "已重新开始研究",
+        payload: {},
+        created_at: retryJob.updated_at,
+      })}\n\n`,
+    });
+  });
+
+  await page.evaluate(() => {
+    window.localStorage.setItem("pz-deep-research-active-job", "failed-job");
+  });
+  await page.reload();
+
+  await expect(page.locator(".error-line")).toContainText(failedJob.error);
+  await expect(page.getByText(/invalid api key|Traceback|provider/i)).toHaveCount(0);
+  const retryButton = page.getByRole("button", { name: "重试", exact: true });
+  await expect(retryButton).toBeVisible();
+  await expect(page.getByRole("button", { name: "重新运行", exact: true })).toHaveCount(0);
+
+  await retryButton.click();
+
+  await expect(page.locator(".job-id-text")).toHaveText(retryJob.id);
+  await expect(page.getByLabel("研究问题")).toHaveValue(retryJob.query);
+});

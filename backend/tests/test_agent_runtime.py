@@ -522,6 +522,163 @@ def test_report_transient_failure_retries_from_selected_evidence() -> None:
     assert events[-1].type == "completed"
 
 
+def test_runtime_emits_private_report_retry_checkpoint() -> None:
+    async def run_runtime():
+        provider = SequenceProvider(
+            [
+                LLMResult(
+                    content=(
+                        '<tool_call>\n{"name":"search","arguments":{"query":'
+                        '["checkpoint evidence"]}}\n</tool_call>'
+                    ),
+                    model="openai-test",
+                ),
+                LLMResult(
+                    content=make_valid_answer("检查点报告", "quick"),
+                    model="openai-test",
+                ),
+            ]
+        )
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry(
+                [
+                    FixedTool(
+                        "search",
+                        ToolResult(name="search", content="搜索结果", sources=make_sources(3)),
+                    ),
+                    EchoVisitTool(),
+                ]
+            ),
+        )
+        request = ResearchRequest(
+            query="保存报告重试检查点",
+            mode="quick",
+            provider="openai",
+        )
+        return [event async for event in runtime.run("checkpoint-job", request)]
+
+    events = asyncio.run(run_runtime())
+    checkpoints = [event for event in events if event.type == "report_checkpoint"]
+
+    assert len(checkpoints) == 1
+    assert len(checkpoints[0].payload["sources"]) == 3
+    assert len(checkpoints[0].payload["cards"]) == 3
+    assert checkpoints[0].payload["selection"]["target"] == 3
+
+
+def test_runtime_can_resume_report_without_search_or_visit() -> None:
+    async def run_runtime():
+        provider = SequenceProvider(
+            [
+                LLMResult(
+                    content=make_valid_answer("从检查点恢复的报告", "quick"),
+                    model="openai-test",
+                )
+            ]
+        )
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry([]),
+        )
+        request = ResearchRequest(
+            query="从检查点恢复报告",
+            mode="quick",
+            provider="openai",
+        )
+        retry_context = {
+            "mode": "quick",
+            "sources": [
+                {
+                    **source,
+                    "citation_id": str(index),
+                    "source_kind": "visited_source",
+                }
+                for index, source in enumerate(make_visit_sources(3), start=1)
+            ],
+            "cards": [
+                {
+                    "citation_id": str(index),
+                    "title": source["title"],
+                    "url": source["url"],
+                    "evidence_level": "full_text",
+                    "content": "证据卡片内容",
+                    "extraction_status": "extracted",
+                }
+                for index, source in enumerate(make_visit_sources(3), start=1)
+            ],
+            "selection": {
+                "target": 3,
+                "minimum_full_text": 1,
+                "total_available": 3,
+                "full_text_count": 3,
+                "degraded": False,
+                "full_text_shortfall": False,
+            },
+        }
+        return [
+            event
+            async for event in runtime.resume_report(
+                "resume-job",
+                request,
+                retry_context,
+            )
+        ]
+
+    events = asyncio.run(run_runtime())
+    event_types = [event.type for event in events]
+
+    assert "tool_start" not in event_types
+    assert "tool_result" not in event_types
+    assert "source_selected" in event_types
+    assert events[-1].type == "completed"
+
+
+def test_report_validation_failure_is_marked_as_report_stage() -> None:
+    async def run_runtime():
+        invalid_report = LLMResult(
+            content=f"<answer>\n{'研' * 400} [1]\n</answer>",
+            model="openai-test",
+        )
+        provider = SequenceProvider(
+            [
+                LLMResult(
+                    content=(
+                        '<tool_call>\n{"name":"search","arguments":{"query":'
+                        '["report validation"]}}\n</tool_call>'
+                    ),
+                    model="openai-test",
+                ),
+                invalid_report,
+                invalid_report,
+                invalid_report,
+            ]
+        )
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry(
+                [
+                    FixedTool(
+                        "search",
+                        ToolResult(name="search", content="搜索结果", sources=make_sources(3)),
+                    ),
+                    EchoVisitTool(),
+                ]
+            ),
+        )
+        request = ResearchRequest(
+            query="验证报告失败阶段",
+            mode="quick",
+            provider="openai",
+        )
+        return [event async for event in runtime.run("report-failed-job", request)]
+
+    events = asyncio.run(run_runtime())
+
+    assert events[-1].type == "failed"
+    assert events[-1].payload["stage"] == "report"
+
+
 def test_non_transient_provider_error_does_not_retry() -> None:
     async def run_runtime():
         provider = SequenceProvider([RuntimeError("400 invalid model configuration")])

@@ -12,6 +12,7 @@ class InMemoryJobStore:
         self._jobs: dict[str, ResearchJob] = {}
         self._events: dict[str, list[ResearchEvent]] = {}
         self._owners: dict[str, tuple[Optional[str], Optional[str]]] = {}
+        self._retry_contexts: dict[str, dict[str, object]] = {}
         self._lock = asyncio.Lock()
 
     async def initialize(self) -> None:
@@ -40,6 +41,7 @@ class InMemoryJobStore:
             self._jobs[job.id] = job
             self._events[job.id] = []
             self._owners[job.id] = (anonymous_id if not user_id else None, user_id)
+            self._retry_contexts[job.id] = {}
         return job
 
     def _owner_matches(
@@ -109,9 +111,18 @@ class InMemoryJobStore:
                 job.status = "completed"
                 job.final_report = event.payload.get("final_report")
                 job.draft_report = job.final_report or job.draft_report
+                job.error = None
+                job.error_code = None
+                job.error_retryable = False
+                job.error_stage = None
             elif event.type == "failed":
                 job.status = "failed"
                 job.error = event.message
+                error_code = event.payload.get("error_code")
+                error_stage = event.payload.get("stage")
+                job.error_code = error_code if isinstance(error_code, str) else None
+                job.error_retryable = bool(event.payload.get("retryable", False))
+                job.error_stage = error_stage if isinstance(error_stage, str) else None
             elif event.type == "cancelled":
                 job.status = "cancelled"
             elif event.type == "report_reset":
@@ -123,6 +134,10 @@ class InMemoryJobStore:
             if not job or job.status != "queued":
                 return False
             job.status = "running"
+            job.error = None
+            job.error_code = None
+            job.error_retryable = False
+            job.error_stage = None
             job.updated_at = utc_now().astimezone(timezone.utc)
             return True
 
@@ -166,6 +181,23 @@ class InMemoryJobStore:
                 job.status = status
                 job.updated_at = utc_now().astimezone(timezone.utc)
 
+    async def save_retry_context(self, job_id: str, context: dict[str, object]) -> None:
+        async with self._lock:
+            if job_id in self._jobs:
+                self._retry_contexts[job_id] = dict(context)
+
+    async def get_retry_context(self, job_id: str) -> Optional[dict[str, object]]:
+        async with self._lock:
+            context = self._retry_contexts.get(job_id)
+            return dict(context) if context else None
+
+    async def check_connection(self) -> bool:
+        return True
+
+    @property
+    def backend_name(self) -> str:
+        return "memory"
+
     async def recover_incomplete_jobs(self) -> int:
         async with self._lock:
             incomplete_ids = [
@@ -176,14 +208,21 @@ class InMemoryJobStore:
             for job_id in incomplete_ids:
                 job = self._jobs[job_id]
                 job.status = "failed"
-                job.error = "服务重启，未完成的研究任务已中断"
+                job.error = "研究服务暂时繁忙，请稍后重试。"
+                job.error_code = "service_unavailable"
+                job.error_retryable = True
+                job.error_stage = None
                 job.updated_at = utc_now().astimezone(timezone.utc)
                 self._events[job_id].append(
                     ResearchEvent(
                         job_id=job_id,
                         type="failed",
-                        message="服务重启，未完成的研究任务已中断",
-                        payload={"reason": "service_restarted"},
+                        message="研究服务暂时繁忙，请稍后重试。",
+                        payload={
+                            "error_code": "service_unavailable",
+                            "retryable": True,
+                            "stage": None,
+                        },
                     )
                 )
             return len(incomplete_ids)

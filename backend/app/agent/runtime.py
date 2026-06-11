@@ -4,14 +4,19 @@ import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
-from dataclasses import replace
+from dataclasses import asdict, replace
 from typing import Any, Optional
 
 from app.agent.evidence import EvidenceCard, EvidenceExtractor, render_card
 from app.agent.prompts import SYSTEM_PROMPT, build_user_prompt
 from app.agent.providers import ProviderFactory
 from app.agent.schemas import LLMMessage, ResearchEvent, ResearchRequest
-from app.agent.selection import count_full_text, select_sources, should_stop_visiting
+from app.agent.selection import (
+    SelectionResult,
+    count_full_text,
+    select_sources,
+    should_stop_visiting,
+)
 from app.agent.tools import ToolRegistry
 
 
@@ -282,6 +287,24 @@ class AgentRuntime:
         selected, selected_cards = self._renumber_selected_sources(selection.selected, cards)
         yield ResearchEvent(
             job_id=job_id,
+            type="report_checkpoint",
+            message="已保存报告生成检查点",
+            payload={
+                "mode": request.mode,
+                "sources": self._source_snapshot(selected),
+                "cards": [asdict(card) for card in selected_cards],
+                "selection": {
+                    "target": selection.target,
+                    "minimum_full_text": selection.minimum_full_text,
+                    "total_available": selection.total_available,
+                    "full_text_count": selection.full_text_count,
+                    "degraded": selection.degraded,
+                    "full_text_shortfall": selection.full_text_shortfall,
+                },
+            },
+        )
+        yield ResearchEvent(
+            job_id=job_id,
             type="source_selected",
             message="已完成来源筛选",
             payload={
@@ -296,7 +319,104 @@ class AgentRuntime:
             },
         )
 
-        # ===== 报告阶段 =====
+        async for event in self._run_report(
+            provider,
+            request,
+            job_id,
+            selected,
+            selected_cards,
+            selection,
+            usage,
+            round_index=round_index,
+        ):
+            yield event
+
+    async def resume_report(
+        self,
+        job_id: str,
+        request: ResearchRequest,
+        retry_context: dict[str, Any],
+    ) -> AsyncIterator[ResearchEvent]:
+        provider = self.provider_factory.create(request.provider)
+        sources = [
+            dict(source)
+            for source in retry_context.get("sources", [])
+            if isinstance(source, dict)
+        ]
+        cards = [
+            EvidenceCard(
+                citation_id=str(card.get("citation_id", "")),
+                title=str(card.get("title", "")),
+                url=str(card.get("url", "")),
+                evidence_level=str(card.get("evidence_level", "")),
+                content=str(card.get("content", "")),
+                extraction_status=str(card.get("extraction_status", "extracted")),
+            )
+            for card in retry_context.get("cards", [])
+            if isinstance(card, dict)
+        ]
+        selection_data = retry_context.get("selection", {})
+        if not isinstance(selection_data, dict) or not sources or not cards:
+            async for event in self.run(job_id, request):
+                yield event
+            return
+        selection = SelectionResult(
+            selected=sources,
+            target=int(selection_data.get("target", len(sources))),
+            minimum_full_text=int(selection_data.get("minimum_full_text", 0)),
+            total_available=int(selection_data.get("total_available", len(sources))),
+            full_text_count=int(selection_data.get("full_text_count", 0)),
+            degraded=bool(selection_data.get("degraded", False)),
+            full_text_shortfall=bool(selection_data.get("full_text_shortfall", False)),
+        )
+        yield ResearchEvent(
+            job_id=job_id,
+            type="status",
+            message="已恢复上次选定的证据，正在重新生成报告",
+            payload={"resume_from": "selected_evidence"},
+        )
+        yield ResearchEvent(
+            job_id=job_id,
+            type="source_selected",
+            message="已恢复上次选定的来源",
+            payload={
+                "sources": self._source_snapshot(sources),
+                "target": selection.target,
+                "selected_count": len(sources),
+                "minimum_full_text": selection.minimum_full_text,
+                "total_available": selection.total_available,
+                "full_text_count": selection.full_text_count,
+                "degraded": selection.degraded,
+                "full_text_shortfall": selection.full_text_shortfall,
+                "resumed": True,
+            },
+        )
+        async for event in self._run_report(
+            provider,
+            request,
+            job_id,
+            sources,
+            cards,
+            selection,
+            {"input": 0, "output": 0, "cost": 0.0},
+            round_index=0,
+        ):
+            yield event
+
+    async def _run_report(
+        self,
+        provider: Any,
+        request: ResearchRequest,
+        job_id: str,
+        selected: list[dict[str, str]],
+        selected_cards: list[EvidenceCard],
+        selection: SelectionResult,
+        usage: dict[str, Any],
+        *,
+        round_index: int,
+    ) -> AsyncIterator[ResearchEvent]:
+        mode_policy = MODE_POLICIES.get(request.mode, MODE_POLICIES["deep"])
+        real_provider = provider.name in {"openai", "anthropic", "gemini"}
         report_request = self._build_report_request(request.mode, selected_cards, selection)
         report_messages = [
             LLMMessage(role="system", content=SYSTEM_PROMPT),
@@ -361,6 +481,7 @@ class AgentRuntime:
                         message="研究报告经过重写后仍未满足格式或字数要求",
                         payload={
                             "round": round_index,
+                            "stage": "report",
                             "missing": missing_report_format,
                             "body_char_count": body_char_count,
                             "min_body_chars": min_body_chars,
@@ -555,7 +676,11 @@ class AgentRuntime:
                 job_id=job_id,
                 type="failed",
                 message="研究任务失败：模型没有返回结果",
-                payload={"round": round_index, "provider": provider.name},
+                payload={
+                    "round": round_index,
+                    "provider": provider.name,
+                    "stage": stage,
+                },
             )
             holder["result"] = None
             return

@@ -128,11 +128,14 @@ SEARCH_PROVIDER=mock
 
 不要提交 `.env`、`frontend/.env.local` 或任何真实 API Key。完整说明见 [API Key 配置](project-docs/api-key-setup.md)。
 
-本地默认把数据保存到 `data/pz_deep_research.db`。生产 PostgreSQL 示例：
+本地默认把数据保存到 `data/pz_deep_research.db`。生产推荐使用 Neon PostgreSQL：应用使用 pooled URL，迁移和备份使用 direct URL。
 
 ```text
-DATABASE_URL=postgresql://user:password@host:5432/database
+DATABASE_URL=postgresql://user:password@pooled-host/database?sslmode=require
+DATABASE_MIGRATION_URL=postgresql://user:password@direct-host/database?sslmode=require
 ```
+
+填好后可运行 `cd backend && PYTHONPATH=. .venv/bin/python scripts/check_database.py` 验证连接。Neon 是标准 PostgreSQL，后续可以迁移到其他托管或自建 PostgreSQL，不需要重写业务存储层。
 
 ### 4. 启动后端
 
@@ -188,8 +191,8 @@ npm run test:e2e
 
 最近一次本地验证（2026-06-10）：
 
-- 后端 pytest：100 个用例通过。
-- Playwright Chromium：6 个端到端用例通过。
+- 后端 pytest：111 个用例通过。
+- Playwright Chromium：7 个端到端用例通过。
 - 本地 `8000/3000` 服务和前端页面冒烟检查通过，无 Next.js 错误覆盖层或浏览器控制台错误。
 
 ## 隐私、费用与安全

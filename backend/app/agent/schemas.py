@@ -43,6 +43,9 @@ class ResearchJob(BaseModel):
     draft_report: str = ""
     final_report: Optional[str] = None
     error: Optional[str] = None
+    error_code: Optional[str] = None
+    error_retryable: bool = False
+    error_stage: Optional[str] = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 

@@ -180,6 +180,44 @@ def test_run_research_job_does_not_persist_stream_deltas(monkeypatch) -> None:
     assert event_types == ["completed"]
 
 
+def test_run_research_job_sanitizes_failed_events(monkeypatch) -> None:
+    class FailingRuntime:
+        async def run(self, job_id: str, request: ResearchRequest):
+            yield ResearchEvent(
+                job_id=job_id,
+                type="failed",
+                message="研究任务失败：401 invalid api key sk-secret-value",
+                payload={
+                    "provider": "openai",
+                    "error": "401 invalid api key sk-secret-value",
+                    "stage": "report",
+                },
+            )
+
+    async def run_job():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="测试错误脱敏", mode="quick", provider="mock")
+        job = await store.create_job(
+            request,
+            provider="mock",
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+        )
+        monkeypatch.setattr(routes, "job_store", store)
+        monkeypatch.setattr(routes, "runtime", FailingRuntime())
+
+        await routes.run_research_job(job.id, request)
+        return await store.get_job(job.id), await store.list_events(job.id)
+
+    job, events = asyncio.run(run_job())
+
+    assert job is not None
+    assert job.status == "failed"
+    assert job.error_code == "service_unavailable"
+    assert job.error_retryable is False
+    assert "sk-secret-value" not in (job.error or "")
+    assert "sk-secret-value" not in str(events[0].payload)
+
+
 def test_job_store_tracks_report_draft_without_persisting_delta_events() -> None:
     async def run_store():
         store = InMemoryJobStore()
@@ -491,6 +529,106 @@ def test_rerun_endpoint_hides_other_visitors_job(monkeypatch) -> None:
     )
 
     assert response.status_code == 404
+
+
+def test_retry_endpoint_resumes_report_from_saved_evidence(monkeypatch) -> None:
+    async def prepare_store():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="从证据继续报告", mode="quick", provider="mock")
+        job = await store.create_job(
+            request,
+            provider="mock",
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+        )
+        context = {
+            "mode": "quick",
+            "sources": [{"citation_id": "1", "title": "来源", "url": "https://example.com"}],
+            "cards": [
+                {
+                    "citation_id": "1",
+                    "title": "来源",
+                    "url": "https://example.com",
+                    "evidence_level": "full_text",
+                    "content": "证据",
+                    "extraction_status": "extracted",
+                }
+            ],
+            "selection": {
+                "target": 3,
+                "minimum_full_text": 1,
+                "total_available": 1,
+                "full_text_count": 1,
+                "degraded": True,
+                "full_text_shortfall": False,
+            },
+        }
+        await store.save_retry_context(job.id, context)
+        await store.add_event(
+            ResearchEvent(
+                job_id=job.id,
+                type="failed",
+                message="本次研究未能在规定时间内完成，请重试。",
+                payload={
+                    "error_code": "task_timeout",
+                    "retryable": True,
+                    "stage": "report",
+                },
+            )
+        )
+        return store, job, context
+
+    calls = []
+
+    async def capture_run(job_id, request, retry_context=None):
+        calls.append((job_id, request, retry_context))
+
+    store, original_job, context = asyncio.run(prepare_store())
+    monkeypatch.setattr(routes, "job_store", store)
+    monkeypatch.setattr(routes, "run_research_job", capture_run)
+
+    response = client.post(
+        f"/api/research-jobs/{original_job.id}/retry",
+        headers=VISITOR_HEADERS,
+    )
+
+    assert response.status_code == 200
+    retry_job = response.json()
+    assert retry_job["id"] != original_job.id
+    assert retry_job["rerun_of_job_id"] == original_job.id
+    assert calls[0][0] == retry_job["id"]
+    assert calls[0][2] == context
+
+
+def test_retry_endpoint_rejects_non_retryable_failure(monkeypatch) -> None:
+    async def prepare_store():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="不可重试错误", mode="quick", provider="mock")
+        job = await store.create_job(
+            request,
+            provider="mock",
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+        )
+        await store.add_event(
+            ResearchEvent(
+                job_id=job.id,
+                type="failed",
+                message="研究服务暂时不可用。",
+                payload={
+                    "error_code": "service_unavailable",
+                    "retryable": False,
+                    "stage": "search",
+                },
+            )
+        )
+        return store, job
+
+    store, job = asyncio.run(prepare_store())
+    monkeypatch.setattr(routes, "job_store", store)
+
+    response = client.post(f"/api/research-jobs/{job.id}/retry", headers=VISITOR_HEADERS)
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "当前失败不可直接重试，请重新发起研究"
 
 
 def test_pdf_export_returns_owned_report_as_attachment(monkeypatch) -> None:

@@ -14,6 +14,91 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+## 2026-06-10 23:58 CST +0800
+
+### Neon PostgreSQL 已启用
+
+- 在本地 `.env` 中补充 Neon 运行连接、迁移连接和连接池配置项；连接字符串及密码不进入版本控制或文档。
+- 使用 pooled URL 作为 `DATABASE_URL`，使用 direct URL 作为 `DATABASE_MIGRATION_URL`。
+- 已在 Neon 执行全部 Alembic 迁移，数据库版本升级至 `20260610_03`。
+- 已验证 `/health`、`/api/readiness` 和 `backend/scripts/check_database.py`；数据库状态为 `ready`，后端类型为 `postgresql`。
+- 当前 Neon 为全新数据库，原本地 SQLite 测试历史未自动迁移。
+
+### 影响文件
+
+- `.env`（仅本地，不提交）
+- `project-docs/changelog.md`
+
+## 2026-06-10 21:23 CST +0800
+
+### 产品化错误、失败重试与 PostgreSQL 生产准备
+
+- 按“先测试、后实现”补充错误分类、API 重试、Runtime 检查点、数据库配置和 Playwright E2E 用例；新测试先验证失败，再完成实现。
+- 新增统一产品错误层，把网络异常、服务过载、超时、资料不足、积分不足、内容不支持和系统异常映射为稳定错误码与 C 端文案。
+- Runtime 或 Provider 的原始异常不再进入用户 API、SSE 和历史错误字段；工程日志保留任务、Provider、模型、阶段和原始异常，并在写日志前遮蔽疑似 API Key。
+- `research_jobs` 新增 `error_code`、`error_retryable`、`error_stage` 和 `retry_context`，并增加 Alembic `20260610_03` 迁移。
+- Runtime 在完成最终选源后生成私有报告检查点。API 只把检查点写数据库，不写历史事件、不推送前端。
+- 新增 `POST /api/research-jobs/{job_id}/retry`：
+  - 仅接受 `failed + error_retryable=true` 的任务。
+  - 报告阶段且存在检查点时，从已选来源和证据卡片重新生成报告，不重复 search / visit。
+  - 其他阶段或检查点缺失时，创建独立新任务并完整重新研究。
+- 前端 API 层不再直接展示 `response.text()`；断网和非 JSON 服务错误会转为产品化提示。
+- 失败任务只在错误提示旁显示一个“重试”按钮；成功或取消任务详情继续使用“重新运行”，两种语义不混用。
+- 数据库配置新增：
+  - `DATABASE_MIGRATION_URL`
+  - `DATABASE_POOL_SIZE`
+  - `DATABASE_MAX_OVERFLOW`
+  - `DATABASE_POOL_TIMEOUT_SECONDS`
+  - `DATABASE_POOL_RECYCLE_SECONDS`
+- Neon/PostgreSQL 使用 pooled URL 承载应用请求、direct URL 执行 Alembic 迁移；PostgreSQL 连接池启用 `pool_pre_ping`。
+- `/api/readiness` 新增数据库 `SELECT 1` 检查，只返回可用状态和数据库类型。
+- 新增 `backend/scripts/check_database.py`，用于安全检查数据库连接，不打印 URL 或密码。
+- Playwright 配置新增 `PLAYWRIGHT_REUSE_SERVERS=1`，需要时可复用当前唯一的 `8000/3000` 服务，避免测试再启动第二套进程。
+
+### 影响文件
+
+- `.env.example`
+- `README.md`
+- `README.zh-CN.md`
+- `backend/app/error_handling.py`
+- `backend/app/agent/runtime.py`
+- `backend/app/agent/schemas.py`
+- `backend/app/api/routes.py`
+- `backend/app/config.py`
+- `backend/app/storage/memory.py`
+- `backend/app/storage/sql.py`
+- `backend/migrations/versions/20260610_03_add_product_errors_and_retry_context.py`
+- `backend/scripts/check_database.py`
+- `backend/tests/`
+- `frontend/src/lib/api.ts`
+- `frontend/src/lib/types.ts`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/src/app/globals.css`
+- `frontend/e2e/research-flow.spec.ts`
+- `frontend/playwright.config.ts`
+- `project-docs/project-plan.md`
+- `project-docs/product-doc.md`
+- `project-docs/technical-architecture.md`
+- `project-docs/testing-guide.md`
+- `project-docs/changelog.md`
+
+### 验证
+
+- 后端 pytest：111 个用例通过。
+- 前端 `npm run lint` 通过。
+- 前端 `npm run build` 通过。
+- Playwright Chromium：7 个 E2E 用例通过。
+- 本地 Alembic 已升级到 `20260610_03`。
+- `backend/scripts/check_database.py` 返回 `database=ready`、`backend=sqlite`。
+- `/health` 返回正常；`/api/readiness` 返回数据库 `ready=true`。
+
+### 用户需要完成
+
+- 当前本地 SQLite 已可直接使用，不需要额外操作。
+- 准备切换 Neon 时，在 Neon 控制台创建项目并把 pooled connection string 填入 `.env` 的 `DATABASE_URL`，把 direct connection string 填入 `DATABASE_MIGRATION_URL`。
+- 填写后重启后端；启动时会自动运行 Alembic。再执行 `cd backend && PYTHONPATH=. .venv/bin/python scripts/check_database.py` 验证连接。
+- Neon 账号、项目和连接串需要由用户创建；不要把数据库密码提交到 Git。
+
 ## 2026-06-10 19:26 CST +0800
 
 ### 全量文档一致性更新

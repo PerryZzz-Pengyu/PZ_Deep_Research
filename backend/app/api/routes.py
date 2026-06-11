@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import traceback
 from urllib.parse import quote
 from uuid import UUID
 
@@ -13,13 +15,22 @@ from app.agent.runtime import AgentRuntime
 from app.agent.schemas import ResearchEvent, ResearchJob, ResearchRequest
 from app.agent.tools import build_default_tool_registry
 from app.config import missing_provider_requirements, missing_search_requirements, provider_model, get_settings
+from app.error_handling import classify_failure, redact_sensitive, sanitize_failed_event
 from app.reporting import PdfExportError, PdfExporter, pdf_export_filename
 from app.storage import SqlJobStore, upgrade_database
 
 
 router = APIRouter(prefix="/api")
+logger = logging.getLogger(__name__)
 settings = get_settings()
-job_store = SqlJobStore(settings.database_url, auto_create_schema=False)
+job_store = SqlJobStore(
+    settings.database_url,
+    auto_create_schema=False,
+    pool_size=settings.database_pool_size,
+    max_overflow=settings.database_max_overflow,
+    pool_timeout_seconds=settings.database_pool_timeout_seconds,
+    pool_recycle_seconds=settings.database_pool_recycle_seconds,
+)
 runtime = AgentRuntime(
     provider_factory=ProviderFactory(settings),
     tool_registry=build_default_tool_registry(settings),
@@ -117,12 +128,18 @@ async def create_research_job(
     provider = request.provider or settings.default_provider
     missing = missing_provider_requirements(settings, provider, model_override=request.model)
     if missing:
+        logger.warning(
+            "research_creation_configuration_missing provider=%s model=%s missing=%s",
+            provider,
+            request.model,
+            missing,
+        )
         raise HTTPException(
-            status_code=400,
+            status_code=503,
             detail={
-                "message": "真实研究配置不完整，请先补齐环境变量",
-                "provider": provider,
-                "missing": missing,
+                "message": "研究服务暂时不可用，请稍后重试。",
+                "code": "service_unavailable",
+                "retryable": False,
             },
         )
     job = await job_store.create_job(
@@ -145,6 +162,14 @@ async def get_readiness() -> dict[str, object]:
             "model": provider_model(settings, provider) or None,
         }
     search_missing = missing_search_requirements(settings)
+    try:
+        database_ready = await job_store.check_connection()
+    except Exception as exc:
+        logger.error(
+            "database_readiness_check_failed error=%s",
+            redact_sensitive(exc),
+        )
+        database_ready = False
     return {
         "providers": providers,
         "tools": {
@@ -159,6 +184,10 @@ async def get_readiness() -> dict[str, object]:
                 "missing": [],
                 "optional_missing": [] if settings.jina_api_key else ["JINA_API_KEY"],
             },
+        },
+        "database": {
+            "ready": database_ready,
+            "backend": job_store.backend_name,
         },
     }
 
@@ -424,6 +453,60 @@ async def rerun_research_job(
     return rerun_job
 
 
+@router.post("/research-jobs/{job_id}/retry", response_model=ResearchJob)
+async def retry_failed_research_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+) -> ResearchJob:
+    visitor_id = validate_visitor_id(visitor_id)
+    source_job = await job_store.get_job(job_id, anonymous_id=visitor_id)
+    if not source_job:
+        raise HTTPException(status_code=404, detail="研究任务不存在")
+    if source_job.status != "failed":
+        raise HTTPException(status_code=409, detail="只有失败任务可以重试")
+    if not source_job.error_retryable:
+        raise HTTPException(status_code=409, detail="当前失败不可直接重试，请重新发起研究")
+
+    missing = missing_provider_requirements(
+        settings,
+        source_job.provider,
+        model_override=source_job.model,
+    )
+    if missing:
+        logger.warning(
+            "research_retry_configuration_missing job_id=%s provider=%s missing=%s",
+            source_job.id,
+            source_job.provider,
+            missing,
+        )
+        raise HTTPException(status_code=503, detail="研究服务暂时不可用，请稍后重试")
+
+    request = ResearchRequest(
+        query=source_job.query,
+        mode=source_job.mode,
+        provider=source_job.provider,
+        model=source_job.model,
+    )
+    retry_context = None
+    if source_job.error_stage == "report":
+        retry_context = await job_store.get_retry_context(source_job.id)
+
+    retry_job = await job_store.create_job(
+        request,
+        provider=source_job.provider,
+        anonymous_id=visitor_id,
+        rerun_of_job_id=source_job.id,
+    )
+    background_tasks.add_task(
+        run_research_job,
+        retry_job.id,
+        request,
+        retry_context,
+    )
+    return retry_job
+
+
 @router.post("/research-jobs/{job_id}/cancel", response_model=ResearchJob)
 async def cancel_research_job(
     job_id: str,
@@ -500,6 +583,9 @@ async def stream_research_events(
                         "draft_report": current_job.draft_report,
                         "final_report": current_job.final_report,
                         "error": current_job.error,
+                        "error_code": current_job.error_code,
+                        "error_retryable": current_job.error_retryable,
+                        "error_stage": current_job.error_stage,
                     },
                 )
                 yield format_sse(snapshot_event, include_id=False)
@@ -536,7 +622,7 @@ async def stream_research_events(
 
 
 async def initialize_job_store() -> int:
-    await upgrade_database(settings.database_url)
+    await upgrade_database(settings.database_migration_url)
     await job_store.initialize()
     return await job_store.recover_incomplete_jobs()
 
@@ -545,17 +631,43 @@ async def dispose_job_store() -> None:
     await job_store.dispose()
 
 
-async def run_research_job(job_id: str, request: ResearchRequest) -> None:
+async def run_research_job(
+    job_id: str,
+    request: ResearchRequest,
+    retry_context: dict[str, object] | None = None,
+) -> None:
     task = asyncio.current_task()
     if task:
         await register_running_task(job_id, task)
     try:
         if not await job_store.start_job(job_id):
             return
-        async for event in runtime.run(job_id, request):
+        event_stream = (
+            runtime.resume_report(job_id, request, retry_context)
+            if retry_context
+            else runtime.run(job_id, request)
+        )
+        async for event in event_stream:
             current_job = await job_store.get_job(job_id)
             if not current_job or current_job.status == "cancelled":
                 return
+            if event.type == "report_checkpoint":
+                await job_store.save_retry_context(job_id, event.payload)
+                continue
+            if event.type == "failed":
+                logger.error(
+                    "research_job_failed job_id=%s provider=%s model=%s event=%s",
+                    job_id,
+                    request.provider,
+                    request.model,
+                    redact_sensitive(
+                        {
+                            "message": event.message,
+                            "payload": event.payload,
+                        }
+                    ),
+                )
+                event, _ = sanitize_failed_event(event)
             if event.type == "report_delta":
                 delta = event.payload.get("delta")
                 if isinstance(delta, str):
@@ -581,11 +693,24 @@ async def run_research_job(job_id: str, request: ResearchRequest) -> None:
                 await publish_live_event(job_id, cancelled_event)
         return
     except Exception as exc:
+        logger.error(
+            "research_job_unhandled_error job_id=%s provider=%s model=%s error=%s traceback=%s",
+            job_id,
+            request.provider,
+            request.model,
+            redact_sensitive(exc),
+            "".join(traceback.format_tb(exc.__traceback__)),
+        )
+        classified = classify_failure(error=exc)
         failed_event = ResearchEvent(
             job_id=job_id,
             type="failed",
-            message=f"研究任务失败：{exc}",
-            payload={"error": str(exc)},
+            message=classified.message,
+            payload={
+                "error_code": classified.code,
+                "retryable": classified.retryable,
+                "stage": classified.stage,
+            },
         )
         await job_store.add_event(failed_event)
         await publish_live_event(job_id, failed_event)

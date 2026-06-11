@@ -18,6 +18,8 @@
 - Agent Runtime 能记录 LLM 用量。
 - Agent Runtime 能把模型流式输出转为 `llm_delta` 事件。
 - Agent Runtime 能区分临时错误和永久错误；报告临时失败时从已选证据继续，不重复 search / visit。
+- Runtime 在选源后生成私有报告检查点，API 只持久化、不发送给前端；报告失败后的用户重试可以直接从检查点继续。
+- 原始 Provider 错误必须映射为产品错误码，API/SSE/数据库用户字段中不能出现 API Key 或原始异常。
 - 真实 Provider 的最终报告必须带引用角标和 References / 参考文献章节。
 - quick / deep / expert 的搜索词数量分别为 1 / 3 / 每轮 5；最终来源目标分别为 3 / 10 / 20。
 - 访问漏斗只能遍历本轮有限候选：全文达到阶段目标可早停，候选耗尽必须降级退出，不能因全文不足重复访问或卡死。
@@ -38,6 +40,7 @@
 - ProviderFactory 能正确创建多模型 Provider。
 - 配置层能提供默认模型，并识别真实 Provider 缺少的 API Key。
 - API 能返回 `/api/readiness` 配置体检信息。
+- `/api/readiness` 能返回数据库连接状态和数据库类型，不泄露连接信息。
 - API 能返回供内部联调使用的 `/api/models` 模型候选列表。
 - API 能在缺少 OpenAI Key 时拒绝 `/api/models/openai` 真实账号模型查询。
 - search / visit 工具能处理输入清洗、来源记录和失败兜底。
@@ -53,7 +56,7 @@
 
 暂时不引入复杂测试体系，避免过早增加维护成本。
 
-截至 2026-06-10，后端 pytest 共 100 个用例通过，前端 Playwright Chromium 共 6 个端到端用例通过。
+截至 2026-06-10，后端 pytest 共 111 个用例通过，前端 Playwright Chromium 共 7 个端到端用例通过。
 
 ## 测试优先开发原则
 
@@ -98,6 +101,7 @@ backend/tests/
   - Runtime 会在最终报告生成过程中产出早于 `llm_result` 的 `report_delta`，覆盖报告真流式。
   - Runtime 只重试超时、限流、服务过载和 5xx 等临时错误，永久错误直接失败。
   - 报告临时失败会复用已选来源和证据卡片，不重新 search / visit。
+  - Runtime 会生成报告重试检查点，并能在不调用 search / visit 的情况下恢复报告生成。
   - OpenAI、Claude、Gemini 的证据卡片会选择各自配置的低成本模型。
   - Runtime 会在模型调用超时时产出 `failed` 事件。
   - `MODE_POLICIES` 覆盖 quick / deep / expert 的搜索词数量、访问来源数量和报告字数目标。
@@ -125,9 +129,12 @@ backend/tests/
   - 已完成任务不能取消。
   - 取消接口会中断运行中的后台协程，任务不会随后变成完成。
   - SSE 可以从指定事件游标继续，并发送包含报告草稿/最终报告的任务快照。
+  - 失败事件会脱敏为产品错误码和用户文案，原始错误只进入脱敏工程日志。
+  - `/retry` 只接受可重试的失败任务；报告阶段有检查点时传给 Runtime 续写报告。
 - `test_config.py`
   - 空模型环境变量会回退到项目默认模型。
   - 默认重试次数、退避时间和三家低成本证据模型配置正确。
+  - `DATABASE_URL`、`DATABASE_MIGRATION_URL` 和连接池参数可独立读取并规范化 PostgreSQL URL。
   - `MOCK_PROVIDER_DELAY_SECONDS` 可以为浏览器测试提供可控延迟，默认值为 0，不影响正常运行。
   - 中文占位符不会被误判为真实 OpenAI API Key 或模型名。
   - 真实 Provider 缺少 API Key 和搜索 Key 时会被识别。
@@ -144,6 +151,10 @@ backend/tests/
   - 服务重启恢复会把 queued/running 任务标记为失败并写入事件。
   - 匿名历史可以在未来登录时归并到 `user_id`。
   - 重新运行任务血缘和 Alembic 版本化迁移可以持久化。
+  - 产品错误元数据、报告检查点、数据库 `SELECT 1` 和第三个 Alembic 迁移可以持久化。
+- `test_error_handling.py`
+  - 超时、网络、Provider 鉴权、来源读取失败能映射为稳定产品错误码。
+  - 用户事件和 payload 不包含原始 API Key 或 Provider 错误正文。
 - `test_tools.py`
   - `search` 能解析 SerpAPI Google Scholar 返回结果。
   - `search` 返回来源会标记题录/摘要证据强度。
@@ -380,6 +391,22 @@ curl -s -X POST http://127.0.0.1:8000/api/research-jobs \
 ```bash
 curl -s http://127.0.0.1:8000/api/research-jobs/{job_id}/events
 ```
+
+重试可恢复的失败任务：
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/api/research-jobs/{job_id}/retry \
+  -H "X-PZ-Visitor-ID: {visitor_uuid}"
+```
+
+检查数据库连接：
+
+```bash
+cd backend
+PYTHONPATH=. .venv/bin/python scripts/check_database.py
+```
+
+成功时只输出 `database=ready` 和数据库类型，不输出连接 URL 或密码。
 
 预期事件里应该包含：
 

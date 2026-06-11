@@ -45,6 +45,68 @@ def test_sql_store_persists_jobs_events_and_report_drafts(tmp_path) -> None:
     assert [item.id for item in history] == [job.id]
 
 
+def test_sql_store_persists_product_error_and_retry_context(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'errors.db'}"
+
+    async def run_scenario():
+        store = SqlJobStore(database_url)
+        await store.initialize()
+        request = ResearchRequest(query="测试错误元数据", mode="quick", provider="mock")
+        job = await store.create_job(request, provider="mock", anonymous_id=VISITOR_A)
+        context = {
+            "mode": "quick",
+            "sources": [{"citation_id": "1", "title": "来源", "url": "https://example.com"}],
+            "cards": [
+                {
+                    "citation_id": "1",
+                    "title": "来源",
+                    "url": "https://example.com",
+                    "evidence_level": "full_text",
+                    "content": "证据",
+                    "extraction_status": "extracted",
+                }
+            ],
+            "selection": {
+                "target": 3,
+                "minimum_full_text": 1,
+                "total_available": 1,
+                "full_text_count": 1,
+                "degraded": True,
+                "full_text_shortfall": False,
+            },
+        }
+        await store.save_retry_context(job.id, context)
+        await store.add_event(
+            ResearchEvent(
+                job_id=job.id,
+                type="failed",
+                message="本次研究未能在规定时间内完成，请重试。",
+                payload={
+                    "error_code": "task_timeout",
+                    "retryable": True,
+                    "stage": "report",
+                },
+            )
+        )
+        restored = await store.get_job(job.id)
+        restored_context = await store.get_retry_context(job.id)
+        connected = await store.check_connection()
+        backend_name = store.backend_name
+        await store.dispose()
+        return restored, restored_context, connected, backend_name
+
+    restored, restored_context, connected, backend_name = asyncio.run(run_scenario())
+
+    assert restored is not None
+    assert restored.error_code == "task_timeout"
+    assert restored.error_retryable is True
+    assert restored.error_stage == "report"
+    assert restored_context is not None
+    assert restored_context["cards"][0]["content"] == "证据"
+    assert connected is True
+    assert backend_name == "sqlite"
+
+
 def test_sql_store_filters_history_and_details_by_owner(tmp_path) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'owners.db'}"
 
@@ -120,7 +182,8 @@ def test_sql_store_marks_incomplete_jobs_failed_after_restart(tmp_path) -> None:
     assert completed_after is not None and completed_after.status == "completed"
     assert queued_events[-1].type == "failed"
     assert running_events[-1].type == "failed"
-    assert "服务重启" in queued_events[-1].message
+    assert queued_events[-1].payload["error_code"] == "service_unavailable"
+    assert queued_after.error_retryable is True
 
 
 def test_sql_store_can_claim_anonymous_history_for_future_user_account(tmp_path) -> None:
@@ -197,7 +260,7 @@ def test_alembic_upgrade_creates_versioned_product_schema(tmp_path) -> None:
     job, version = asyncio.run(run_scenario())
 
     assert job.query == "迁移后创建任务"
-    assert version == "20260609_02"
+    assert version == "20260610_03"
 
 
 def test_alembic_upgrade_baselines_matching_unversioned_schema(tmp_path) -> None:
@@ -216,4 +279,4 @@ def test_alembic_upgrade_baselines_matching_unversioned_schema(tmp_path) -> None
         await migrated_store.dispose()
         return version
 
-    assert asyncio.run(run_scenario()) == "20260609_02"
+    assert asyncio.run(run_scenario()) == "20260610_03"

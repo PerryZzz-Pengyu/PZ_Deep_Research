@@ -128,11 +128,14 @@ A real research run requires:
 
 Never commit `.env`, `frontend/.env.local`, or real API credentials. See the [API key setup guide](project-docs/api-key-setup.md) for details.
 
-Local development stores data in `data/pz_deep_research.db` by default. PostgreSQL example:
+Local development stores data in `data/pz_deep_research.db` by default. For Neon PostgreSQL, use the pooled URL for application traffic and the direct URL for migrations and backups:
 
 ```text
-DATABASE_URL=postgresql://user:password@host:5432/database
+DATABASE_URL=postgresql://user:password@pooled-host/database?sslmode=require
+DATABASE_MIGRATION_URL=postgresql://user:password@direct-host/database?sslmode=require
 ```
+
+Run `cd backend && PYTHONPATH=. .venv/bin/python scripts/check_database.py` to verify connectivity without printing credentials. Neon remains standard PostgreSQL, so the application can later move to another managed or self-hosted PostgreSQL service without rewriting the storage layer.
 
 ### 4. Start the backend
 
@@ -188,8 +191,8 @@ See the [testing guide](project-docs/testing-guide.md) for the complete test str
 
 Latest local verification on June 10, 2026:
 
-- 100 backend pytest cases passed.
-- 6 Playwright Chromium end-to-end cases passed.
+- 111 backend pytest cases passed.
+- 7 Playwright Chromium end-to-end cases passed.
 - The local `8000/3000` services and frontend smoke check passed without a Next.js error overlay or browser console errors.
 
 ## Privacy, Cost, and Security

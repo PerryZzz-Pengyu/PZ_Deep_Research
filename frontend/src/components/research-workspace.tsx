@@ -26,6 +26,7 @@ import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
 import {
+  ApiError,
   cancelResearchJob,
   createResearchEventSource,
   createResearchJob,
@@ -35,6 +36,7 @@ import {
   getResearchJob,
   listResearchJobs,
   rerunResearchJob,
+  retryResearchJob,
 } from "@/lib/api";
 import { downloadBlobFile, downloadMarkdownReport } from "@/lib/markdown-export";
 import type { ModelOption, ProviderName, ResearchEvent, ResearchJob, ResearchMode } from "@/lib/types";
@@ -133,6 +135,31 @@ function formatDateTime(value: string) {
     dateStyle: "medium",
     timeStyle: "short",
   }).format(new Date(value));
+}
+
+function ErrorNotice({
+  message,
+  canRetry = false,
+  isRetrying = false,
+  onRetry,
+}: {
+  message: string;
+  canRetry?: boolean;
+  isRetrying?: boolean;
+  onRetry?: () => void;
+}) {
+  if (!message) return null;
+  return (
+    <div className="error-line" role="alert">
+      <span>{message}</span>
+      {canRetry && onRetry ? (
+        <button type="button" disabled={isRetrying} onClick={onRetry}>
+          {isRetrying ? <Loader2 className="spin" size={15} /> : <RotateCcw size={15} />}
+          {isRetrying ? "正在重试" : "重试"}
+        </button>
+      ) : null}
+    </div>
+  );
 }
 
 function parseSources(rawSources: unknown): SourceItem[] {
@@ -410,6 +437,7 @@ export function ResearchWorkspace() {
   const [selectedJob, setSelectedJob] = useState<ResearchJob | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [error, setError] = useState("");
+  const [errorRetryable, setErrorRetryable] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const sources = useMemo(() => {
@@ -446,7 +474,7 @@ export function ResearchWorkspace() {
     eventSourceRef.current = eventSource;
 
     eventSource.onopen = () => {
-      setError((current) => (current.startsWith("事件流连接中断") ? "" : current));
+      setError((current) => (current.startsWith("网络连接不稳定") ? "" : current));
     };
 
     eventSource.onmessage = (message) => {
@@ -471,6 +499,7 @@ export function ResearchWorkspace() {
           setIsRunning(status === "queued" || status === "running");
           if (status === "failed" && typeof nextEvent.payload.error === "string") {
             setError(nextEvent.payload.error);
+            setErrorRetryable(Boolean(nextEvent.payload.error_retryable));
           }
         }
         return;
@@ -508,13 +537,30 @@ export function ResearchWorkspace() {
           setReport(finalReport);
         }
         setJobStatus("completed");
+        setError("");
+        setErrorRetryable(false);
+        setSelectedJob((current) => (
+          current?.id === targetJobId ? { ...current, status: "completed", error: null } : current
+        ));
         setIsRunning(false);
         eventSource.close();
         if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
       }
       if (nextEvent.type === "failed") {
         setError(nextEvent.message);
+        setErrorRetryable(Boolean(nextEvent.payload.retryable));
         setJobStatus("failed");
+        setSelectedJob((current) => (
+          current?.id === targetJobId
+            ? {
+                ...current,
+                status: "failed",
+                error: nextEvent.message,
+                error_retryable: Boolean(nextEvent.payload.retryable),
+                error_stage: typeof nextEvent.payload.stage === "string" ? nextEvent.payload.stage : null,
+              }
+            : current
+        ));
         setIsRunning(false);
         eventSource.close();
         if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
@@ -530,10 +576,12 @@ export function ResearchWorkspace() {
 
     eventSource.onerror = () => {
       if (eventSource.readyState !== EventSource.CLOSED) {
-        setError("事件流连接中断，正在自动重连...");
+        setError("网络连接不稳定，正在自动恢复研究进度。");
+        setErrorRetryable(false);
         return;
       }
-      setError("事件流连接已关闭，请刷新页面恢复任务");
+      setError("连接暂时中断，请刷新页面恢复任务。");
+      setErrorRetryable(false);
       setIsRunning(false);
       if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
     };
@@ -556,6 +604,7 @@ export function ResearchWorkspace() {
       setReport(job.final_report || job.draft_report || "");
       setLiveModelText("");
       setError(job.error || "");
+      setErrorRetryable(Boolean(job.error_retryable));
       window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, job.id);
 
       const shouldResume = job.status === "queued" || job.status === "running";
@@ -574,6 +623,7 @@ export function ResearchWorkspace() {
   const refreshHistory = useCallback(async () => {
     setIsHistoryLoading(true);
     setError("");
+    setErrorRetryable(false);
     try {
       setHistoryJobs(await listResearchJobs());
     } catch (err) {
@@ -662,7 +712,8 @@ export function ResearchWorkspace() {
       connectToJob(job.id);
       setHistoryJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "创建研究任务失败");
+      setError(err instanceof Error ? err.message : "暂时无法创建研究任务。");
+      setErrorRetryable(err instanceof ApiError ? err.retryable : false);
       setIsRunning(false);
       setJobStatus("failed");
     }
@@ -672,6 +723,7 @@ export function ResearchWorkspace() {
     if (!jobId || !isRunning || isCancelling) return;
     setIsCancelling(true);
     setError("");
+    setErrorRetryable(false);
     try {
       const cancelledJob = await cancelResearchJob(jobId);
       const restoredEvents = await getResearchEvents(jobId);
@@ -684,6 +736,7 @@ export function ResearchWorkspace() {
       eventSourceRef.current = null;
     } catch (err) {
       setError(err instanceof Error ? err.message : "取消研究任务失败");
+      setErrorRetryable(err instanceof ApiError ? err.retryable : false);
     } finally {
       setIsCancelling(false);
     }
@@ -695,6 +748,7 @@ export function ResearchWorkspace() {
     }
     setIsRerunning(true);
     setError("");
+    setErrorRetryable(false);
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     try {
@@ -719,6 +773,42 @@ export function ResearchWorkspace() {
       connectToJob(rerunJob.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "重新运行研究任务失败");
+      setErrorRetryable(err instanceof ApiError ? err.retryable : false);
+    } finally {
+      setIsRerunning(false);
+    }
+  }
+
+  async function handleRetry() {
+    if (!jobId || isRerunning || jobStatus !== "failed" || !errorRetryable) return;
+    setIsRerunning(true);
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    try {
+      const retryJob = await retryResearchJob(jobId);
+      setSelectedJob(retryJob);
+      setJobId(retryJob.id);
+      setJobStatus(retryJob.status);
+      setQuery(retryJob.query);
+      setMode(retryJob.mode);
+      if (isProviderName(retryJob.provider)) setProvider(retryJob.provider);
+      setModel(retryJob.model || "");
+      setEvents([]);
+      setReport("");
+      setLiveModelText("");
+      setError("");
+      setErrorRetryable(false);
+      setIsRunning(true);
+      window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, retryJob.id);
+      setHistoryJobs((current) => [
+        retryJob,
+        ...current.filter((item) => item.id !== retryJob.id),
+      ]);
+      setActiveView("research");
+      connectToJob(retryJob.id);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "暂时无法重试研究任务。");
+      setErrorRetryable(err instanceof ApiError ? err.retryable : true);
     } finally {
       setIsRerunning(false);
     }
@@ -802,7 +892,7 @@ export function ResearchWorkspace() {
               </button>
             </div>
 
-            {error ? <div className="error-line">{error}</div> : null}
+            <ErrorNotice message={error} />
 
             <div className="history-list">
               {isHistoryLoading && historyJobs.length === 0 ? (
@@ -865,22 +955,29 @@ export function ResearchWorkspace() {
                 </button>
                 <h1>报告详情</h1>
               </div>
-              <button
-                className="rerun-button"
-                type="button"
-                disabled={
-                  isRerunning ||
-                  selectedJob.status === "queued" ||
-                  selectedJob.status === "running"
-                }
-                onClick={() => void handleRerun()}
-              >
-                {isRerunning ? <Loader2 className="spin" size={17} /> : <RotateCcw size={17} />}
-                {isRerunning ? "正在创建" : "重新运行"}
-              </button>
+              {selectedJob.status !== "failed" ? (
+                <button
+                  className="rerun-button"
+                  type="button"
+                  disabled={
+                    isRerunning ||
+                    selectedJob.status === "queued" ||
+                    selectedJob.status === "running"
+                  }
+                  onClick={() => void handleRerun()}
+                >
+                  {isRerunning ? <Loader2 className="spin" size={17} /> : <RotateCcw size={17} />}
+                  {isRerunning ? "正在创建" : "重新运行"}
+                </button>
+              ) : null}
             </div>
 
-            {error ? <div className="error-line">{error}</div> : null}
+            <ErrorNotice
+              message={error}
+              canRetry={selectedJob.status === "failed" && errorRetryable}
+              isRetrying={isRerunning}
+              onRetry={() => void handleRetry()}
+            />
 
             <section className="detail-summary" aria-label="报告任务信息">
               <div className="detail-title-row">
@@ -1029,7 +1126,12 @@ export function ResearchWorkspace() {
           </div>
         </form>
 
-        {error ? <div className="error-line">{error}</div> : null}
+        <ErrorNotice
+          message={error}
+          canRetry={jobStatus === "failed" && errorRetryable}
+          isRetrying={isRerunning}
+          onRetry={() => void handleRetry()}
+        />
 
         <div className="timeline">
           <div className="section-title">

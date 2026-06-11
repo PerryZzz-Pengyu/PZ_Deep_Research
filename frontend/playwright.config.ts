@@ -1,6 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const useSystemChrome = process.env.PLAYWRIGHT_USE_SYSTEM_CHROME === "1";
+const reuseExistingServers = process.env.PLAYWRIGHT_REUSE_SERVERS === "1";
 
 export default defineConfig({
   testDir: "./e2e",
@@ -28,13 +29,13 @@ export default defineConfig({
       command:
         "cd ../backend && DEFAULT_PROVIDER=mock SEARCH_PROVIDER=mock MOCK_PROVIDER_DELAY_SECONDS=1.2 DATABASE_URL=sqlite+aiosqlite:////private/tmp/pz-deep-research-e2e-alembic.db PYTHONPATH=. .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000",
       url: "http://127.0.0.1:8000/health",
-      reuseExistingServer: false,
+      reuseExistingServer: reuseExistingServers,
       timeout: 120_000,
     },
     {
       command: "npm run dev -- --hostname 127.0.0.1 --port 3000",
       url: "http://127.0.0.1:3000",
-      reuseExistingServer: false,
+      reuseExistingServer: reuseExistingServers,
       timeout: 120_000,
     },
   ],

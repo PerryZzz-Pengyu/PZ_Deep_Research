@@ -79,6 +79,11 @@ class Settings:
     anthropic_evidence_model: str = DEFAULT_ANTHROPIC_EVIDENCE_MODEL
     gemini_evidence_model: str = DEFAULT_GEMINI_EVIDENCE_MODEL
     database_url: str = DEFAULT_DATABASE_URL
+    database_migration_url: str = DEFAULT_DATABASE_URL
+    database_pool_size: int = 5
+    database_max_overflow: int = 5
+    database_pool_timeout_seconds: int = 30
+    database_pool_recycle_seconds: int = 300
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
     pdf_export_timeout_seconds: float = 45.0
     pdf_export_max_concurrency: int = 2
@@ -130,8 +135,7 @@ def _get_cors_origins() -> tuple[str, ...]:
     return tuple(origins) or LOCAL_FRONTEND_ORIGINS
 
 
-def _get_database_url() -> str:
-    database_url = _get_env("DATABASE_URL", DEFAULT_DATABASE_URL)
+def _normalize_database_url(database_url: str) -> str:
     if database_url.startswith("postgres://"):
         return database_url.replace("postgres://", "postgresql+psycopg://", 1)
     if database_url.startswith("postgresql://"):
@@ -139,6 +143,10 @@ def _get_database_url() -> str:
     if database_url.startswith("sqlite:///"):
         return database_url.replace("sqlite:///", "sqlite+aiosqlite:///", 1)
     return database_url
+
+
+def _get_database_url(name: str, default: str) -> str:
+    return _normalize_database_url(_get_env(name, default))
 
 
 def get_settings() -> Settings:
@@ -182,7 +190,21 @@ def get_settings() -> Settings:
             "GEMINI_EVIDENCE_MODEL",
             DEFAULT_GEMINI_EVIDENCE_MODEL,
         ),
-        database_url=_get_database_url(),
+        database_url=_get_database_url("DATABASE_URL", DEFAULT_DATABASE_URL),
+        database_migration_url=_get_database_url(
+            "DATABASE_MIGRATION_URL",
+            _get_env("DATABASE_URL", DEFAULT_DATABASE_URL),
+        ),
+        database_pool_size=max(1, _get_int_env("DATABASE_POOL_SIZE", 5)),
+        database_max_overflow=max(0, _get_int_env("DATABASE_MAX_OVERFLOW", 5)),
+        database_pool_timeout_seconds=max(
+            1,
+            _get_int_env("DATABASE_POOL_TIMEOUT_SECONDS", 30),
+        ),
+        database_pool_recycle_seconds=max(
+            30,
+            _get_int_env("DATABASE_POOL_RECYCLE_SECONDS", 300),
+        ),
         cors_origins=_get_cors_origins(),
         pdf_export_timeout_seconds=_get_float_env("PDF_EXPORT_TIMEOUT_SECONDS", 45.0),
         pdf_export_max_concurrency=_get_int_env("PDF_EXPORT_MAX_CONCURRENCY", 2),

@@ -1,5 +1,13 @@
 export type ResearchMode = "quick" | "deep" | "expert";
 export type ProviderName = "mock" | "openai" | "anthropic" | "gemini";
+export type ProductErrorCode =
+  | "network_error"
+  | "service_unavailable"
+  | "task_timeout"
+  | "source_unavailable"
+  | "insufficient_credits"
+  | "content_unsupported"
+  | "system_error";
 
 export type ResearchJob = {
   id: string;
@@ -12,6 +20,9 @@ export type ResearchJob = {
   draft_report: string;
   final_report?: string | null;
   error?: string | null;
+  error_code?: ProductErrorCode | null;
+  error_retryable?: boolean;
+  error_stage?: string | null;
   created_at: string;
   updated_at: string;
 };
