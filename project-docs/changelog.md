@@ -14,6 +14,27 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+## 2026-06-11 11:18 CST +0800
+
+### Neon 恢复分支演练通过
+
+- 从 `production` 当前时刻创建 `restore-drill-20260611`，设置 1 天后自动删除。
+- 在本地 `.env` 使用独立临时变量保存恢复分支 pooled/direct 连接，没有覆盖正式 `DATABASE_URL` 或 `DATABASE_MIGRATION_URL`。
+- 只读检查确认恢复分支与 production 是不同连接目标，pooled 和 direct 连接均正常。
+- 数据完整性对比通过：
+  - 两边均有 2 个研究任务。
+  - Alembic 版本均为 `20260611_04`。
+  - 最新报告均为 `completed`、3298 字、16 条事件。
+- `restore_snapshot_matches=true`。
+- 本次当前时刻分支恢复的 RPO 近似为 0，从创建分支到验证通过约 5 分钟。
+- 指定历史时间点恢复和 `pg_dump` / `pg_restore` 独立恢复仍待后续演练。
+
+### 影响文件
+
+- `.env`（仅本地临时变量，不提交）
+- `project-docs/neon-backup-restore.md`
+- `project-docs/changelog.md`
+
 ## 2026-06-11 11:04 CST +0800
 
 ### GPT 生产路由与 Neon 重启恢复验收
