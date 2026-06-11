@@ -4,7 +4,7 @@
 
 面向 C 端用户的深度研究网页应用。后台兼容 OpenAI、Claude 和 Gemini，通过学术搜索、网页访问、证据抽取、来源筛选和引用校验，生成带来源的结构化研究报告。
 
-正式产品计划只向用户提供研究问题和快速、深度、专家三种模式，不展示 Provider 或模型选择。后台将通过分阶段质量测试，为意图识别与追问、搜索词与工具规划、证据卡片生成、最终报告撰写分别选择合适模型。当前 MVP 页面仍保留 Provider/模型下拉框，仅用于开发联调和质量评测。
+正式产品界面只向用户提供研究问题和快速、深度、专家三种模式，不展示 Provider 或模型选择。当前生产路由固定使用 OpenAI `gpt-5.4-mini` 生成搜索词和最终报告，证据卡片使用 `gpt-5-nano`；只有显式开启内部手动模式时才显示模型选择器。
 
 > [!WARNING]
 > 当前项目处于实验性 MVP 阶段。模型输出可能包含遗漏、错误或不准确引用，不应直接用于医疗、法律、金融等高风险决策。
@@ -41,7 +41,7 @@
 
 访问流程由 Runtime 控制。模型只负责生成搜索词和最终报告，不自行循环调用 `visit`，从而保证任务有界、来源编号稳定，并减少重复访问。
 
-当前 Runtime 仍以单个开发测试主模型生成搜索词和报告，证据卡片使用各 Provider 的低成本模型。分阶段生产模型路由已经进入项目计划，但尚未实现为正式运行配置。
+当前生产路由版本为 `openai-default-v1`。生产模式会忽略客户端提交的 Provider/模型参数；内部开发可以通过环境变量切换到手动路由。
 
 ## 研究模式
 
@@ -116,6 +116,7 @@ cp .env.example .env
 不配置真实 API Key 时，可以保持：
 
 ```text
+MODEL_ROUTING_MODE=manual
 DEFAULT_PROVIDER=mock
 SEARCH_PROVIDER=mock
 ```
@@ -127,6 +128,16 @@ SEARCH_PROVIDER=mock
 - 推荐配置 `JINA_API_KEY`，提高网页读取稳定性和额度。
 
 不要提交 `.env`、`frontend/.env.local` 或任何真实 API Key。完整说明见 [API Key 配置](project-docs/api-key-setup.md)。
+
+默认生产路由配置：
+
+```text
+MODEL_ROUTING_MODE=production
+PRODUCTION_PROVIDER=openai
+PRODUCTION_MODEL=gpt-5.4-mini
+MODEL_ROUTING_VERSION=openai-default-v1
+EVIDENCE_EXTRACTION_MODEL=gpt-5-nano
+```
 
 本地默认把数据保存到 `data/pz_deep_research.db`。生产推荐使用 Neon PostgreSQL：应用使用 pooled URL，迁移和备份使用 direct URL。
 
@@ -191,7 +202,7 @@ npm run test:e2e
 
 最近一次本地验证（2026-06-10）：
 
-- 后端 pytest：111 个用例通过。
+- 后端 pytest：114 个用例通过。
 - Playwright Chromium：7 个端到端用例通过。
 - 本地 `8000/3000` 服务和前端页面冒烟检查通过，无 Next.js 错误覆盖层或浏览器控制台错误。
 

@@ -42,6 +42,8 @@ def test_model_options_endpoint_returns_provider_candidates() -> None:
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["selection_enabled"] is False
+    assert payload["routing_version"] == "openai-default-v1"
     openai_models = [item["id"] for item in payload["providers"]["openai"]]
     anthropic_models = [item["id"] for item in payload["providers"]["anthropic"]]
     gemini_models = [item["id"] for item in payload["providers"]["gemini"]]
@@ -51,6 +53,40 @@ def test_model_options_endpoint_returns_provider_candidates() -> None:
     assert "claude-sonnet-4-6" in anthropic_models
     assert "gemini-3.5-flash" in gemini_models
     assert "gemini-3.1-pro-preview" in gemini_models
+
+
+def test_create_research_job_uses_production_route(monkeypatch) -> None:
+    async def do_not_run_job(job_id: str, request: ResearchRequest) -> None:
+        return None
+
+    production_settings = Settings(
+        model_routing_mode="production",
+        production_provider="openai",
+        production_model="gpt-5.4-mini",
+        model_routing_version="openai-default-v1",
+        openai_api_key="test-openai-key",
+        serpapi_api_key="test-serpapi-key",
+    )
+    monkeypatch.setattr(routes, "settings", production_settings)
+    monkeypatch.setattr(routes, "job_store", InMemoryJobStore())
+    monkeypatch.setattr(routes, "run_research_job", do_not_run_job)
+
+    response = client.post(
+        "/api/research-jobs",
+        headers=VISITOR_HEADERS,
+        json={
+            "query": "生产路由必须由后端决定",
+            "mode": "quick",
+            "provider": "anthropic",
+            "model": "claude-opus-4-8",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "openai"
+    assert payload["model"] == "gpt-5.4-mini"
+    assert payload["routing_version"] == "openai-default-v1"
 
 
 def test_openai_available_models_requires_api_key(monkeypatch) -> None:
@@ -94,7 +130,12 @@ def test_gemini_available_models_requires_api_key(monkeypatch) -> None:
 
 def test_create_mock_research_job(monkeypatch) -> None:
     # 用离线 mock 搜索的 runtime，避免 BackgroundTasks 在 TestClient 内同步跑真实 SerpAPI/Jina。
-    mock_settings = Settings(default_provider="mock", search_provider="mock")
+    mock_settings = Settings(
+        model_routing_mode="manual",
+        default_provider="mock",
+        search_provider="mock",
+    )
+    monkeypatch.setattr(routes, "settings", mock_settings)
     monkeypatch.setattr(routes, "job_store", InMemoryJobStore())
     monkeypatch.setattr(
         routes,

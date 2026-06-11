@@ -87,7 +87,7 @@ async function requestJson<T>(
 export async function createResearchJob(input: {
   query: string;
   mode: ResearchMode;
-  provider: ProviderName;
+  provider?: ProviderName;
   model?: string;
 }): Promise<ResearchJob> {
   return requestJson<ResearchJob>(`${API_BASE_URL}/api/research-jobs`, {

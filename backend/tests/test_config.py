@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from app.config import get_settings, missing_provider_requirements
+from app.config import get_settings, missing_provider_requirements, resolve_model_route
 
 
 def test_get_settings_uses_provider_default_models_when_env_is_blank(monkeypatch) -> None:
@@ -17,6 +17,10 @@ def test_get_settings_uses_provider_default_models_when_env_is_blank(monkeypatch
         "GEMINI_EVIDENCE_MODEL",
         "LLM_MAX_RETRIES",
         "LLM_RETRY_BASE_DELAY_SECONDS",
+        "MODEL_ROUTING_MODE",
+        "PRODUCTION_PROVIDER",
+        "PRODUCTION_MODEL",
+        "MODEL_ROUTING_VERSION",
     ]:
         monkeypatch.setenv(name, "")
 
@@ -47,6 +51,46 @@ def test_get_settings_uses_provider_default_models_when_env_is_blank(monkeypatch
     assert settings.evidence_extraction_model == "gpt-5-nano"
     assert settings.anthropic_evidence_model == "claude-haiku-4-5-20251001"
     assert settings.gemini_evidence_model == "gemini-2.5-flash-lite"
+    assert settings.model_routing_mode == "production"
+    assert settings.production_provider == "openai"
+    assert settings.production_model == "gpt-5.4-mini"
+    assert settings.model_routing_version == "openai-default-v1"
+
+
+def test_production_model_route_ignores_client_provider_and_model() -> None:
+    settings = get_settings()
+
+    route = resolve_model_route(
+        settings,
+        requested_provider="anthropic",
+        requested_model="claude-opus-4-8",
+    )
+
+    assert route.provider == "openai"
+    assert route.model == "gpt-5.4-mini"
+    assert route.routing_version == "openai-default-v1"
+    assert route.selection_enabled is False
+
+
+def test_manual_model_route_preserves_internal_selection() -> None:
+    settings = get_settings()
+    manual_settings = settings.__class__(
+        **{
+            **settings.__dict__,
+            "model_routing_mode": "manual",
+        }
+    )
+
+    route = resolve_model_route(
+        manual_settings,
+        requested_provider="gemini",
+        requested_model="gemini-2.5-flash",
+    )
+
+    assert route.provider == "gemini"
+    assert route.model == "gemini-2.5-flash"
+    assert route.routing_version == "manual"
+    assert route.selection_enabled is True
 
 
 def test_get_settings_expands_localhost_cors_aliases(monkeypatch) -> None:

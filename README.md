@@ -4,7 +4,7 @@
 
 A consumer-facing deep research web application. Its backend supports OpenAI, Claude, and Gemini while combining academic search, webpage retrieval, evidence extraction, source selection, and citation validation to produce structured reports with traceable sources.
 
-The production product is intended to expose only the research question and Quick, Deep, or Expert mode. Provider and model selection will remain internal: stage-specific quality evaluations will choose models for intent clarification, search and tool planning, evidence-card extraction, and final report writing. The current MVP still exposes provider/model selectors for development and evaluation only.
+The production interface exposes only the research question and Quick, Deep, or Expert mode. Backend routing currently fixes search planning and report writing to OpenAI `gpt-5.4-mini`, while evidence-card extraction uses `gpt-5-nano`. Provider/model selectors are hidden unless explicit internal manual mode is enabled.
 
 > [!WARNING]
 > This project is an experimental MVP. Model-generated content may contain omissions, errors, or inaccurate citations and should not be used directly for medical, legal, financial, or other high-stakes decisions.
@@ -41,7 +41,7 @@ User question
 
 The Runtime controls webpage visits. The model only generates search queries and the final report; it does not autonomously loop over `visit` calls. This keeps tasks bounded, stabilizes citation numbering, and reduces duplicate retrieval.
 
-The current Runtime still uses one development-selected primary model for search-query generation and report writing, while evidence extraction uses provider-specific low-cost models. Stage-specific production routing is planned but is not yet implemented as the live execution configuration.
+The live production route is versioned as `openai-default-v1`. Client-supplied provider/model values are ignored in production mode; internal development can opt into manual routing with an environment variable.
 
 ## Research Modes
 
@@ -116,6 +116,7 @@ cp .env.example .env
 To run without real API credentials, keep:
 
 ```text
+MODEL_ROUTING_MODE=manual
 DEFAULT_PROVIDER=mock
 SEARCH_PROVIDER=mock
 ```
@@ -127,6 +128,16 @@ A real research run requires:
 - `JINA_API_KEY` is recommended for more reliable webpage retrieval and higher service limits.
 
 Never commit `.env`, `frontend/.env.local`, or real API credentials. See the [API key setup guide](project-docs/api-key-setup.md) for details.
+
+The default production route is:
+
+```text
+MODEL_ROUTING_MODE=production
+PRODUCTION_PROVIDER=openai
+PRODUCTION_MODEL=gpt-5.4-mini
+MODEL_ROUTING_VERSION=openai-default-v1
+EVIDENCE_EXTRACTION_MODEL=gpt-5-nano
+```
 
 Local development stores data in `data/pz_deep_research.db` by default. For Neon PostgreSQL, use the pooled URL for application traffic and the direct URL for migrations and backups:
 
@@ -191,7 +202,7 @@ See the [testing guide](project-docs/testing-guide.md) for the complete test str
 
 Latest local verification on June 10, 2026:
 
-- 111 backend pytest cases passed.
+- 114 backend pytest cases passed.
 - 7 Playwright Chromium end-to-end cases passed.
 - The local `8000/3000` services and frontend smoke check passed without a Next.js error overlay or browser console errors.
 

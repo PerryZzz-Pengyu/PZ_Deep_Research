@@ -422,6 +422,7 @@ export function ResearchWorkspace() {
   const [provider, setProvider] = useState<ProviderName>("mock");
   const [model, setModel] = useState("");
   const [modelOptions, setModelOptions] = useState(fallbackModelOptions);
+  const [modelSelectionEnabled, setModelSelectionEnabled] = useState(false);
   const [events, setEvents] = useState<ResearchEvent[]>([]);
   const [report, setReport] = useState("");
   const [liveModelText, setLiveModelText] = useState("");
@@ -645,6 +646,7 @@ export function ResearchWorkspace() {
     getModelOptions()
       .then((payload) => {
         if (ignore) return;
+        setModelSelectionEnabled(payload.selection_enabled);
         setModelOptions({ ...fallbackModelOptions, ...payload.providers });
         const defaultProvider = payload.defaults.provider;
         if (!window.localStorage.getItem(ACTIVE_JOB_STORAGE_KEY) && isProviderName(defaultProvider)) {
@@ -704,7 +706,13 @@ export function ResearchWorkspace() {
     setJobStatus("queued");
 
     try {
-      const job = await createResearchJob({ query, mode, provider, model: selectedModel || undefined });
+      const job = await createResearchJob({
+        query,
+        mode,
+        ...(modelSelectionEnabled
+          ? { provider, model: selectedModel || undefined }
+          : {}),
+      });
       setJobId(job.id);
       setSelectedJob(job);
       setJobStatus(job.status);
@@ -927,7 +935,7 @@ export function ResearchWorkspace() {
                     </span>
                     <span className="history-meta">
                       {modeLabel(job.mode)}
-                      <span>{job.provider}</span>
+                      {modelSelectionEnabled ? <span>{job.provider}</span> : null}
                       <time dateTime={job.updated_at}>
                         {new Date(job.updated_at).toLocaleString("zh-CN")}
                       </time>
@@ -991,10 +999,12 @@ export function ResearchWorkspace() {
                   <dt>研究模式</dt>
                   <dd>{modeLabel(selectedJob.mode)}</dd>
                 </div>
-                <div>
-                  <dt>模型</dt>
-                  <dd>{selectedJob.model || selectedJob.provider}</dd>
-                </div>
+                {modelSelectionEnabled ? (
+                  <div>
+                    <dt>模型</dt>
+                    <dd>{selectedJob.model || selectedJob.provider}</dd>
+                  </div>
+                ) : null}
                 <div>
                   <dt>创建时间</dt>
                   <dd>{formatDateTime(selectedJob.created_at)}</dd>
@@ -1045,35 +1055,37 @@ export function ResearchWorkspace() {
         <form className="research-form" onSubmit={handleSubmit}>
           <div className="field-row">
             <label htmlFor="query">研究问题</label>
-            <div className="select-row">
-              <select
-                aria-label="模型 Provider"
-                value={provider}
-                disabled={isRunning || isRestoring}
-                onChange={(event) => {
-                  setProvider(event.target.value as ProviderName);
-                  setModel("");
-                }}
-              >
-                {providers.map((item) => (
-                  <option key={item.value} value={item.value}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-              <select
-                aria-label="模型"
-                value={selectedModel}
-                disabled={isRunning || isRestoring || provider === "mock"}
-                onChange={(event) => setModel(event.target.value)}
-              >
-                {currentModelOptions.map((item) => (
-                  <option key={`${provider}-${item.id || "default"}`} value={item.id}>
-                    {item.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {modelSelectionEnabled ? (
+              <div className="select-row">
+                <select
+                  aria-label="模型 Provider"
+                  value={provider}
+                  disabled={isRunning || isRestoring}
+                  onChange={(event) => {
+                    setProvider(event.target.value as ProviderName);
+                    setModel("");
+                  }}
+                >
+                  {providers.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  aria-label="模型"
+                  value={selectedModel}
+                  disabled={isRunning || isRestoring || provider === "mock"}
+                  onChange={(event) => setModel(event.target.value)}
+                >
+                  {currentModelOptions.map((item) => (
+                    <option key={`${provider}-${item.id || "default"}`} value={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
           </div>
 
           <textarea

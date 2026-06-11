@@ -27,7 +27,7 @@ export default defineConfig({
   webServer: [
     {
       command:
-        "cd ../backend && DEFAULT_PROVIDER=mock SEARCH_PROVIDER=mock MOCK_PROVIDER_DELAY_SECONDS=1.2 DATABASE_URL=sqlite+aiosqlite:////private/tmp/pz-deep-research-e2e-alembic.db PYTHONPATH=. .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000",
+        "cd ../backend && MODEL_ROUTING_MODE=manual DEFAULT_PROVIDER=mock SEARCH_PROVIDER=mock MOCK_PROVIDER_DELAY_SECONDS=1.2 DATABASE_URL=sqlite+aiosqlite:////private/tmp/pz-deep-research-e2e-alembic.db DATABASE_MIGRATION_URL=sqlite+aiosqlite:////private/tmp/pz-deep-research-e2e-alembic.db PYTHONPATH=. .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000",
       url: "http://127.0.0.1:8000/health",
       reuseExistingServer: reuseExistingServers,
       timeout: 120_000,

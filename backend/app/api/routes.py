@@ -14,7 +14,13 @@ from app.agent.providers import ProviderFactory
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import ResearchEvent, ResearchJob, ResearchRequest
 from app.agent.tools import build_default_tool_registry
-from app.config import missing_provider_requirements, missing_search_requirements, provider_model, get_settings
+from app.config import (
+    get_settings,
+    missing_provider_requirements,
+    missing_search_requirements,
+    provider_model,
+    resolve_model_route,
+)
 from app.error_handling import classify_failure, redact_sensitive, sanitize_failed_event
 from app.reporting import PdfExportError, PdfExporter, pdf_export_filename
 from app.storage import SqlJobStore, upgrade_database
@@ -125,13 +131,27 @@ async def create_research_job(
     visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
 ) -> ResearchJob:
     visitor_id = validate_visitor_id(visitor_id)
-    provider = request.provider or settings.default_provider
-    missing = missing_provider_requirements(settings, provider, model_override=request.model)
+    route = resolve_model_route(
+        settings,
+        requested_provider=request.provider,
+        requested_model=request.model,
+    )
+    routed_request = request.model_copy(
+        update={
+            "provider": route.provider,
+            "model": route.model,
+        }
+    )
+    missing = missing_provider_requirements(
+        settings,
+        route.provider,
+        model_override=route.model,
+    )
     if missing:
         logger.warning(
             "research_creation_configuration_missing provider=%s model=%s missing=%s",
-            provider,
-            request.model,
+            route.provider,
+            route.model,
             missing,
         )
         raise HTTPException(
@@ -143,11 +163,12 @@ async def create_research_job(
             },
         )
     job = await job_store.create_job(
-        request,
-        provider=provider,
+        routed_request,
+        provider=route.provider,
         anonymous_id=visitor_id,
+        routing_version=route.routing_version,
     )
-    background_tasks.add_task(run_research_job, job.id, request)
+    background_tasks.add_task(run_research_job, job.id, routed_request)
     return job
 
 
@@ -194,7 +215,10 @@ async def get_readiness() -> dict[str, object]:
 
 @router.get("/models")
 async def get_model_options() -> dict[str, object]:
+    route = resolve_model_route(settings)
     return {
+        "selection_enabled": route.selection_enabled,
+        "routing_version": route.routing_version,
         "providers": {
             "mock": [
                 {"id": "", "label": "开发模式"},
@@ -213,7 +237,7 @@ async def get_model_options() -> dict[str, object]:
             ],
         },
         "defaults": {
-            "provider": settings.default_provider,
+            "provider": route.provider,
             "openai": provider_model(settings, "openai") or None,
             "anthropic": provider_model(settings, "anthropic") or None,
             "gemini": provider_model(settings, "gemini") or None,
@@ -448,6 +472,7 @@ async def rerun_research_job(
         provider=source_job.provider,
         anonymous_id=visitor_id,
         rerun_of_job_id=source_job.id,
+        routing_version=source_job.routing_version or "legacy",
     )
     background_tasks.add_task(run_research_job, rerun_job.id, request)
     return rerun_job
@@ -497,6 +522,7 @@ async def retry_failed_research_job(
         provider=source_job.provider,
         anonymous_id=visitor_id,
         rerun_of_job_id=source_job.id,
+        routing_version=source_job.routing_version or "legacy",
     )
     background_tasks.add_task(
         run_research_job,

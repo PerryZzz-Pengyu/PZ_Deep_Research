@@ -56,6 +56,10 @@ class Settings:
     app_name: str = "PZ Deep Research API"
     default_provider: str = "mock"
     default_model: str = ""
+    model_routing_mode: str = "production"
+    production_provider: str = "openai"
+    production_model: str = DEFAULT_OPENAI_MODEL
+    model_routing_version: str = "openai-default-v1"
     mock_provider_delay_seconds: float = 0.0
     llm_max_retries: int = 3
     llm_retry_base_delay_seconds: float = 2.0
@@ -88,6 +92,14 @@ class Settings:
     pdf_export_timeout_seconds: float = 45.0
     pdf_export_max_concurrency: int = 2
     pdf_chromium_executable_path: str = ""
+
+
+@dataclass(frozen=True)
+class ModelRoute:
+    provider: str
+    model: str | None
+    routing_version: str
+    selection_enabled: bool
 
 
 def _get_int_env(name: str, default: int) -> int:
@@ -153,6 +165,10 @@ def get_settings() -> Settings:
     return Settings(
         default_provider=_get_env("DEFAULT_PROVIDER", "mock"),
         default_model=_get_env("DEFAULT_MODEL", ""),
+        model_routing_mode=_get_env("MODEL_ROUTING_MODE", "production").lower(),
+        production_provider=_get_env("PRODUCTION_PROVIDER", "openai").lower(),
+        production_model=_get_env("PRODUCTION_MODEL", DEFAULT_OPENAI_MODEL),
+        model_routing_version=_get_env("MODEL_ROUTING_VERSION", "openai-default-v1"),
         mock_provider_delay_seconds=_get_float_env("MOCK_PROVIDER_DELAY_SECONDS", 0.0),
         llm_max_retries=_get_int_env("LLM_MAX_RETRIES", 3),
         llm_retry_base_delay_seconds=_get_float_env("LLM_RETRY_BASE_DELAY_SECONDS", 2.0),
@@ -209,6 +225,30 @@ def get_settings() -> Settings:
         pdf_export_timeout_seconds=_get_float_env("PDF_EXPORT_TIMEOUT_SECONDS", 45.0),
         pdf_export_max_concurrency=_get_int_env("PDF_EXPORT_MAX_CONCURRENCY", 2),
         pdf_chromium_executable_path=_get_env("PDF_CHROMIUM_EXECUTABLE_PATH", ""),
+    )
+
+
+def resolve_model_route(
+    settings: Settings,
+    *,
+    requested_provider: str | None = None,
+    requested_model: str | None = None,
+) -> ModelRoute:
+    if settings.model_routing_mode == "manual":
+        provider = (requested_provider or settings.default_provider).lower()
+        return ModelRoute(
+            provider=provider,
+            model=provider_model(settings, provider, requested_model) or None,
+            routing_version="manual",
+            selection_enabled=True,
+        )
+
+    provider = settings.production_provider.lower()
+    return ModelRoute(
+        provider=provider,
+        model=settings.production_model or provider_model(settings, provider) or None,
+        routing_version=settings.model_routing_version,
+        selection_enabled=False,
     )
 
 
