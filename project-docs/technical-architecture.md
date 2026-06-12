@@ -15,9 +15,9 @@
 ```text
 用户浏览器
   ↓
-Next.js 前端工作台
+Next.js 前端工作台 + Clerk 会话
   ↓ HTTP / SSE
-FastAPI 后端 API
+FastAPI 后端 API + Clerk JWT 本地验签
   ↓
 Agent Runtime
   ├─ LLM Provider：生成搜索词、证据缺口和最终报告
@@ -95,6 +95,7 @@ npm 11.16.0
 - `/api/readiness` 同时执行数据库 `SELECT 1`，只返回 `ready` 和数据库类型，不暴露主机、用户名或连接密码。
 - 已实现 research job 创建、查询、取消、事件查询和 SSE 流接口。
 - 已实现按匿名访客归属过滤的研究历史列表和任务详情接口。
+- 已实现 Clerk Bearer JWT 本地验签、账号级任务过滤和当前浏览器匿名历史自动认领。
 - 创建真实 Provider 任务前会检查必要环境变量，避免任务创建后才失败。
 - 运行任务会登记当前 `asyncio.Task`。取消接口先原子更新状态并记录 `cancelled` 事件，再取消后台协程，防止任务取消后仍写入 `completed`。
 - 任务、事件、报告草稿和最终报告已写入 SQLite/PostgreSQL 兼容存储。
@@ -137,18 +138,18 @@ npm 11.16.0
 - 来源卡片已展示证据强度标签，例如全文证据、部分正文、题录摘要、访问受限。
 - 已实现运行中停止按钮和任务状态标签。
 - 已使用 `localStorage` 保存当前任务 ID；刷新后重新获取任务与持久事件，并恢复问题、模式、Provider、时间线、来源、报告草稿或最终报告。
-- 已实现基础历史视图，按当前匿名访客加载任务列表，点击后进入报告详情。
+- 已实现历史视图：访客按浏览器 ID 加载；登录后按 Clerk `user_id` 加载并支持跨设备访问。
 - 已实现终态任务重新运行，新任务保留原研究配置并记录来源任务血缘。
 - 已实现失败任务产品化重试：用户只看到统一错误提示和一个“重试”按钮；成功或取消任务详情仍保留“重新运行”。
 - 已实现 Markdown 导出：浏览器使用 `Blob` 和临时下载链接导出当前原始报告，文件名由研究问题生成并清理非法字符。
 - 已实现正式 PDF 导出：前端请求受访客权限保护的后端接口，由 Playwright Chromium 输出 A4 PDF。
-- 当前仍没有追问、Word/品牌模板导出和登录交互。
+- 当前仍没有追问、Word/品牌模板导出、额度和支付交互。
 
 后续可替换点：
 
 - UI 可升级为 shadcn/ui 组件体系。
 - 状态管理可从本地 state 升级为 SWR 或 React Query。
-- 登录态、跨设备历史和用户额度需要接入账号系统。
+- 用户额度、套餐和账号删除后的数据生命周期仍需产品化设计。
 
 Markdown 导出选择纯前端实现，位置为 `frontend/src/lib/markdown-export.ts`。原因是最终报告已经完整存在于前端状态和数据库恢复结果中，导出不需要后端重新生成文件，也不应产生新的模型调用或引用变化。当前文件使用 UTF-8 `text/markdown` Blob，内容与页面当前报告一致，末尾保证至少一个换行。
 
@@ -492,11 +493,26 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 
 归属模型：
 
-- 当前未接登录，前端生成随机匿名访客 ID，通过 `X-PZ-Visitor-ID` 请求头发送；EventSource 因无法设置自定义请求头，通过 `visitor_id` 查询参数发送。
-- 数据表同时保留 `anonymous_id` 和可空 `user_id`。匿名任务只写 `anonymous_id`。
-- 存储层提供 `claim_anonymous_jobs`，未来用户登录后可以在事务中把当前匿名历史迁移到账号 `user_id`。
-- API 的历史、详情、事件、取消和重新运行操作都按当前匿名访客过滤。
-- 匿名访客 ID 只是 MVP 数据分区键，不是认证凭证。公网部署必须由认证中间件提供可信 `user_id`，不能依赖客户端自报访客 ID 保护隐私。
+- 前端始终保留浏览器随机匿名访客 ID，并通过 `X-PZ-Visitor-ID` 发送。未登录时任务写入 `anonymous_id`。
+- 配置 Clerk 后，前端通过 `ClerkProvider` 获取会话 token，并在受保护 API 与 SSE 请求中发送 `Authorization: Bearer <token>`。
+- FastAPI 使用 `CLERK_JWT_KEY` 对 RS256 会话 JWT 本地验签，校验有效期、`sub` 和可选 `azp`；可信 `sub` 写入或查询 `user_id`。
+- 登录请求同时携带当前浏览器访客 ID。后端在处理请求前调用 `claim_anonymous_jobs`，把该访客尚未归属账号的任务原子更新为当前 `user_id`。
+- 归并是单向的：任务一旦写入 `user_id`，退出登录后不会退回匿名历史；同一账号在其他设备登录后可以查询。
+- 历史、详情、事件、取消、重跑、失败重试、PDF 导出和 SSE 都按当前身份过滤。其他账号或访客使用任务 ID 访问时返回 404。
+- 未配置 Clerk 时保留访客模式。匿名访客 ID 仍不是安全凭证，公网部署应启用 Clerk 并配置生产域名 `CLERK_AUTHORIZED_PARTIES`。
+
+认证模块位置：
+
+- `backend/app/auth.py`
+- `frontend/src/components/app-auth-provider.tsx`
+- `frontend/src/lib/api.ts`
+
+选择 Clerk 的原因：
+
+- Next.js App Router 有成熟 SDK 和现成登录/账号组件，能较快完成 C 端身份体验。
+- 后端不需要持有 Clerk Secret Key 即可用公钥本地验证会话 JWT，模型和数据库密钥仍只存在服务端。
+- 业务表只保存稳定 `user_id`，没有把存储层绑定到 Clerk 专有数据库，因此未来可以迁移到其他 OIDC/身份服务。
+- 当前不建立本地用户资料表；额度、套餐、偏好和账号删除审计需要时再增加 `users` 业务表，并以 Clerk `sub` 作为外部身份键。
 
 重新运行语义：
 
@@ -524,7 +540,7 @@ Neon 迁移路径：
 
 - 真实 PostgreSQL 实例验证连接池、迁移、备份和恢复。
 - 独立 Worker 保存可恢复执行状态，Redis 或消息队列承载任务调度和跨进程取消信号。
-- 用户表和认证系统为 `user_id` 提供真实外键与权限边界。
+- 增加业务用户表，为额度、套餐、偏好和删除状态提供真实外键；Clerk 继续作为外部身份源。
 - 对大报告和上传文件可接对象存储。
 
 ## 实时进度方案
@@ -532,6 +548,8 @@ Neon 迁移路径：
 ### 当前使用 SSE
 
 位置：`backend/app/api/routes.py`、`frontend/src/lib/api.ts`
+
+前端不再使用浏览器原生 `EventSource`，而是使用基于 `fetch` + ReadableStream 的 SSE 客户端。原因是原生 `EventSource` 无法添加 Bearer Authorization 请求头。自定义客户端保留 `Last-Event-ID` 等价游标、断线重连、`close()` 和消息回调语义，同时避免把会话 token 放进 URL。
 
 当前方案：前端用 `EventSource` 连接后端 `/stream` 接口。
 
@@ -630,7 +648,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 后端 Python 语法检查通过。
 - 后端 app 导入通过。
-- 后端 pytest 自动化测试通过，当前为 114 个用例。
+- 后端 pytest 自动化测试通过，当前为 122 个用例。
 - 前端 lint 通过。
 - 前端 build 通过。
 - Playwright Chromium 端到端测试通过，当前为 7 个用例，覆盖任务取消、刷新续跑、完成后报告恢复、历史报告详情、重新运行、产品化错误重试、Markdown 下载和正式 PDF 下载。
@@ -649,7 +667,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 - OpenAI、Claude、Gemini 已完成不同程度的人工真实调用，但尚未形成覆盖四类任务职责的可重复质量测试集。
 - Claude、Gemini 原生 streaming、Gemini token 用量和真实模型成本计算。
 - 关键桌面/移动视口视觉回归验证。
-- 登录后跨设备历史。
+- Clerk 真实环境下的注册、登录、退出、匿名历史认领和跨设备浏览器验收。
 - 真实 PostgreSQL、备份恢复和独立任务队列验证。
 - 文件上传和文件解析验证。
 
@@ -657,10 +675,10 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 真实模型可能不稳定遵守 XML 工具调用格式。
 - FastAPI background task 不适合长时间高并发任务。
-- 匿名访客 ID 由客户端持有，只能用于无登录 MVP 的数据分区，不能作为公网环境的认证或授权机制。
+- 访客模式仍依赖客户端匿名 ID，不能作为公网环境的强认证或付费权益边界。
 - SQLite 不支持多实例共享和高并发写入，生产多实例需要 PostgreSQL。
 - 搜索和网页读取依赖第三方服务，可能受 QPS、费用和可用性影响。
-- 前端已经支持取消、刷新恢复、匿名历史、报告详情、重跑和 Markdown/PDF 导出，但还没有追问、登录和跨设备历史。
+- 前端已经支持取消、刷新恢复、访客/账号历史、报告详情、重跑和 Markdown/PDF 导出，但还没有追问、额度和支付。
 - 当前引用校验能验证格式、编号和来源存在性，但不能证明每个事实都被对应来源支持。
 - APA 参考文献依赖搜索元数据和模型输出，缺少作者、年份、期刊等字段时只能降级展示。
 - 当前只有 SerpAPI + Jina 主链路，缺少搜索和正文读取的生产级备用服务。
@@ -674,5 +692,5 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 4. 补齐 Claude/Gemini 原生 streaming、Gemini 用量和成本计算。
 5. 增加搜索与网页访问备用链路、结构化学术元数据、语义去重和事实级引用校验。
 6. 把后台任务迁移到独立 Worker 队列，支持多实例和可恢复执行。
-7. 增加用户认证、匿名历史归并、数据隔离、限流、额度、成本预算、内容安全和可观测性。
+7. 完成 Clerk 生产验收，并增加限流、额度、成本预算、内容安全和可观测性。
 8. 增加 CI/CD、生产密钥管理、备份、部署和回滚说明。

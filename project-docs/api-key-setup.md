@@ -8,6 +8,8 @@
 
 每次做了实质修改，还需要同步更新 `project-docs/changelog.md`。
 
+用户登录使用 Clerk 的独立配置，不属于模型 API Key。登录与历史绑定说明见 `project-docs/auth-setup.md`。
+
 ## 结论
 
 如果只跑开发模式，不需要任何 API Key。

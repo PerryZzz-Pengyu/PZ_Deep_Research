@@ -112,6 +112,27 @@ def test_get_settings_reads_mock_provider_delay(monkeypatch) -> None:
     assert settings.mock_provider_delay_seconds == 1.25
 
 
+def test_get_settings_reads_clerk_authentication_config(monkeypatch) -> None:
+    monkeypatch.setenv(
+        "CLERK_JWT_KEY",
+        "-----BEGIN PUBLIC KEY-----\\npublic-key\\n-----END PUBLIC KEY-----",
+    )
+    monkeypatch.setenv(
+        "CLERK_AUTHORIZED_PARTIES",
+        "http://localhost:3000,https://research.example.com",
+    )
+    monkeypatch.setenv("CLERK_CLOCK_SKEW_SECONDS", "12")
+
+    settings = get_settings()
+
+    assert "\\n" in settings.clerk_jwt_key
+    assert settings.clerk_authorized_parties == (
+        "http://localhost:3000",
+        "https://research.example.com",
+    )
+    assert settings.clerk_clock_skew_seconds == 12
+
+
 def test_get_settings_normalizes_postgresql_database_url(monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:password@localhost/research")
     monkeypatch.setenv(

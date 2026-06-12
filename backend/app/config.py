@@ -88,6 +88,9 @@ class Settings:
     database_max_overflow: int = 5
     database_pool_timeout_seconds: int = 30
     database_pool_recycle_seconds: int = 300
+    clerk_jwt_key: str = ""
+    clerk_authorized_parties: tuple[str, ...] = LOCAL_FRONTEND_ORIGINS
+    clerk_clock_skew_seconds: int = 5
     cors_origins: tuple[str, ...] = ("http://localhost:3000",)
     pdf_export_timeout_seconds: float = 45.0
     pdf_export_max_concurrency: int = 2
@@ -220,6 +223,15 @@ def get_settings() -> Settings:
         database_pool_recycle_seconds=max(
             30,
             _get_int_env("DATABASE_POOL_RECYCLE_SECONDS", 300),
+        ),
+        clerk_jwt_key=_get_env("CLERK_JWT_KEY", ""),
+        clerk_authorized_parties=_get_csv_env(
+            "CLERK_AUTHORIZED_PARTIES",
+            LOCAL_FRONTEND_ORIGINS,
+        ),
+        clerk_clock_skew_seconds=max(
+            0,
+            _get_int_env("CLERK_CLOCK_SKEW_SECONDS", 5),
         ),
         cors_origins=_get_cors_origins(),
         pdf_export_timeout_seconds=_get_float_env("PDF_EXPORT_TIMEOUT_SECONDS", 45.0),

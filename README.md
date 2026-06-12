@@ -20,7 +20,7 @@ The production interface exposes only the research question and Quick, Deep, or 
 - Renders Markdown reports with Arabic-number inline citations, citation hover cards, and APA-style references.
 - Exits through a bounded fallback path when sources or full-text evidence are insufficient, avoiding repeated visits and infinite loops.
 - Persists research jobs, events, report drafts, and final reports in SQLite or PostgreSQL.
-- Provides per-visitor research history, report details, and reruns with the original configuration before account authentication is introduced.
+- Supports optional Clerk sign-in, automatic claiming of anonymous history, account-scoped history, and cross-device access while preserving guest mode.
 - Exports the currently displayed report directly as a UTF-8 Markdown file.
 - Generates paginated A4 PDF reports with task metadata and page numbers through backend Chromium.
 
@@ -62,6 +62,7 @@ Actual source counts depend on search results and webpage accessibility. When th
 - Web retrieval: Jina Reader
 - Streaming: Server-Sent Events
 - Database: SQLite (local default), PostgreSQL (production option), SQLAlchemy, Alembic
+- Authentication: Clerk (optional, with local session JWT verification in FastAPI)
 - Document export: Markdown Blob, Playwright Chromium PDF
 - Verification: pytest, Playwright, ESLint, Next.js production build
 
@@ -128,6 +129,19 @@ A real research run requires:
 - `JINA_API_KEY` is recommended for more reliable webpage retrieval and higher service limits.
 
 Never commit `.env`, `frontend/.env.local`, or real API credentials. See the [API key setup guide](project-docs/api-key-setup.md) for details.
+
+Authentication is optional. To enable Clerk sign-in, configure:
+
+```text
+# frontend/.env.local
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
+
+# .env
+CLERK_JWT_KEY=
+CLERK_AUTHORIZED_PARTIES=http://localhost:3000,http://127.0.0.1:3000
+```
+
+See the Chinese [authentication and history binding guide](project-docs/auth-setup.md). Without Clerk configuration, the application continues in browser-scoped guest mode.
 
 The default production route is:
 
@@ -200,9 +214,9 @@ npm run test:e2e
 
 See the [testing guide](project-docs/testing-guide.md) for the complete test strategy and manual acceptance flow. Project documentation is currently maintained in Chinese.
 
-Latest local verification on June 10, 2026:
+Latest local verification on June 11, 2026:
 
-- 114 backend pytest cases passed.
+- 122 backend pytest cases passed.
 - 7 Playwright Chromium end-to-end cases passed.
 - The local `8000/3000` services and frontend smoke check passed without a Next.js error overlay or browser console errors.
 
@@ -211,9 +225,10 @@ Latest local verification on June 10, 2026:
 - User questions are sent to the provider selected by the internal task configuration or model router. The current development UI allows manual selection; the production consumer UI is intended to hide it.
 - Search queries are sent to SerpAPI; visited URLs and webpage content are processed through Jina Reader.
 - API usage costs and third-party service quotas are the responsibility of the operator.
-- Public deployments should add authentication, per-user quotas, rate limiting, abuse prevention, and cost alerts.
-- Until authentication is added, research history is partitioned by a random anonymous visitor ID stored in the browser. Clearing browser storage removes the local access key for that history.
-- The anonymous visitor ID is not authentication or a security credential. Public deployments must add account authentication and claim anonymous jobs into an authenticated `user_id`.
+- Optional Clerk authentication is supported. FastAPI verifies Clerk session JWTs locally and uses the token `sub` as the trusted `user_id`.
+- On first sign-in, jobs owned by the current browser visitor ID are claimed into the account and then become available across devices. Signing out does not return claimed jobs to guest history.
+- Without Clerk configuration, history remains scoped to a browser-generated visitor ID. That identifier is not a security credential and should not be the only authorization boundary in a public deployment.
+- Public deployments still require per-user quotas, rate limiting, abuse prevention, cost alerts, and correct production-domain values in `CLERK_AUTHORIZED_PARTIES`.
 - SQLite is intended for local or single-instance use. Multi-instance production deployments should use PostgreSQL, backups, and a separate task worker.
 - Never expose model, search, or webpage-retrieval API keys in client-side code.
 
@@ -233,6 +248,7 @@ PZ Deep Research is not an official product of, affiliated with, endorsed by, or
 - [Testing guide](project-docs/testing-guide.md)
 - [Dependency management](project-docs/dependency-management.md)
 - [API key setup](project-docs/api-key-setup.md)
+- [Authentication and history binding](project-docs/auth-setup.md)
 - [Changelog](project-docs/changelog.md)
 
 ## Contributing and Documentation

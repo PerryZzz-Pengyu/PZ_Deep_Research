@@ -20,7 +20,7 @@
 - 最终报告支持 Markdown、阿拉伯数字行内引用、来源悬浮卡片和 APA 风格参考文献。
 - 来源不足或全文证据不足时有界退出并明确降级，不重复访问造成死循环。
 - 使用 SQLite/PostgreSQL 持久化研究任务、事件、报告草稿和最终报告。
-- 支持按当前匿名访客查看研究历史、打开报告详情并按原配置重新运行。
+- 支持 Clerk 登录、匿名历史自动归并、账号级历史和跨设备同步；未配置 Clerk 时仍可使用访客模式。
 - 支持将当前报告直接导出为 UTF-8 Markdown 文件。
 - 支持由后端 Chromium 生成带任务信息、分页和页码的 A4 PDF 报告。
 
@@ -62,6 +62,7 @@
 - 网页读取：Jina Reader
 - 实时通信：Server-Sent Events
 - 数据库：SQLite（本地默认）、PostgreSQL（生产可选）、SQLAlchemy、Alembic
+- 身份认证：Clerk（可选，后端本地验证会话 JWT）
 - 文档导出：Markdown Blob、Playwright Chromium PDF
 - 测试：pytest、Playwright、ESLint、Next.js production build
 
@@ -128,6 +129,19 @@ SEARCH_PROVIDER=mock
 - 推荐配置 `JINA_API_KEY`，提高网页读取稳定性和额度。
 
 不要提交 `.env`、`frontend/.env.local` 或任何真实 API Key。完整说明见 [API Key 配置](project-docs/api-key-setup.md)。
+
+账号登录为可选能力。启用时还需要配置：
+
+```text
+# frontend/.env.local
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
+
+# .env
+CLERK_JWT_KEY=
+CLERK_AUTHORIZED_PARTIES=http://localhost:3000,http://127.0.0.1:3000
+```
+
+完整步骤见 [登录与历史绑定配置](project-docs/auth-setup.md)。没有配置 Clerk 时，应用继续以当前浏览器访客 ID 保存历史。
 
 默认生产路由配置：
 
@@ -200,9 +214,9 @@ npm run test:e2e
 
 完整测试策略和手动验收流程见 [测试说明](project-docs/testing-guide.md)。
 
-最近一次本地验证（2026-06-10）：
+最近一次本地验证（2026-06-11）：
 
-- 后端 pytest：114 个用例通过。
+- 后端 pytest：122 个用例通过。
 - Playwright Chromium：7 个端到端用例通过。
 - 本地 `8000/3000` 服务和前端页面冒烟检查通过，无 Next.js 错误覆盖层或浏览器控制台错误。
 
@@ -211,9 +225,10 @@ npm run test:e2e
 - 用户问题会发送给后台任务配置或模型路由选择的 Provider；当前开发界面允许人工选择，正式 C 端产品计划隐藏该能力。
 - 搜索词会发送给 SerpAPI，访问的 URL 和网页内容会经过 Jina Reader。
 - API 调用费用和第三方服务额度由部署者承担。
-- 公网部署前应增加身份验证、用户额度、请求限流、滥用防护和费用告警。
-- 当前无登录系统，研究历史按浏览器生成的匿名访客 ID 隔离；清理浏览器本地数据后将失去该匿名 ID 对应的访问入口。
-- 匿名访客 ID 不是身份认证或安全凭证。公网部署必须接入登录鉴权，并将匿名历史归并到账号 `user_id`。
+- 已支持可选 Clerk 登录。登录请求使用 Clerk 会话 JWT，后端本地验签后以 `sub` 作为可信 `user_id`。
+- 首次登录会把当前浏览器访客 ID 下的匿名任务自动归并到账号；归并后可跨设备查看，退出登录不会把任务退回访客。
+- 未配置 Clerk 时仍使用匿名访客模式；匿名访客 ID 不是安全凭证，不适合直接作为公网产品的唯一授权机制。
+- 公网部署还需要用户额度、请求限流、滥用防护、费用告警，以及正确配置生产域名的 `CLERK_AUTHORIZED_PARTIES`。
 - SQLite 适合本地和单实例部署；多实例生产环境应使用 PostgreSQL、备份和独立任务 Worker。
 - 不要在客户端代码中暴露模型、搜索或网页读取 API Key。
 
@@ -233,6 +248,7 @@ PZ Deep Research 在早期设计阶段参考了 [Alibaba-NLP/DeepResearch](https
 - [测试说明](project-docs/testing-guide.md)
 - [依赖管理](project-docs/dependency-management.md)
 - [API Key 配置](project-docs/api-key-setup.md)
+- [登录与历史绑定配置](project-docs/auth-setup.md)
 - [变更日志](project-docs/changelog.md)
 
 ## 贡献与文档维护

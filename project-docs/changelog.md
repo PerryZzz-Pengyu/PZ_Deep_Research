@@ -14,6 +14,58 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+## 2026-06-11 11:43 CST +0800
+
+### Clerk 登录与账号历史绑定
+
+- 按测试优先原则新增 Clerk JWT 和账号历史测试，再实现登录链路。
+- 后端新增 `ClerkAuthenticator`：
+  - 本地验证 RS256 会话 JWT 的签名、有效期、`sub` 和 `azp`。
+  - 支持 `CLERK_JWT_KEY`、`CLERK_AUTHORIZED_PARTIES` 和时钟偏差配置。
+  - 未登录请求继续使用浏览器匿名访客 ID；登录请求使用 Clerk `sub` 作为可信 `user_id`。
+- 登录后的首个受保护请求会自动调用 `claim_anonymous_jobs`，把当前浏览器尚未归属账号的任务单向认领到用户。
+- 历史、详情、事件、取消、重跑、失败重试、PDF 导出和 SSE 全部按访客或账号身份过滤；其他账号访问返回 404。
+- 前端接入可选 `ClerkProvider`、登录弹窗和账号按钮。未配置 Clerk 时保持访客模式，不阻塞现有本地开发和 E2E。
+- 所有受保护 API 请求会同时携带匿名访客 ID 和可选 Bearer token。
+- 原生 `EventSource` 替换为基于 `fetch` / ReadableStream 的鉴权 SSE 客户端，支持 Authorization 请求头、事件游标和断线重连，不把会话 token 放进 URL。
+- 账号切换后自动恢复当前任务并刷新历史；已归并任务退出登录后不会退回访客历史。
+- 新增 `project-docs/auth-setup.md`，记录 Clerk Dashboard、本地环境变量、匿名历史归并规则和生产注意事项。
+- 本地 `.env` 与 `frontend/.env.local` 已预留 Clerk 配置位置，当前为空，因此运行界面显示访客模式。
+
+### 依赖
+
+- 前端新增 `@clerk/nextjs 7.5.1`。
+- 后端新增 `PyJWT 2.13.0` 与 crypto 支持。
+
+### 验证
+
+- 后端 pytest：122 个用例通过。
+- 身份、API 和配置定向 pytest：44 个用例通过。
+- 前端 `npm run lint` 通过。
+- 前端 `npm run build` 通过。
+- Playwright Chromium：7 个 E2E 用例通过，取消、刷新恢复、历史、重跑、错误重试和 Markdown/PDF 导出未回归。
+- Chromium 页面冒烟检查：访客账号区正常显示，控制台错误为 0。
+- Neon readiness：数据库 `ready=true`；因 Clerk 公钥尚未填写，认证 `ready=false`，符合预期。
+
+### 影响文件
+
+- `.env.example`
+- `README.md`
+- `README.zh-CN.md`
+- `backend/app/auth.py`
+- `backend/app/api/routes.py`
+- `backend/app/config.py`
+- `backend/app/storage/`
+- `backend/requirements*.txt`
+- `backend/tests/`
+- `frontend/.env.example`
+- `frontend/package.json`
+- `frontend/package-lock.json`
+- `frontend/src/app/`
+- `frontend/src/components/`
+- `frontend/src/lib/api.ts`
+- `project-docs/`
+
 ## 2026-06-11 11:18 CST +0800
 
 ### Neon 恢复分支演练通过

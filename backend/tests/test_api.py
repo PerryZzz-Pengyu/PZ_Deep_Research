@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 
 from fastapi.testclient import TestClient
+import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 
 from app.api import routes
 from app.agent.providers import ProviderFactory
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import ResearchEvent, ResearchRequest
 from app.agent.tools import build_default_tool_registry
+from app.auth import ClerkAuthenticator, RequestIdentity
 from app.config import Settings
 from app.main import app
 from app.storage import InMemoryJobStore
@@ -17,6 +22,42 @@ from app.storage import InMemoryJobStore
 client = TestClient(app)
 VISITOR_HEADERS = {"X-PZ-Visitor-ID": "11111111-1111-4111-8111-111111111111"}
 OTHER_VISITOR_HEADERS = {"X-PZ-Visitor-ID": "22222222-2222-4222-8222-222222222222"}
+
+
+def auth_fixture(user_id: str) -> tuple[ClerkAuthenticator, dict[str, str]]:
+    private_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    private_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    public_pem = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    ).decode()
+    now = datetime.now(timezone.utc)
+    token = jwt.encode(
+        {
+            "sub": user_id,
+            "sid": f"session-{user_id}",
+            "azp": "http://localhost:3000",
+            "iat": now,
+            "nbf": now - timedelta(seconds=1),
+            "exp": now + timedelta(minutes=5),
+        },
+        private_pem,
+        algorithm="RS256",
+    )
+    return (
+        ClerkAuthenticator(
+            jwt_key=public_pem,
+            authorized_parties=("http://localhost:3000",),
+        ),
+        {
+            **VISITOR_HEADERS,
+            "Authorization": f"Bearer {token}",
+        },
+    )
 
 
 def test_health_check() -> None:
@@ -380,7 +421,10 @@ def test_cancel_endpoint_interrupts_running_background_coroutine(monkeypatch) ->
         await asyncio.wait_for(runtime.started.wait(), timeout=1)
         cancelled_job = await routes.cancel_research_job(
             job.id,
-            VISITOR_HEADERS["X-PZ-Visitor-ID"],
+            RequestIdentity(
+                anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+                user_id=None,
+            ),
         )
         await asyncio.wait_for(task, timeout=1)
         return cancelled_job, await store.get_job(job.id), await store.list_events(job.id)
@@ -452,6 +496,53 @@ def test_history_endpoint_returns_only_current_visitors_jobs(monkeypatch) -> Non
 
     assert response.status_code == 200
     assert [item["id"] for item in response.json()] == [job_a.id]
+
+
+def test_authenticated_history_claims_current_anonymous_jobs(monkeypatch) -> None:
+    async def prepare_store():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="登录后归并的历史", mode="quick", provider="mock")
+        job = await store.create_job(
+            request,
+            provider="mock",
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+        )
+        return store, job
+
+    store, job = asyncio.run(prepare_store())
+    authenticator, headers = auth_fixture("user_123")
+    monkeypatch.setattr(routes, "job_store", store)
+    monkeypatch.setattr(routes, "authenticator", authenticator)
+
+    response = client.get("/api/research-jobs", headers=headers)
+    anonymous_response = client.get("/api/research-jobs", headers=VISITOR_HEADERS)
+
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()] == [job.id]
+    assert anonymous_response.status_code == 200
+    assert anonymous_response.json() == []
+
+
+def test_authenticated_users_cannot_read_each_others_jobs(monkeypatch) -> None:
+    async def prepare_store():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="账号 A 的任务", mode="quick", provider="mock")
+        job = await store.create_job(
+            request,
+            provider="mock",
+            anonymous_id="unused",
+            user_id="user_a",
+        )
+        return store, job
+
+    store, job = asyncio.run(prepare_store())
+    authenticator, headers = auth_fixture("user_b")
+    monkeypatch.setattr(routes, "job_store", store)
+    monkeypatch.setattr(routes, "authenticator", authenticator)
+
+    response = client.get(f"/api/research-jobs/{job.id}", headers=headers)
+
+    assert response.status_code == 404
 
 
 def test_job_detail_is_hidden_from_other_visitors(monkeypatch) -> None:
