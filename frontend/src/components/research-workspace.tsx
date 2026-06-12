@@ -25,8 +25,10 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
+import { AccountControl, useAppAuth } from "@/components/app-auth-provider";
 import {
   ApiError,
+  EVENT_STREAM_CLOSED,
   cancelResearchJob,
   createResearchEventSource,
   createResearchJob,
@@ -38,6 +40,7 @@ import {
   rerunResearchJob,
   retryResearchJob,
 } from "@/lib/api";
+import type { ResearchEventStream } from "@/lib/api";
 import { downloadBlobFile, downloadMarkdownReport } from "@/lib/markdown-export";
 import type { ModelOption, ProviderName, ResearchEvent, ResearchJob, ResearchMode } from "@/lib/types";
 
@@ -417,6 +420,7 @@ function EventDetail({ event }: { event: ResearchEvent }) {
 }
 
 export function ResearchWorkspace() {
+  const { isLoaded: isAuthLoaded, isSignedIn, userId } = useAppAuth();
   const [query, setQuery] = useState("对比 Claude、ChatGPT 和 Gemini 做深度研究产品时各自的优势与风险");
   const [mode, setMode] = useState<ResearchMode>("deep");
   const [provider, setProvider] = useState<ProviderName>("mock");
@@ -439,7 +443,7 @@ export function ResearchWorkspace() {
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [error, setError] = useState("");
   const [errorRetryable, setErrorRetryable] = useState(false);
-  const eventSourceRef = useRef<EventSource | null>(null);
+  const eventSourceRef = useRef<ResearchEventStream | null>(null);
 
   const sources = useMemo(() => {
     let selected: SourceItem[] = [];
@@ -576,7 +580,7 @@ export function ResearchWorkspace() {
     };
 
     eventSource.onerror = () => {
-      if (eventSource.readyState !== EventSource.CLOSED) {
+      if (eventSource.readyState !== EVENT_STREAM_CLOSED) {
         setError("网络连接不稳定，正在自动恢复研究进度。");
         setErrorRetryable(false);
         return;
@@ -663,6 +667,7 @@ export function ResearchWorkspace() {
   }, []);
 
   useEffect(() => {
+    if (!isAuthLoaded) return;
     let ignore = false;
     const storedJobId = window.localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
     if (!storedJobId) {
@@ -692,7 +697,15 @@ export function ResearchWorkspace() {
       ignore = true;
       window.clearTimeout(timer);
     };
-  }, [restoreJob]);
+  }, [isAuthLoaded, restoreJob, userId]);
+
+  useEffect(() => {
+    if (!isAuthLoaded || activeView !== "history") return;
+    const timer = window.setTimeout(() => {
+      void refreshHistory();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [activeView, isAuthLoaded, isSignedIn, refreshHistory, userId]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -861,7 +874,6 @@ export function ResearchWorkspace() {
             type="button"
             onClick={() => {
               setActiveView("history");
-              void refreshHistory();
             }}
           >
             <History size={16} />
@@ -878,6 +890,10 @@ export function ResearchWorkspace() {
           <strong className="job-id-text">{jobId || "尚未创建"}</strong>
           <span className={`job-status ${jobStatus || "idle"}`}>{jobStatusLabel(jobStatus)}</span>
         </div>
+
+        <div className="sidebar-account">
+          <AccountControl />
+        </div>
       </aside>
 
       <section className="main-panel">
@@ -885,7 +901,7 @@ export function ResearchWorkspace() {
           <div className="history-view">
             <div className="history-header">
               <div>
-                <span className="block-label">当前访客</span>
+                <span className="block-label">{isSignedIn ? "当前账号" : "当前访客"}</span>
                 <h1>研究历史</h1>
               </div>
               <button
@@ -955,7 +971,6 @@ export function ResearchWorkspace() {
                   type="button"
                   onClick={() => {
                     setActiveView("history");
-                    void refreshHistory();
                   }}
                 >
                   <ArrowLeft size={16} />

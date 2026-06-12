@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+
+import { AppAuthProvider } from "@/components/app-auth-provider";
+
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -14,7 +17,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="zh-CN" suppressHydrationWarning>
-      <body>{children}</body>
+      <body>
+        <AppAuthProvider>{children}</AppAuthProvider>
+      </body>
     </html>
   );
 }

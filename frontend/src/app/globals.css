@@ -143,6 +143,76 @@ button:disabled {
   background: var(--panel);
 }
 
+.sidebar-account {
+  margin-top: auto;
+}
+
+.account-sign-in {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid rgba(53, 194, 173, 0.55);
+  border-radius: 8px;
+  background: rgba(53, 194, 173, 0.12);
+  color: var(--text);
+}
+
+.account-sign-in:hover {
+  background: rgba(53, 194, 173, 0.2);
+}
+
+.account-profile {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.account-profile.guest {
+  color: var(--muted);
+}
+
+.account-profile span,
+.account-profile strong,
+.account-profile small {
+  display: block;
+  min-width: 0;
+}
+
+.account-profile span {
+  overflow: hidden;
+}
+
+.account-profile strong,
+.account-profile small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-profile strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.account-profile small {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.account-status {
+  padding: 10px 2px;
+}
+
 .job-id-text {
   font-family: var(--font-geist-mono), monospace;
   font-size: 12px;

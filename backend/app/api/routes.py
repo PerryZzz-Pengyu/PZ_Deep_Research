@@ -5,15 +5,15 @@ import json
 import logging
 import traceback
 from urllib.parse import quote
-from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
 
 from app.agent.providers import ProviderFactory
 from app.agent.runtime import AgentRuntime
 from app.agent.schemas import ResearchEvent, ResearchJob, ResearchRequest
 from app.agent.tools import build_default_tool_registry
+from app.auth import AuthenticationError, ClerkAuthenticator, RequestIdentity
 from app.config import (
     get_settings,
     missing_provider_requirements,
@@ -29,6 +29,11 @@ from app.storage import SqlJobStore, upgrade_database
 router = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
 settings = get_settings()
+authenticator = ClerkAuthenticator(
+    jwt_key=settings.clerk_jwt_key,
+    authorized_parties=settings.clerk_authorized_parties,
+    clock_skew_seconds=settings.clerk_clock_skew_seconds,
+)
 job_store = SqlJobStore(
     settings.database_url,
     auto_create_schema=False,
@@ -117,20 +122,33 @@ def format_sse(event: ResearchEvent, *, include_id: bool = True) -> str:
     return f"{prefix}data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
-def validate_visitor_id(visitor_id: str) -> str:
+async def get_request_identity(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    visitor_header: str | None = Header(default=None, alias="X-PZ-Visitor-ID"),
+    visitor_query: str | None = Query(default=None, alias="visitor_id"),
+) -> RequestIdentity:
     try:
-        return str(UUID(visitor_id))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="访客标识无效") from exc
+        identity = authenticator.authenticate(
+            authorization=authorization,
+            visitor_id=visitor_header or visitor_query,
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    if identity.user_id and identity.anonymous_id:
+        await job_store.claim_anonymous_jobs(
+            identity.anonymous_id,
+            user_id=identity.user_id,
+        )
+    return identity
 
 
 @router.post("/research-jobs", response_model=ResearchJob)
 async def create_research_job(
     request: ResearchRequest,
     background_tasks: BackgroundTasks,
-    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+    identity: RequestIdentity = Depends(get_request_identity),
 ) -> ResearchJob:
-    visitor_id = validate_visitor_id(visitor_id)
     route = resolve_model_route(
         settings,
         requested_provider=request.provider,
@@ -165,7 +183,8 @@ async def create_research_job(
     job = await job_store.create_job(
         routed_request,
         provider=route.provider,
-        anonymous_id=visitor_id,
+        anonymous_id=identity.anonymous_id,
+        user_id=identity.user_id,
         routing_version=route.routing_version,
     )
     background_tasks.add_task(run_research_job, job.id, routed_request)
@@ -209,6 +228,10 @@ async def get_readiness() -> dict[str, object]:
         "database": {
             "ready": database_ready,
             "backend": job_store.backend_name,
+        },
+        "auth": {
+            "ready": authenticator.enabled,
+            "provider": "clerk",
         },
     }
 
@@ -375,11 +398,11 @@ async def get_gemini_available_models() -> dict[str, object]:
 @router.get("/research-jobs/{job_id}", response_model=ResearchJob)
 async def get_research_job(
     job_id: str,
-    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+    identity: RequestIdentity = Depends(get_request_identity),
 ) -> ResearchJob:
     job = await job_store.get_job(
         job_id,
-        anonymous_id=validate_visitor_id(visitor_id),
+        **identity.owner_kwargs,
     )
     if not job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
@@ -388,12 +411,12 @@ async def get_research_job(
 
 @router.get("/research-jobs", response_model=list[ResearchJob])
 async def list_research_jobs(
-    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
+    identity: RequestIdentity = Depends(get_request_identity),
 ) -> list[ResearchJob]:
     return await job_store.list_jobs(
-        anonymous_id=validate_visitor_id(visitor_id),
+        **identity.owner_kwargs,
         limit=limit,
         offset=offset,
     )
@@ -402,10 +425,9 @@ async def list_research_jobs(
 @router.get("/research-jobs/{job_id}/export/pdf")
 async def export_research_job_pdf(
     job_id: str,
-    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+    identity: RequestIdentity = Depends(get_request_identity),
 ) -> Response:
-    visitor_id = validate_visitor_id(visitor_id)
-    job = await job_store.get_job(job_id, anonymous_id=visitor_id)
+    job = await job_store.get_job(job_id, **identity.owner_kwargs)
     if not job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
 
@@ -437,10 +459,9 @@ async def export_research_job_pdf(
 async def rerun_research_job(
     job_id: str,
     background_tasks: BackgroundTasks,
-    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+    identity: RequestIdentity = Depends(get_request_identity),
 ) -> ResearchJob:
-    visitor_id = validate_visitor_id(visitor_id)
-    source_job = await job_store.get_job(job_id, anonymous_id=visitor_id)
+    source_job = await job_store.get_job(job_id, **identity.owner_kwargs)
     if not source_job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
     if source_job.status in {"queued", "running"}:
@@ -470,7 +491,8 @@ async def rerun_research_job(
     rerun_job = await job_store.create_job(
         request,
         provider=source_job.provider,
-        anonymous_id=visitor_id,
+        anonymous_id=identity.anonymous_id,
+        user_id=identity.user_id,
         rerun_of_job_id=source_job.id,
         routing_version=source_job.routing_version or "legacy",
     )
@@ -482,10 +504,9 @@ async def rerun_research_job(
 async def retry_failed_research_job(
     job_id: str,
     background_tasks: BackgroundTasks,
-    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+    identity: RequestIdentity = Depends(get_request_identity),
 ) -> ResearchJob:
-    visitor_id = validate_visitor_id(visitor_id)
-    source_job = await job_store.get_job(job_id, anonymous_id=visitor_id)
+    source_job = await job_store.get_job(job_id, **identity.owner_kwargs)
     if not source_job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
     if source_job.status != "failed":
@@ -520,7 +541,8 @@ async def retry_failed_research_job(
     retry_job = await job_store.create_job(
         request,
         provider=source_job.provider,
-        anonymous_id=visitor_id,
+        anonymous_id=identity.anonymous_id,
+        user_id=identity.user_id,
         rerun_of_job_id=source_job.id,
         routing_version=source_job.routing_version or "legacy",
     )
@@ -536,12 +558,11 @@ async def retry_failed_research_job(
 @router.post("/research-jobs/{job_id}/cancel", response_model=ResearchJob)
 async def cancel_research_job(
     job_id: str,
-    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+    identity: RequestIdentity = Depends(get_request_identity),
 ) -> ResearchJob:
-    visitor_id = validate_visitor_id(visitor_id)
     job, changed = await job_store.request_cancel(
         job_id,
-        anonymous_id=visitor_id,
+        **identity.owner_kwargs,
     )
     if not job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
@@ -571,11 +592,11 @@ async def cancel_research_job(
 @router.get("/research-jobs/{job_id}/events", response_model=list[ResearchEvent])
 async def get_research_events(
     job_id: str,
-    visitor_id: str = Header(alias="X-PZ-Visitor-ID"),
+    identity: RequestIdentity = Depends(get_request_identity),
 ) -> list[ResearchEvent]:
     job = await job_store.get_job(
         job_id,
-        anonymous_id=validate_visitor_id(visitor_id),
+        **identity.owner_kwargs,
     )
     if not job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
@@ -585,12 +606,11 @@ async def get_research_events(
 @router.get("/research-jobs/{job_id}/stream")
 async def stream_research_events(
     job_id: str,
-    visitor_id: str,
     after: str | None = None,
     last_event_id: str | None = Header(default=None, alias="Last-Event-ID"),
+    identity: RequestIdentity = Depends(get_request_identity),
 ) -> StreamingResponse:
-    visitor_id = validate_visitor_id(visitor_id)
-    job = await job_store.get_job(job_id, anonymous_id=visitor_id)
+    job = await job_store.get_job(job_id, **identity.owner_kwargs)
     if not job:
         raise HTTPException(status_code=404, detail="研究任务不存在")
 

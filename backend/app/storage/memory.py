@@ -26,7 +26,7 @@ class InMemoryJobStore:
         request: ResearchRequest,
         provider: str,
         *,
-        anonymous_id: str = "local-development",
+        anonymous_id: Optional[str] = "local-development",
         user_id: Optional[str] = None,
         rerun_of_job_id: Optional[str] = None,
         routing_version: Optional[str] = None,
