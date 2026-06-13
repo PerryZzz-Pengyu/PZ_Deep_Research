@@ -1,0 +1,35 @@
+# PZ Deep Research — Community Edition one-command stack.
+#
+#   docker compose up --build
+#
+# Defaults to the offline mock provider so it runs with zero secrets. To use a
+# real model, either set server keys in the backend `environment` block, or pick
+# a provider and paste your own API key in the workbench (BYOK, community only).
+services:
+  backend:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      PZ_EDITION: community
+      DEFAULT_PROVIDER: mock
+      SEARCH_PROVIDER: mock
+      DATABASE_URL: sqlite+aiosqlite:////data/pz_deep_research.db
+      DATABASE_MIGRATION_URL: sqlite+aiosqlite:////data/pz_deep_research.db
+      CORS_ORIGINS: http://localhost:3000,http://127.0.0.1:3000
+    volumes:
+      - pz_data:/data
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  pz_data:
