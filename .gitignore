@@ -39,6 +39,12 @@ frontend/test-results/
 # Logs
 *.log
 npm-debug.log*
+*.tsbuildinfo
 
 # Large upstream reference repo. Keep it local; do not push to the PZ product repo.
 Qwen Deep Research/
+
+# Private business planning. Keep pricing, costs, margins, growth assumptions,
+# vendor budgets, and other commercially sensitive material out of the public repo.
+project-docs/business-model.md
+project-docs/private/

@@ -42,6 +42,7 @@ DEFAULT_GEMINI_MODEL_OPTIONS = (
 DEFAULT_OPENAI_EVIDENCE_MODEL = "gpt-5-nano"
 DEFAULT_ANTHROPIC_EVIDENCE_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_GEMINI_EVIDENCE_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_CLOUD_ROUTING_VERSION = "cloud-unconfigured"
 DEFAULT_SEARCH_PROVIDER = "serpapi"
 DEFAULT_ACADEMIC_SEARCH_ENGINE = "google_scholar"
 DEFAULT_DATABASE_URL = f"sqlite+aiosqlite:///{PROJECT_ROOT / 'data' / 'pz_deep_research.db'}"
@@ -51,15 +52,20 @@ LOCAL_FRONTEND_ORIGINS = (
 )
 
 
+VALID_EDITIONS = ("community", "cloud")
+DEFAULT_EDITION = "community"
+
+
 @dataclass(frozen=True)
 class Settings:
     app_name: str = "PZ Deep Research API"
+    edition: str = DEFAULT_EDITION
     default_provider: str = "mock"
     default_model: str = ""
     model_routing_mode: str = "production"
-    production_provider: str = "openai"
-    production_model: str = DEFAULT_OPENAI_MODEL
-    model_routing_version: str = "openai-default-v1"
+    production_provider: str = ""
+    production_model: str = ""
+    model_routing_version: str = DEFAULT_CLOUD_ROUTING_VERSION
     mock_provider_delay_seconds: float = 0.0
     llm_max_retries: int = 3
     llm_retry_base_delay_seconds: float = 2.0
@@ -125,6 +131,11 @@ def _get_float_env(name: str, default: float) -> float:
         return default
 
 
+def _get_edition() -> str:
+    edition = _get_env("PZ_EDITION", DEFAULT_EDITION).lower()
+    return edition if edition in VALID_EDITIONS else DEFAULT_EDITION
+
+
 def _get_env(name: str, default: str = "") -> str:
     value = os.getenv(name, "").strip()
     if value.startswith("在这里填写"):
@@ -166,12 +177,16 @@ def _get_database_url(name: str, default: str) -> str:
 
 def get_settings() -> Settings:
     return Settings(
+        edition=_get_edition(),
         default_provider=_get_env("DEFAULT_PROVIDER", "mock"),
         default_model=_get_env("DEFAULT_MODEL", ""),
         model_routing_mode=_get_env("MODEL_ROUTING_MODE", "production").lower(),
-        production_provider=_get_env("PRODUCTION_PROVIDER", "openai").lower(),
-        production_model=_get_env("PRODUCTION_MODEL", DEFAULT_OPENAI_MODEL),
-        model_routing_version=_get_env("MODEL_ROUTING_VERSION", "openai-default-v1"),
+        production_provider=_get_env("PRODUCTION_PROVIDER", "").lower(),
+        production_model=_get_env("PRODUCTION_MODEL", ""),
+        model_routing_version=_get_env(
+            "MODEL_ROUTING_VERSION",
+            DEFAULT_CLOUD_ROUTING_VERSION,
+        ),
         mock_provider_delay_seconds=_get_float_env("MOCK_PROVIDER_DELAY_SECONDS", 0.0),
         llm_max_retries=_get_int_env("LLM_MAX_RETRIES", 3),
         llm_retry_base_delay_seconds=_get_float_env("LLM_RETRY_BASE_DELAY_SECONDS", 2.0),
@@ -246,6 +261,18 @@ def resolve_model_route(
     requested_provider: str | None = None,
     requested_model: str | None = None,
 ) -> ModelRoute:
+    # Community edition is a single-user, self-hosted tool: the client always
+    # picks its own provider/model (and may bring its own API key). Cloud edition
+    # keeps versioned production routing and only honors manual mode internally.
+    if settings.edition == "community":
+        provider = (requested_provider or settings.default_provider).lower()
+        return ModelRoute(
+            provider=provider,
+            model=provider_model(settings, provider, requested_model) or None,
+            routing_version="community",
+            selection_enabled=True,
+        )
+
     if settings.model_routing_mode == "manual":
         provider = (requested_provider or settings.default_provider).lower()
         return ModelRoute(
@@ -264,7 +291,13 @@ def resolve_model_route(
     )
 
 
-def missing_search_requirements(settings: Settings) -> list[str]:
+def missing_search_requirements(
+    settings: Settings,
+    *,
+    api_key_override: str | None = None,
+) -> list[str]:
+    if api_key_override:
+        return []
     if settings.search_provider == "serpapi":
         return [] if settings.serpapi_api_key else ["SERPAPI_API_KEY"]
     if settings.search_provider == "mock":
@@ -290,16 +323,20 @@ def missing_provider_requirements(
     *,
     model_override: str | None = None,
     require_real_search: bool = True,
+    api_key_override: str | None = None,
+    search_api_key_override: str | None = None,
 ) -> list[str]:
     normalized = provider.lower()
     missing: list[str] = []
     if normalized == "mock":
         return missing
-    if normalized == "openai" and not settings.openai_api_key:
+    # A BYOK key (community edition) satisfies the provider key requirement.
+    has_user_key = bool(api_key_override)
+    if normalized == "openai" and not (settings.openai_api_key or has_user_key):
         missing.append("OPENAI_API_KEY")
-    elif normalized == "anthropic" and not settings.anthropic_api_key:
+    elif normalized == "anthropic" and not (settings.anthropic_api_key or has_user_key):
         missing.append("ANTHROPIC_API_KEY")
-    elif normalized == "gemini" and not settings.gemini_api_key:
+    elif normalized == "gemini" and not (settings.gemini_api_key or has_user_key):
         missing.append("GEMINI_API_KEY")
     elif normalized not in {"openai", "anthropic", "gemini"}:
         missing.append("SUPPORTED_PROVIDER")
@@ -312,5 +349,10 @@ def missing_provider_requirements(
         missing.append(f"{normalized.upper()}_MODEL")
 
     if require_real_search and normalized in {"openai", "anthropic", "gemini"}:
-        missing.extend(missing_search_requirements(settings))
+        missing.extend(
+            missing_search_requirements(
+                settings,
+                api_key_override=search_api_key_override,
+            )
+        )
     return missing

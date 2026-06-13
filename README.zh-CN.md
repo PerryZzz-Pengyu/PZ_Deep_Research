@@ -4,10 +4,19 @@
 
 面向 C 端用户的深度研究网页应用。后台兼容 OpenAI、Claude 和 Gemini，通过学术搜索、网页访问、证据抽取、来源筛选和引用校验，生成带来源的结构化研究报告。
 
-正式产品界面只向用户提供研究问题和快速、深度、专家三种模式，不展示 Provider 或模型选择。当前生产路由固定使用 OpenAI `gpt-5.4-mini` 生成搜索词和最终报告，证据卡片使用 `gpt-5-nano`；只有显式开启内部手动模式时才显示模型选择器。
+社区版允许用户选择 Provider/模型，并为模型、SerpAPI 和 Jina 填写仅本次请求使用的 BYOK 凭据。凭据只保存在内存中，不写入浏览器存储、数据库、日志或 SSE 事件。
 
 > [!WARNING]
 > 当前项目处于实验性 MVP 阶段。模型输出可能包含遗漏、错误或不准确引用，不应直接用于医疗、法律、金融等高风险决策。
+
+## 版本（Editions）
+
+PZ Deep Research 采用 open-core 模式，通过 `PZ_EDITION` 在运行时选择：
+
+- **社区版**（`PZ_EDITION=community`，默认）：完整、可自托管的单用户研究工具。用户自选 Provider 与模型、自带 API Key（BYOK），默认 SQLite + 访客模式，提供 Docker 一键运行。这是开源产品，采用 Apache 2.0 许可证。
+- **云端版**（`PZ_EDITION=cloud`）：托管的商业模式。使用私有的版本化路由配置，忽略客户端传入的 provider/模型/Key。订阅、额度、计费、多租户、部署与运营位于独立私有仓库 [`PZ_Deep_Research_Cloud`](https://github.com/PerryZzz-Pengyu/PZ_Deep_Research_Cloud)。
+
+一句话：开源版是你自己运行的完整单用户工具；付费云服务提供免配置、多用户、稳定可靠的托管体验。
 
 ## 核心能力
 
@@ -41,7 +50,7 @@
 
 访问流程由 Runtime 控制。模型只负责生成搜索词和最终报告，不自行循环调用 `visit`，从而保证任务有界、来源编号稳定，并减少重复访问。
 
-当前生产路由版本为 `openai-default-v1`。生产模式会忽略客户端提交的 Provider/模型参数；内部开发可以通过环境变量切换到手动路由。
+社区路由尊重用户选择的 Provider 和模型。公开仓库只保留 Cloud 扩展接缝；具体托管路由版本和运营参数由私有 Cloud 仓库提供。
 
 ## 研究模式
 
@@ -55,7 +64,7 @@
 
 ## 技术栈
 
-- 前端：Next.js 16、React 19、TypeScript
+- 前端：Next.js 16、React 19、TypeScript、HeroUI v3.1.0、Tailwind CSS v4、中英双语界面
 - 后端：FastAPI、Python
 - 模型：OpenAI API、Anthropic API、Google Gemini API
 - 搜索：SerpAPI Google Scholar
@@ -71,7 +80,7 @@
 ```text
 .
 ├── backend/              # FastAPI、Agent Runtime、Provider、工具与测试
-├── frontend/             # Next.js 研究工作台
+├── frontend/             # Next.js：营销落地页 (/) + 研究工作台 (/workbench)
 ├── project-docs/         # 计划、产品、架构、测试与变更记录
 ├── .env.example          # 环境变量模板，不包含真实密钥
 ├── .nvmrc                # Node.js 版本声明
@@ -108,7 +117,15 @@ node -v
 npm -v
 ```
 
-### 3. 配置环境变量
+### 3. Community Docker 一键运行
+
+```bash
+docker compose up --build
+```
+
+访问 <http://localhost:3000/workbench>。默认使用 mock 模型/搜索、SQLite 和访客模式，无需密钥即可启动。真实研究可以在高级选项里为每次请求填写模型、SerpAPI 和可选 Jina 凭据，也可以配置服务端 Key。
+
+### 4. 本地开发环境变量
 
 ```bash
 cp .env.example .env
@@ -128,6 +145,8 @@ SEARCH_PROVIDER=mock
 - `SERPAPI_API_KEY`。
 - 推荐配置 `JINA_API_KEY`，提高网页读取稳定性和额度。
 
+社区用户也可以在工作台按请求填写这些 BYOK 凭据，无需保存到 `.env`。
+
 不要提交 `.env`、`frontend/.env.local` 或任何真实 API Key。完整说明见 [API Key 配置](project-docs/api-key-setup.md)。
 
 账号登录为可选能力。启用时还需要配置：
@@ -143,26 +162,16 @@ CLERK_AUTHORIZED_PARTIES=http://localhost:3000,http://127.0.0.1:3000
 
 完整步骤见 [登录与历史绑定配置](project-docs/auth-setup.md)。没有配置 Clerk 时，应用继续以当前浏览器访客 ID 保存历史。
 
-默认生产路由配置：
-
-```text
-MODEL_ROUTING_MODE=production
-PRODUCTION_PROVIDER=openai
-PRODUCTION_MODEL=gpt-5.4-mini
-MODEL_ROUTING_VERSION=openai-default-v1
-EVIDENCE_EXTRACTION_MODEL=gpt-5-nano
-```
-
-本地默认把数据保存到 `data/pz_deep_research.db`。生产推荐使用 Neon PostgreSQL：应用使用 pooled URL，迁移和备份使用 direct URL。
+本地默认把数据保存到 `data/pz_deep_research.db`。PostgreSQL 部署可以分别配置应用连接和迁移连接。
 
 ```text
 DATABASE_URL=postgresql://user:password@pooled-host/database?sslmode=require
 DATABASE_MIGRATION_URL=postgresql://user:password@direct-host/database?sslmode=require
 ```
 
-填好后可运行 `cd backend && PYTHONPATH=. .venv/bin/python scripts/check_database.py` 验证连接。Neon 是标准 PostgreSQL，后续可以迁移到其他托管或自建 PostgreSQL，不需要重写业务存储层。
+填好后可运行 `cd backend && PYTHONPATH=. .venv/bin/python scripts/check_database.py` 验证连接。
 
-### 4. 启动后端
+### 5. 启动后端
 
 ```bash
 python3 -m venv backend/.venv
@@ -182,7 +191,7 @@ curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/api/readiness
 ```
 
-### 5. 启动前端
+### 6. 启动前端
 
 打开另一个终端：
 
@@ -193,7 +202,7 @@ npm ci
 npm run dev
 ```
 
-访问 <http://localhost:3000>。
+访问 <http://localhost:3000> 查看营销落地页，或访问 <http://localhost:3000/workbench> 进入研究工作台。可用顶栏的语言切换（中 / EN）在中英文之间切换。
 
 ## 测试
 
@@ -214,15 +223,11 @@ npm run test:e2e
 
 完整测试策略和手动验收流程见 [测试说明](project-docs/testing-guide.md)。
 
-最近一次本地验证（2026-06-11）：
-
-- 后端 pytest：122 个用例通过。
-- Playwright Chromium：7 个端到端用例通过。
-- 本地 `8000/3000` 服务和前端页面冒烟检查通过，无 Next.js 错误覆盖层或浏览器控制台错误。
+最新验证结果记录在 [测试说明](project-docs/testing-guide.md) 和 [变更日志](project-docs/changelog.md)。
 
 ## 隐私、费用与安全
 
-- 用户问题会发送给后台任务配置或模型路由选择的 Provider；当前开发界面允许人工选择，正式 C 端产品计划隐藏该能力。
+- 社区版问题与请求级凭据会发送给工作台选择的 Provider；云端路由由私有服务配置控制。
 - 搜索词会发送给 SerpAPI，访问的 URL 和网页内容会经过 Jina Reader。
 - API 调用费用和第三方服务额度由部署者承担。
 - 已支持可选 Clerk 登录。登录请求使用 Clerk 会话 JWT，后端本地验签后以 `sub` 作为可信 `user_id`。
@@ -253,8 +258,8 @@ PZ Deep Research 在早期设计阶段参考了 [Alibaba-NLP/DeepResearch](https
 
 ## 贡献与文档维护
 
-提交代码前请运行后端测试、前端 lint 和生产构建。每次修改代码、架构、配置、依赖、接口或产品行为时，需要同步更新 `project-docs/changelog.md`，并按影响范围更新其他项目文档。
+工作流详见 [CONTRIBUTING.md](CONTRIBUTING.md)。简而言之：提交前请运行后端测试、前端 lint 和生产构建；每次修改代码、架构、配置、依赖、接口或产品行为，需同步更新 `project-docs/changelog.md`，并按影响范围更新其他项目文档。外部贡献者需同意[贡献者许可协议（CLA）](CLA.md)。
 
 ## License
 
-本项目采用 [Apache License 2.0](LICENSE)。
+本仓库的社区版采用 [Apache License 2.0](LICENSE)。云端版代码为专有，位于独立私有仓库，不在本许可证覆盖范围内。

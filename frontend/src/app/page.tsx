@@ -1,5 +1,7 @@
-import { ResearchWorkspace } from "@/components/research-workspace";
+import { HomePage } from "@/components/home-page";
+
+import "./home.css";
 
 export default function Home() {
-  return <ResearchWorkspace />;
+  return <HomePage />;
 }

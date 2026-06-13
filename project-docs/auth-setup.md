@@ -6,7 +6,7 @@
 
 ## 当前方案
 
-项目使用 Clerk 提供注册、登录和会话，FastAPI 使用 Clerk JWT 公钥在本地验证会话 token。Neon/PostgreSQL 继续保存研究任务，`research_jobs.user_id` 保存 Clerk token 的 `sub`。
+项目使用 Clerk 提供注册、登录和会话，FastAPI 使用 Clerk JWT 公钥在本地验证会话 token。SQLite/PostgreSQL 保存研究任务，`research_jobs.user_id` 保存 Clerk token 的 `sub`。
 
 未配置 Clerk 时应用仍可使用访客模式，历史按当前浏览器生成的匿名 ID 保存。
 

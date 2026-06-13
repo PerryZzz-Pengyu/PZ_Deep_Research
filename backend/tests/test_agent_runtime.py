@@ -199,7 +199,13 @@ class FixedProviderFactory:
     def __init__(self, provider: LLMProvider) -> None:
         self.provider = provider
 
-    def create(self, provider_name: Optional[str]) -> LLMProvider:
+    def create(
+        self,
+        provider_name: Optional[str],
+        *,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> LLMProvider:
         return self.provider
 
 
@@ -262,7 +268,7 @@ def test_mode_policies_match_product_spec() -> None:
 
 
 def test_prompt_files_are_bilingual_and_mode_aligned() -> None:
-    assert "English production prompt" in SYSTEM_PROMPT
+    assert "English community prompt" in SYSTEM_PROMPT
     assert "中文对照提示词" in SYSTEM_PROMPT_ZH_FOR_REVIEW
     for text in [SYSTEM_PROMPT, SYSTEM_PROMPT_ZH_FOR_REVIEW]:
         assert "search -> visit -> answer" in text or "搜索 -> 访问 -> 报告" in text

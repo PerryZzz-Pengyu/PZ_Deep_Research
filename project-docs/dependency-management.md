@@ -143,6 +143,11 @@ frontend/.npmrc
 next 16.2.7
 react 19.2.7
 react-dom 19.2.7
+@heroui/react 3.1.0
+@heroui/styles 3.1.0
+tailwindcss 4.3.1
+@tailwindcss/postcss 4.3.1
+postcss 8.5.15
 lucide-react 1.17.0
 typescript 6.0.3
 eslint-config-next 16.2.7

@@ -39,7 +39,7 @@
 - 前端能展示工具返回正文、来源证据强度和引用 hover 卡片。
 - ProviderFactory 能正确创建多模型 Provider。
 - 配置层能提供默认模型，并识别真实 Provider 缺少的 API Key。
-- 生产路由必须忽略客户端 Provider/模型并固定到版本化 GPT 配置；内部手动模式仍可用于 mock 与模型联调。
+- Cloud 路由必须忽略客户端 Provider/模型与全部 BYOK 凭据；公开仓只验证通用版本化路由接缝，不包含实际 Cloud 模型组合。
 - API 能返回 `/api/readiness` 配置体检信息。
 - `/api/readiness` 能返回数据库连接状态和数据库类型，不泄露连接信息。
 - API 能返回供内部联调使用的 `/api/models` 模型候选列表。
@@ -56,11 +56,16 @@
 - 登录状态下 SSE 必须使用 Bearer 请求头，不能把会话 token 放在 URL 查询参数中。
 - 服务启动时必须把遗留的 queued/running 任务标记为中断失败。
 - Alembic 初始迁移必须同时支持 SQLite 执行和 PostgreSQL 离线 SQL 编译。
+- 私有商业文档守卫（`scripts/check_no_secrets_tracked.py`）必须在敏感路径、敏感文件名或私有内容标记被跟踪/暂存时报错退出，正常时通过；敏感文件名启发式只作用于 `project-docs/`，公开代码文件（如 `frontend/.../pricing.tsx`）不被误判。
+- `PZ_EDITION` 默认 `community`，非法值回退 `community`；`community` 版路由尊重客户端 provider/model（`selection_enabled=True`、`routing_version=community`），`cloud` 版维持固定生产路由并忽略客户端选择。
+- `/api/readiness` 必须返回当前 `edition`。
+- BYOK（社区版自带 Key）：模型、SerpAPI 和 Jina 凭据均为请求级覆盖并标记 `exclude=True`；序列化、持久化、日志和 SSE 不得出现凭据；创建、重跑和失败重试必须接受重新输入的临时凭据，Cloud 版必须剥离全部客户端凭据。
+- 前端 BYOK：选择启用（`selection_enabled=true`，即社区版）时高级选项展示模型、SerpAPI 和 Jina 密钥输入；凭据只存于组件内存，不得写入 localStorage/sessionStorage，并在创建、重跑或重试请求结束后清空（Playwright `ui-resilience.spec.ts` 覆盖）。
 - 本地手动端到端流程可以跑通。
 
 暂时不引入复杂测试体系，避免过早增加维护成本。
 
-截至 2026-06-11，后端 pytest 共 122 个用例通过，前端 Playwright Chromium 共 7 个端到端用例通过。
+截至 2026-06-13，后端 pytest 共 145 个用例通过，前端 Playwright Chromium 共 12 个端到端用例通过（默认端口 3000/8000；测试覆盖访客降级、任务恢复、BYOK 和移动端来源弹窗）。
 
 ## 测试优先开发原则
 
@@ -124,7 +129,7 @@ backend/tests/
   - `/health` 健康检查正常。
   - `/api/readiness` 可以返回 Provider 和工具配置状态。
   - `/api/models` 可以返回 OpenAI 候选模型。
-  - 生产模式会隐藏模型选择，创建任务时忽略客户端指定的 Claude/Gemini 并使用 `openai-default-v1`。
+  - Cloud 模式会隐藏模型选择，并忽略客户端指定的 Provider、模型和全部 BYOK Key。
   - `/api/models/openai` 在缺少 OpenAI Key 时返回配置错误。
   - `/api/research-jobs` 可以创建 mock 研究任务。
   - 过短 query 会被 API 校验拒绝。
@@ -150,7 +155,7 @@ backend/tests/
   - 中文占位符不会被误判为真实 OpenAI API Key 或模型名。
   - 真实 Provider 缺少 API Key 和搜索 Key 时会被识别。
   - 配置齐全的真实 Provider 会通过配置检查。
-  - 默认生产路由为 OpenAI `gpt-5.4-mini`，内部 `manual` 模式保留请求模型选择。
+  - 公开仓的 Cloud 路由默认未配置；显式注入私有路由参数后忽略客户端选择，内部 `manual` 模式保留联调能力。
   - Clerk 公钥、authorized parties 和时钟偏差可以从环境变量读取。
 - `test_provider_factory.py`
   - 默认 Provider 创建正确。
@@ -228,32 +233,50 @@ npm run test:e2e
 
 - TypeScript 类型问题。
 - React/Next.js 基础规范问题。
-- 生产构建是否能成功。
+- 生产构建是否能成功（`/` 落地页与 `/workbench` 工作台两条路由）。
 - 页面是否能被 Next.js 正常编译。
 - 运行中任务可以从页面取消。
 - 页面刷新后可以通过任务 ID、事件游标和 SSE 快照恢复运行任务。
 - 任务完成后再次刷新仍能恢复最终报告。
-- 完成任务会出现在当前匿名访客的历史记录中，点击后可以恢复报告。
+- 完成任务会出现在当前匿名访客的侧栏历史记录中，点击后可以恢复报告。
 - 历史详情可以下载 UTF-8 Markdown 和后端 Chromium 生成的正式 PDF。
 
-当前 7 个 E2E 用例分别覆盖：
+E2E 在 `/workbench` 路由上运行，并**重点覆盖英文界面**（通过 `addInitScript` 在脚本运行前把 `localStorage` 的 locale 锁定为 `en`）。中文界面是同一份词典的翻译，不再单独覆盖。报告正文断言仍校验 mock 后端生成的 `核心结论`，与界面语言无关。
 
-1. 取消运行中的任务。
+当前 11 个 E2E 用例分别覆盖：
+
+1. 取消运行中的任务（含取消 toast 与 Cancelled 状态）。
 2. 刷新后恢复运行任务并恢复完成报告。
-3. 历史记录和报告详情。
-4. 从报告详情重新运行并创建独立任务。
+3. 完成任务进入侧栏历史，点击恢复报告。
+4. 从报告重新运行并创建独立任务。
 5. Markdown 下载。
 6. 正式 PDF 下载。
-7. 产品化失败提示和单一重试按钮。
+7. 产品化失败提示和单一重试按钮（mock 路由）。
+8. Clerk 初始化失败时营销页交互保持可用。
+9. Clerk 初始化失败时工作台降级为访客模式，HeroUI Tabs 仍可操作。
+10. 历史任务恢复请求挂起时，4 秒超时后重新开放研究提交。
+11. 移动端完成研究后使用 HeroUI Modal 展示来源，并可通过 `Escape` 关闭。
 
 Playwright 配置位于：
 
 ```text
 frontend/playwright.config.ts
 frontend/e2e/research-flow.spec.ts
+frontend/e2e/ui-resilience.spec.ts
 ```
 
-端到端测试会自动在 `127.0.0.1:8000` 和 `127.0.0.1:3000` 启动 Mock 测试服务，不使用其他端口。运行前应先关闭占用这两个端口的开发服务。
+端到端测试默认在 `127.0.0.1:8000` 和 `127.0.0.1:3000` 启动 Mock 服务。端口被现有开发服务占用时，可以使用隔离后端并复用前端：
+
+```bash
+PLAYWRIGHT_REUSE_SERVERS=1 \
+PLAYWRIGHT_BACKEND_PORT=8100 \
+PLAYWRIGHT_FRONTEND_PORT=3000 \
+npm run test:e2e
+```
+
+测试会把浏览器内原本指向 `localhost:8000` 的 API 请求路由到隔离后端，避免误用真实 Provider 或搜索配置。
+
+注意：`PLAYWRIGHT_FRONTEND_PORT` 应保持 `3000`。后端 `CORS_ORIGINS` 默认只允许 `localhost:3000` / `127.0.0.1:3000`，若把前端跑在其他端口，真实任务流的跨域 POST 会被拒为 `network_error` 导致用例失败；确需换端口时，要同步把该 origin 加入 `CORS_ORIGINS`。
 
 浏览器由 Playwright 安装到用户缓存：
 
@@ -307,29 +330,28 @@ npm run dev
 打开：
 
 ```text
-http://localhost:3000
+http://localhost:3000            # 营销落地页
+http://localhost:3000/workbench  # 研究工作台
 ```
 
 ### 3. 页面测试步骤
 
-1. 保持 Provider 为“开发模式”。
-2. 输入一个研究问题。
-3. 选择“快速”或“深度”。
-4. 点击“开始”。
-5. 观察研究进度是否出现：
-   - 开始理解问题
-   - 模型推理
-   - 调用 search
-   - 调用 visit
-   - 研究报告已生成
-6. 检查右侧是否出现最终报告和来源。
-7. 运行中点击“停止”，确认状态变为“已取消”，停止按钮消失，之后不会再出现“研究报告已生成”。
-8. 重新开始一个任务，在任务运行中刷新页面，确认任务 ID、问题、模式、时间线和报告草稿恢复，并继续接收后续事件。
-9. 任务完成后再次刷新页面，确认最终报告、来源和完整时间线仍能恢复。
-10. 打开“历史”，点击已完成任务，确认进入“报告详情”，并显示研究配置、完整任务 ID、研究日志、来源和报告。
-11. 在报告详情点击“重新运行”，确认返回研究页、问题和配置不变、任务 ID 更新，并重新收到进度与最终报告。
-12. 报告为空时确认“导出 Markdown”按钮禁用；报告生成后点击下载，确认文件名来自研究问题、扩展名为 `.md`，中文、Markdown 标题、引用和参考文献可正常读取。
-13. 任务运行中确认“导出 PDF”禁用；进入已完成报告详情后下载 PDF，确认文件名、`%PDF` 文件头、`%%EOF` 文件尾和文件体积正常。
+界面默认中文，右上角可切换中 / 英；以下按默认中文界面描述。
+
+1. 打开落地页，确认 Hero、研究领域、工作原理、模式、报告预览、FAQ 渲染正常；在 Hero 输入框提问并点击“开始研究”，确认跳转 `/workbench` 并自动开跑。
+2. 也可直接打开 `/workbench`，在空状态输入研究问题、选择“快速”或“深度”，点击“开始研究”。
+3. 若开启了内部手动模式（`MODEL_ROUTING_MODE=manual`），在“高级选项”中确认 Provider 默认为“开发模式”；生产模式下不显示选择器。
+4. 观察研究进度时间线是否依次出现：理解问题、检索、阅读来源、抽取证据、撰写报告。
+5. 检查右侧来源栏是否随研究填充入选来源及证据强度标签。
+6. 任务完成后确认进入报告视图，显示带 `[n]` 引用角标的正文、来源数、状态“已完成”和参考文献。
+7. 运行中点击“取消研究”，确认出现“研究已取消”提示且状态变为“已取消”。
+8. 重新开始一个任务，在运行中刷新页面，确认标题（研究问题）、任务 ID chip、时间线和报告草稿恢复，并继续接收后续事件。
+9. 任务完成后再次刷新页面，确认最终报告、来源和时间线仍能恢复。
+10. 点击“新建研究”回到空状态，再从左侧栏“历史记录”点击已完成任务，确认恢复报告并显示研究问题、任务 ID、状态、来源和正文。
+11. 在报告视图点击“重新运行”，确认问题不变、任务 ID 更新，并重新收到进度与最终报告。
+12. 在报告视图点击“导出 Markdown”，确认文件名来自研究问题、扩展名为 `.md`，中文、Markdown 标题、引用和参考文献可正常读取。
+13. 进入已完成报告后点击“导出 PDF”，确认文件名、`%PDF` 文件头、`%%EOF` 文件尾和文件体积正常。
+14. 点击右上角语言切换，确认整站文案在中 / 英之间切换、`<html lang>` 同步更新、刷新后保持所选语言。
 
 注意：已完成任务、事件和报告会持久化。后端重启时仍在 queued/running 的任务无法恢复 Runtime 执行现场，会被标记为“服务重启导致中断”；后续引入独立 Worker 后再实现真正的任务续跑。
 

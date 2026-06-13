@@ -14,6 +14,232 @@
 
 后续新增记录必须使用 `YYYY-MM-DD HH:mm 时区` 作为二级标题；同一天内多次修改也不要按天合并。历史按日期记录可以保留，但新的修改需要单独记录到分钟。
 
+公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
+
+## 2026-06-13 22:54 CST +0800
+
+### Review 修复：守卫误判收窄 + Neon 文档备份
+
+- 复核 Codex 的双仓库/BYOK 改动：后端 145、前端 12 e2e、lint/tsc/build、泄露守卫与 Docker 冒烟均通过。
+- 修复泄露守卫敏感文件名启发式的误判风险：该启发式现仅作用于 `project-docs/`，公开代码文件（如 `frontend/.../pricing.tsx`）不再被误拦；新增对应回归测试（先失败后通过）。后端用例数 144 → 145。
+- 删除公开仓 `project-docs/neon-backup-restore.md` 前，先将其完整备份到 gitignored 的 `project-docs/private/neon-backup-restore.md`，供迁移到私有 Cloud 仓库；该文件历史仍可从 `8a9ef42` 等提交恢复。
+- 影响文件：`backend/scripts/check_no_secrets_tracked.py`、`backend/tests/test_secret_guard.py`、`project-docs/testing-guide.md`。
+
+## 2026-06-13 22:29 CST +0800
+
+### open-core 双仓库落地与 Community BYOK 闭环
+
+- 建立并推送独立私有仓库 `PZ_Deep_Research_Cloud`，以 Git submodule 引用公开 Community 仓库；云端路由、生产数据库运维和正式部署配置迁入私有仓库维护。
+- 公开仓库删除具体生产路由默认值与 Neon 备份恢复操作文档，只保留 Cloud 扩展接口、通用配置说明和可选数据库抽象。
+- Community 版补齐请求级 BYOK：模型、SerpAPI 搜索和 Jina 阅读凭据只在任务执行期间驻留内存，不写入任务存储、事件流或响应；创建、重跑和失败重试均可重新提交临时凭据。
+- Agent Runtime 改为按请求构建工具注册表，避免并发任务间共享或串用搜索、阅读凭据。
+- 工作台增加模型、搜索和阅读密钥输入；每次创建、重跑或重试请求结束后立即清空 React state 与输入框。
+- 修复 Playwright E2E 的 TypeScript 类型错误；新增 BYOK 透传、重跑、重试、Cloud 忽略客户端凭据和工具覆盖测试。
+- 新增 GitHub Actions Community CI，强制执行仓库边界检查、后端测试、前端 lint、TypeScript 检查和生产构建。
+- 泄露守卫从路径检查扩展为敏感文件名和私有内容标记检查，并增加重命名文件仍被阻止的回归测试。
+- 影响文件：后端请求模型、Runtime、工具注册、API 路由与配置；前端工作台、API 客户端、样式、i18n 与 E2E；README、项目文档、CI 和泄露守卫。
+
+## 2026-06-13 20:48 CST +0800
+
+### open-core 分离 Phase 4：文档与贡献规范
+
+- 新增 `CONTRIBUTING.md`（test-first 工作流、提交前检查清单含泄露守卫、可选 pre-commit 挂接、BYOK 安全约束）与 `CLA.md`（轻量入站贡献者许可协议模板，为未来双许可证留口；社区版维持 Apache 2.0）。
+- `README.md` / `README.zh-CN.md`：新增「Editions / 版本」小节说明社区版与云端版边界与一句话定位；贡献小节引用 CONTRIBUTING/CLA；许可证小节区分社区版 Apache 2.0 与云端私有。
+- `project-docs/product-doc.md`、`technical-architecture.md`、`project-plan.md`：补充 `PZ_EDITION` 接缝、社区/云端边界与 BYOK 说明。
+- 纯文档修改，无需先写测试；公开文档不含经营数字。
+- 提交说明：`CONTRIBUTING.md`/`CLA.md` 为干净新文件；README 与项目文档的编辑与进行中的未提交工作（前端重设计）交织，本次随该批一并保留未提交。
+- 影响文件：新增 `CONTRIBUTING.md`、`CLA.md`；编辑 `README.md`、`README.zh-CN.md`、`project-docs/product-doc.md`、`technical-architecture.md`、`project-plan.md`。
+
+## 2026-06-13 20:40 CST +0800
+
+### open-core 分离 Phase 5：双仓库分离迁移清单（私有）
+
+- 新增私有迁移指引 `project-docs/private/cloud-split-plan.md`（位于 gitignored 的 `private/`，不进公开仓，已用 `git check-ignore` 与泄露守卫确认不被跟踪）。
+- 内容：社区仓 / 云端仓资产归属、边界判定原则、人工执行的迁移步骤、`git filter-repo`/`git subtree` 草稿脚本（仅文档不运行），以及人工决策待办；不含具体经营数字。
+- 明确：建私有仓 `PZ_Deep_Research_Cloud` 与历史重写由人工执行；推荐云端仓以公开社区仓为上游依赖以实现物理隔离。
+- 影响文件：新增 `project-docs/private/cloud-split-plan.md`（不入库）；本 changelog。
+- 说明：Phase 4（README/产品/架构/计划 的 open-core 说明、CONTRIBUTING+CLA）尚未做；其中 README 等编辑与进行中的未提交工作交织。
+
+## 2026-06-13 20:33 CST +0800
+
+### open-core 分离 Phase 3b：前端社区版 BYOK 输入
+
+- 工作台高级选项在 `selection_enabled=true`（社区版）时新增「API Key（自带）」输入：`type=password`、`autoComplete=off`，仅对真实 Provider（非 mock）显示。
+- Key 只存于组件内存（`useState`，不写 localStorage/sessionStorage）；提交时仅在社区版 + 非 mock + 已填写时把 `api_key` 加入创建请求体。
+- provider/model 选择器无需新增——前端早已按 `/api/models` 的 `selection_enabled` 门控，Phase 1 让社区版自动返回 `true`。
+- 新增 i18n（中/英）BYOK 文案、`createResearchJob` 入参 `api_key`/`base_url`、`workbench.css` 对应样式。
+- 测试先行：`frontend/e2e/ui-resilience.spec.ts` 新增用例——社区版填写自带 Key 后创建请求体带 `api_key`，且 Key 不落任何浏览器存储。
+- 验证：`npm run lint`、`npm run build` 通过；默认端口（3000/8000）下 `npx playwright test` 全部 12 个端到端用例通过。
+- 更正：早先在非默认端口（3019/3021）跑 e2e 导致 7 个真实任务流用例失败，根因是这些前端 origin 不在后端 `CORS_ORIGINS` 允许列表中（跨域 POST 被拒为 network_error），与前端代码/重设计无关；切回默认端口后全绿。
+- 影响文件：`frontend/src/components/research-workspace.tsx`、`frontend/src/lib/api.ts`、`frontend/src/lib/i18n.tsx`、`frontend/src/app/workbench/workbench.css`、`frontend/e2e/ui-resilience.spec.ts`、`project-docs/testing-guide.md`。
+
+## 2026-06-13 20:23 CST +0800
+
+### open-core 分离 Phase 3a：社区版 Docker 一键运行
+
+- 新增根目录 `docker-compose.yml` + `backend/Dockerfile` + `frontend/Dockerfile` 及两份 `.dockerignore`：`docker compose up --build` 即可拉起社区版整栈。
+- 社区默认零密钥可跑：compose 默认 `PZ_EDITION=community`、`DEFAULT_PROVIDER=mock`、`SEARCH_PROVIDER=mock`，SQLite 落在命名卷 `pz_data:/data`；要用真实模型可在 compose 写服务端 Key，或在工作台用 BYOK 自带 Key。
+- 后端镜像安装 Playwright Chromium 以支持服务端 PDF 导出；前端镜像在构建期注入 `NEXT_PUBLIC_API_BASE_URL`，Clerk publishable key 可选（缺省走访客模式）。
+- 镜像不内置任何密钥；`.dockerignore` 排除 `.env`、`.venv`、`node_modules`、本地数据库等。
+- 后端 Dockerfile 移除了多余的 `build-essential`/`libpq5` apt 层（`psycopg[binary]` 自带 libpq，依赖均有预编译 wheel），既消除构建期 OOM，又显著瘦身。
+- 验证（2026-06-13，Docker 29.5.3 / Compose v5.1.4）：`docker compose build` 成功；`docker compose up -d` 后 `/api/readiness` 返回 `edition=community / sqlite / search=mock`，mock 任务 `routing_version=community` 跑到 `completed`，前端 `/workbench` HTTP 200。冒烟通过。
+- 影响文件：新增 `docker-compose.yml`、`backend/Dockerfile`、`backend/.dockerignore`、`frontend/Dockerfile`、`frontend/.dockerignore`。
+- 后续：Phase 3b 前端在社区版补 BYOK API Key 输入（provider/model 选择已随 `selection_enabled` 自动暴露）。
+
+## 2026-06-13 17:21 CST +0800
+
+### open-core 分离 Phase 2：社区版 BYOK（自带 API Key）
+
+- `ResearchRequest` 新增 `api_key`/`base_url` 字段，均标记 `Field(exclude=True, repr=False)`，使 `model_dump()/model_dump_json()` 默认不含凭据 → 天然不进数据库持久化与 SSE payload。
+- `ProviderFactory.create` 新增 `api_key`/`base_url` 覆盖参数，为空时回退服务端 `Settings`；`AgentRuntime.run` 与报告续跑路径都把请求凭据透传给工厂。
+- `missing_provider_requirements` 新增 `api_key_override`：社区版用户自带 Key 时即视为该 Provider 已就绪。
+- `create_research_job`：仅 community 版读取客户端 `api_key`/`base_url` 作为覆盖并据此判定就绪；cloud 版强制剥离，维持版本化生产路由与服务端密钥。
+- 测试先行：`backend/tests/test_byok.py` 覆盖工厂覆盖/回退、`ResearchRequest` 序列化不含凭据、Runtime 透传、community 透传且不落库/不进响应体、cloud 忽略客户端 Key、无服务端 Key 时社区版凭自带 Key 创建成功；并补齐 runtime 测试桩 `create` 的新签名。后端 pytest 全绿（137 通过）。
+- 影响文件：`backend/app/agent/schemas.py`、`backend/app/agent/providers/factory.py`、`backend/app/agent/runtime.py`、`backend/app/config.py`、`backend/app/api/routes.py`、`backend/tests/test_byok.py`、`backend/tests/test_agent_runtime.py`、`project-docs/testing-guide.md`。
+- 安全红线：BYOK 凭据全程仅在请求体与内存流转，`exclude=True` + `redact_sensitive` 双保险；现有「数据库/SSE/日志不得出现 API Key」约束持续生效。
+- 后续：Phase 3 提供 Docker 一键运行与前端按 edition 暴露 provider/model/Key 输入。
+
+## 2026-06-13 16:02 CST +0800
+
+### open-core 分离 Phase 1：引入 `PZ_EDITION` 接缝
+
+- `Settings` 新增 `edition` 字段，`get_settings` 读取 `PZ_EDITION` 环境变量（小写，非法值回退 `community`，默认 `community`）。
+- `resolve_model_route` 新增 community 分支：社区版作为单用户自托管工具，始终尊重客户端 provider/model（`routing_version=community`、`selection_enabled=True`）；cloud 版维持版本化生产路由，仅内部 `manual` 模式可用于 mock/联调。
+- `/api/readiness` 返回当前 `edition`，便于前端按版切换 UI；不泄露任何密钥。
+- `.env.example` 默认 `PZ_EDITION=community` 并注释两版差异；本地 `.env`（gitignored）设 `PZ_EDITION=cloud` 以保持现有云端行为不变。
+- 测试先行：`test_config.py` 新增 edition 默认/读取/非法回退/community 路由用例，并把生产路由用例显式标 `edition=cloud` 去除对 `.env` 的隐式依赖；`test_api.py` 新增社区版尊重客户端 provider 的创建用例与 readiness `edition` 断言。后端 pytest 全绿（130 通过）。
+- 影响文件：`backend/app/config.py`、`backend/app/api/routes.py`、`backend/tests/test_config.py`、`backend/tests/test_api.py`、`.env`、`.env.example`、`project-docs/testing-guide.md`。
+- 后续：Phase 2 基于社区版接缝实现 BYOK（用户自带 API Key，绝不落库/日志/SSE）。
+
+## 2026-06-13 15:54 CST +0800
+
+### open-core 分离 Phase 0：私有商业文档泄露守卫
+
+- 新增 `backend/scripts/check_no_secrets_tracked.py`：当 `project-docs/business-model.md` 或 `project-docs/private/` 被 git 跟踪或暂存时报错退出（退出码 1），正常时退出码 0。守卫路径常量与 `.gitignore` 的「Private business planning」段保持同步，可用于 CI 或可选 pre-commit。
+- 先写测试 `backend/tests/test_secret_guard.py`（在临时 git 仓中验证 force-add 商业文档触发失败、干净仓库通过），确认未实现前失败、实现后通过。
+- 复核确认 `backend/app` 与 `frontend/src` 无任何源码引用商业机密路径。
+- 背景：此前商业资料仅靠 `.gitignore` 隔离，属「侥幸而非隔离」，本守卫为 open-core 社区/云端分离的第一道防泄露闸。
+- 影响文件：新增 `backend/scripts/check_no_secrets_tracked.py`、`backend/tests/test_secret_guard.py`；更新 `project-docs/testing-guide.md`。
+- 后续：Phase 1 引入 `PZ_EDITION` 接缝，Phase 2 实现 BYOK。
+
+## 2026-06-13 15:04 CST +0800
+
+### 正式接入 HeroUI v3，并修复认证阻塞
+
+- 按官方 HeroUI v3.1.0 方案安装并接入 `@heroui/react`、`@heroui/styles` 与 Tailwind CSS v4；`globals.css` 按要求先导入 Tailwind，再导入 HeroUI styles，不增加旧版 `HeroUIProvider`。
+- 首页和研究工作台的基础交互迁移到 HeroUI `Button`、`Tabs`、`Card`、`TextArea`、`Modal`、`Tooltip`、`Spinner`、`Accordion`。
+- 删除原自定义通用按钮 CSS；PZ 样式只负责品牌 token、玻璃视觉、页面布局、报告排版和研究业务组件。
+- 抽出 `research-sources.tsx` 与 `research-workspace-panels.tsx`，集中维护来源解析、来源卡片、引用 Tooltip、侧栏、桌面来源栏和移动端来源 Modal，降低 `ResearchWorkspace` 的职责。
+- 修复 Clerk 初始化 fail-open：应用先以访客模式可用，Clerk 控件动态加载并在 3 秒后降级；认证状态更新改为幂等，`onReady` 回调保持稳定，避免 React 最大更新深度错误。
+- 修复活动任务恢复请求挂起导致提交永久锁定的问题，4 秒后自动清理失效任务并恢复输入。
+- 修复 HeroUI Tabs 指示器拦截相邻 Tab 点击的问题，装饰 indicator 不再接收 pointer events。
+- Playwright 增加 Clerk 失败、访客降级、Tabs 和恢复超时测试；测试端口可配置，并支持把浏览器 API 请求路由到隔离 mock 后端。
+- 正式接入后删除根目录 `HeroUI Design System/` 参考资料，以及未使用的 `frontend/public/heroui-mark*.svg`；PZ 品牌标志继续使用自有 `BrandMark`。
+
+### 依赖
+
+- `@heroui/react 3.1.0`
+- `@heroui/styles 3.1.0`
+- `tailwindcss 4.3.1`
+- `@tailwindcss/postcss 4.3.1`
+- `postcss 8.5.15`
+
+### 验证
+
+- `npm run lint` 通过。
+- `npx tsc --noEmit` 通过。
+- Clerk 失败与恢复超时 Playwright：3 个用例通过。
+- Playwright Chromium 完整套件通过：11 个用例，覆盖取消、刷新恢复、历史、重跑、Markdown/PDF 导出、失败重试、Clerk 失败降级、HeroUI Tabs、恢复超时和移动端来源 HeroUI Modal。
+
+### 影响文件
+
+- `frontend/package.json`
+- `frontend/package-lock.json`
+- `frontend/postcss.config.mjs`
+- `frontend/playwright.config.ts`
+- `frontend/src/app/globals.css`
+- `frontend/src/app/home.css`
+- `frontend/src/app/workbench/workbench.css`
+- `frontend/src/components/app-auth-provider.tsx`
+- `frontend/src/components/auth-controls.tsx`
+- `frontend/src/components/clerk-controls.tsx`
+- `frontend/src/components/home-page.tsx`
+- `frontend/src/components/research-mode-tabs.tsx`
+- `frontend/src/components/research-sources.tsx`
+- `frontend/src/components/research-workspace-panels.tsx`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/e2e/research-flow.spec.ts`
+- `frontend/e2e/ui-resilience.spec.ts`
+- `README.md`
+- `README.zh-CN.md`
+- `project-docs/`
+
+## 2026-06-13 13:41 CST +0800
+
+### 接入 HeroUI / Prism 设计系统，替换临时前端
+
+- 用 Claude Design 产出的 Prism 设计（深色"液态玻璃"质感 + 光谱渐变 + 三棱镜标志）替换原临时前端，品牌名沿用 **PZ Deep Research**（设计稿中的 Prism 文案已全部替换/翻译）。
+- 引入 HeroUI 的 Inter（UI/展示）与 Fira Code（代码/等宽）网络字体，复制到 `frontend/public/fonts/` 并附 `LICENSE.txt`（两款均 SIL OFL 1.1，可免费商用、嵌入与再分发）。
+- `globals.css` 重写为 Prism 基础层：玻璃/流光边框（flow-ring）/渐变文字/按钮/chip/shimmer 等基元，以及研究报告 Markdown 渲染与行内引用悬浮卡样式。设计仅依赖纯 CSS 类，**未引入 `@heroui/react` 运行时依赖**。
+- 新增**多语言切换（中 / 英）**：`I18nProvider` + `useI18n` + 完整中英词典，localStorage 持久化、SSR 安全、自动同步 `<html lang>`；语言切换器布置在首页导航栏与工作台顶栏。默认中文。
+- 新增**营销落地页**（路由 `/`）：Hero / 研究领域 / 工作原理 / 模式 / 报告预览 / FAQ / CTA / 页脚，全部接入 i18n。
+- **研究工作台移至 `/workbench`**，组件重写为 empty / run / report / failed 状态机布局 + 侧栏常驻历史 + 右侧来源栏，并**完整保留原有功能逻辑**：SSE 鉴权流式、Clerk 登录、任务取消 / 重跑 / 失败重试、刷新恢复、Markdown / PDF 导出、模型 provider 选择。
+- 首页 → 工作台的查询/模式 handoff：首页提问后跳转工作台自动开跑（localStorage 一次性传递）。
+- `AccountControl` 适配新侧栏 user-card 样式，并接入 i18n。
+
+### 依赖
+
+- 无新增运行时依赖（设计为纯 CSS；未引入 HeroUI React 组件库）。
+
+### 验证
+
+- 前端 `npx tsc --noEmit` 通过；`npm run lint` 通过；`npm run build` 通过（`/` 与 `/workbench` 两路由静态产出）。
+- 双语可视化冒烟：首页与工作台在中/英下渲染正常，字体与玻璃质感生效，`document.documentElement.lang` 随切换更新。
+- Playwright Chromium：E2E 套件按新 UI/路由重写，**重点覆盖英文界面**（中文为同词典翻译，不再重复测），7 个用例全部通过 —— 取消、刷新恢复、历史、重跑、Markdown/PDF 导出、失败重试均未回归。报告正文断言仍校验 mock 后端生成的 `核心结论`。
+
+### 影响文件
+
+- `frontend/src/app/globals.css`
+- `frontend/src/app/layout.tsx`
+- `frontend/src/app/page.tsx`
+- `frontend/src/app/home.css`
+- `frontend/src/app/workbench/page.tsx`
+- `frontend/src/app/workbench/workbench.css`
+- `frontend/src/components/home-page.tsx`
+- `frontend/src/components/research-workspace.tsx`
+- `frontend/src/components/brand-mark.tsx`
+- `frontend/src/components/language-switch.tsx`
+- `frontend/src/components/app-auth-provider.tsx`
+- `frontend/src/lib/i18n.tsx`
+- `frontend/src/lib/handoff.ts`
+- `frontend/public/fonts/`（Inter ×6、Fira Code ×4、`LICENSE.txt`）
+- `frontend/public/heroui-mark.svg`、`frontend/public/heroui-mark-white.svg`
+- `frontend/e2e/research-flow.spec.ts`
+
+### 后续注意事项
+
+- 工作台路由已从 `/` 改为 `/workbench`；任何外部链接、书签或文档若指向旧的根工作台需同步更新。
+- 词典是中文为准、英文镜像（`frontend/src/lib/i18n.tsx`）：新增文案需两种语言同时补齐，否则 `Dict` 结构不一致会触发类型错误。
+- 设计原始素材目录 `HeroUI Design System/` 暂保留在仓库根（未纳入构建），待审查确认后再决定移除；如保留需注意它不应被打包或泄露。
+- 营销首页的"研究领域"中除"学术"外均为占位（SOON），尚未接后端字段路由。
+
+## 2026-06-13 12:50 CST +0800
+
+### 私有商业资料与公开仓库隔离
+
+- 将商业规划文档加入 `.gitignore`，避免定价、成本、利润、预算、投放和增长假设进入公开 Git 历史。
+- 清理公开协作文档中的具体经营参数，只保留额度、支付、成本保护和账务一致性等产品与工程方向。
+- README 不链接本地私有资料，避免 GitHub 出现无效链接或泄露内部资料结构。
+- 后续 changelog 只记录商业化能力边界和工程变化，不记录具体价格、成本、阈值、毛利或投放数据。
+
+### 影响文件
+
+- `.gitignore`
+- `project-docs/project-plan.md`
+- `project-docs/product-doc.md`
+- `project-docs/technical-architecture.md`
+- `project-docs/changelog.md`
+
 ## 2026-06-11 11:43 CST +0800
 
 ### Clerk 登录与账号历史绑定

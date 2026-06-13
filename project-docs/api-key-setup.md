@@ -27,7 +27,7 @@ SERPAPI_API_KEY
 
 当前搜索链路为：SerpAPI Google Scholar 负责找论文和学术来源，Jina Reader 负责读取搜索结果 URL 的正文内容。
 
-正式 C 端产品不会让用户选择 Provider 或模型。后续完成分阶段质量测试后，后台会分别为意图识别与追问、搜索词与工具规划、证据卡片生成和最终报告撰写配置模型。届时部署环境需要提供实际生产路由和故障降级所涉及 Provider 的 Key，而不是由用户自行选择使用哪一家。
+社区版允许用户选择 Provider/模型，并在工作台为单次请求填写模型、SerpAPI 和 Jina BYOK Key。云端版不向用户暴露模型选择，具体路由和部署 Key 在私有 Cloud 仓库维护。
 
 ## 按 Provider 配置
 
@@ -119,7 +119,7 @@ GEMINI_EVIDENCE_MODEL=
 JINA_API_KEY=
 ```
 
-证据抽取模型只负责把单篇网页正文整理成紧凑证据卡片，不负责生成搜索词或最终报告。当前生产路由固定使用 OpenAI `gpt-5-nano` 抽取证据；内部手动模式选择 Claude 或 Gemini 时，分别使用低成本 Haiku 4.5 和 Gemini 2.5 Flash-Lite，切换主模型不会改变证据抽取模型。
+证据抽取模型只负责把单篇网页正文整理成紧凑证据卡片，不负责生成搜索词或最终报告。社区版提供各 Provider 的可配置默认值；云端实际模型组合不在公开文档记录。
 
 模型调用的临时错误重试配置：
 
@@ -213,4 +213,4 @@ curl http://127.0.0.1:8000/api/models/gemini
 - Claude：`claude-sonnet-4-6`
 - Gemini：`gemini-3.5-flash`
 
-这些值用于当前单主模型联调，并不是最终生产路由结论。下一阶段会通过四类质量测试分别确定意图识别与追问、搜索词与工具规划、证据卡片生成、最终报告撰写所使用的模型。只要调整默认模型或生产路由，需要同步更新本文档和 `project-docs/changelog.md`。
+这些值是社区版候选默认值，不代表 Cloud 路由结论。社区默认值变化时更新本文档和公开 changelog；Cloud 路由变化只在私有仓库记录。
