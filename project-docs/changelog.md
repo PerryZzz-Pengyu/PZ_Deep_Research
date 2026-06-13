@@ -16,6 +16,18 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-13 20:23 CST +0800
+
+### open-core 分离 Phase 3a：社区版 Docker 一键运行
+
+- 新增根目录 `docker-compose.yml` + `backend/Dockerfile` + `frontend/Dockerfile` 及两份 `.dockerignore`：`docker compose up --build` 即可拉起社区版整栈。
+- 社区默认零密钥可跑：compose 默认 `PZ_EDITION=community`、`DEFAULT_PROVIDER=mock`、`SEARCH_PROVIDER=mock`，SQLite 落在命名卷 `pz_data:/data`；要用真实模型可在 compose 写服务端 Key，或在工作台用 BYOK 自带 Key。
+- 后端镜像安装 Playwright Chromium 以支持服务端 PDF 导出；前端镜像在构建期注入 `NEXT_PUBLIC_API_BASE_URL`，Clerk publishable key 可选（缺省走访客模式）。
+- 镜像不内置任何密钥；`.dockerignore` 排除 `.env`、`.venv`、`node_modules`、本地数据库等。
+- 验证：本机未安装 docker，仅用 YAML 解析校验 `docker-compose.yml` 语法通过；完整 `docker compose up --build` 冒烟需在装有 Docker 的环境执行。
+- 影响文件：新增 `docker-compose.yml`、`backend/Dockerfile`、`backend/.dockerignore`、`frontend/Dockerfile`、`frontend/.dockerignore`。
+- 后续：Phase 3b 前端在社区版补 BYOK API Key 输入（provider/model 选择已随 `selection_enabled` 自动暴露）。
+
 ## 2026-06-13 17:21 CST +0800
 
 ### open-core 分离 Phase 2：社区版 BYOK（自带 API Key）
