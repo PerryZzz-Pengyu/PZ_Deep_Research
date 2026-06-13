@@ -251,6 +251,61 @@ def test_create_mock_research_job(monkeypatch) -> None:
     assert payload["provider"] == "mock"
     assert payload["status"] in {"queued", "running", "completed"}
 
+    # The job runner records usage as it streams; a completed mock run must have
+    # logged at least one LLM call and one tool call.
+    usage = client.get("/api/usage", headers=VISITOR_HEADERS).json()
+    assert usage["llm_calls"] >= 1
+    assert usage["tool_calls"] >= 1
+    assert usage["job_count"] == 1
+
+
+def test_usage_endpoint_returns_owner_scoped_totals(monkeypatch) -> None:
+    store = InMemoryJobStore()
+
+    async def seed():
+        request = ResearchRequest(query="用量端点测试", mode="quick", provider="mock")
+        job_a = await store.create_job(
+            request, provider="mock", anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"]
+        )
+        await store.record_usage(
+            job_a.id, input_tokens=120, output_tokens=30, llm_calls=2, tool_calls=4
+        )
+        other = await store.create_job(
+            request, provider="mock", anonymous_id=OTHER_VISITOR_HEADERS["X-PZ-Visitor-ID"]
+        )
+        await store.record_usage(
+            other.id, input_tokens=777, output_tokens=777, llm_calls=7, tool_calls=7
+        )
+
+    asyncio.run(seed())
+    monkeypatch.setattr(routes, "job_store", store)
+
+    response = client.get("/api/usage", headers=VISITOR_HEADERS)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload == {
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "llm_calls": 2,
+        "tool_calls": 4,
+        "job_count": 1,
+    }
+
+
+def test_usage_endpoint_excludes_cost_and_pricing(monkeypatch) -> None:
+    # Open-core boundary: the public usage endpoint exposes raw counts only.
+    # Cost/price computation is a private Cloud concern.
+    monkeypatch.setattr(routes, "job_store", InMemoryJobStore())
+
+    response = client.get("/api/usage", headers=VISITOR_HEADERS)
+
+    assert response.status_code == 200
+    body = response.text.lower()
+    assert "cost" not in body
+    assert "price" not in body
+    assert "usd" not in body
+
 
 def test_research_job_validation_rejects_short_query() -> None:
     response = client.post(

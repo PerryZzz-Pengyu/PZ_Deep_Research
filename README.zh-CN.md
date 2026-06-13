@@ -254,6 +254,8 @@ PZ Deep Research 在早期设计阶段参考了 [Alibaba-NLP/DeepResearch](https
 - [依赖管理](project-docs/dependency-management.md)
 - [API Key 配置](project-docs/api-key-setup.md)
 - [登录与历史绑定配置](project-docs/auth-setup.md)
+- [社区版发布就绪清单](project-docs/community-launch-checklist.md)
+- [模型质量评测方案](project-docs/model-quality-eval-plan.md)
 - [变更日志](project-docs/changelog.md)
 
 ## 贡献与文档维护

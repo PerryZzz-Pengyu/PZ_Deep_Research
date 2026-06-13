@@ -254,6 +254,8 @@ PZ Deep Research is not an official product of, affiliated with, endorsed by, or
 - [Dependency management](project-docs/dependency-management.md)
 - [API key setup](project-docs/api-key-setup.md)
 - [Authentication and history binding](project-docs/auth-setup.md)
+- [Community launch checklist](project-docs/community-launch-checklist.md)
+- [Model quality evaluation plan](project-docs/model-quality-eval-plan.md)
 - [Changelog](project-docs/changelog.md)
 
 ## Contributing and Documentation
