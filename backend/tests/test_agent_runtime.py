@@ -199,7 +199,13 @@ class FixedProviderFactory:
     def __init__(self, provider: LLMProvider) -> None:
         self.provider = provider
 
-    def create(self, provider_name: Optional[str]) -> LLMProvider:
+    def create(
+        self,
+        provider_name: Optional[str],
+        *,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> LLMProvider:
         return self.provider
 
 

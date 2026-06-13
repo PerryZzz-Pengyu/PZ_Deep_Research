@@ -143,7 +143,11 @@ class AgentRuntime:
         self.evidence_extraction_concurrency = max(1, evidence_extraction_concurrency)
 
     async def run(self, job_id: str, request: ResearchRequest) -> AsyncIterator[ResearchEvent]:
-        provider = self.provider_factory.create(request.provider)
+        provider = self.provider_factory.create(
+            request.provider,
+            api_key=request.api_key,
+            base_url=request.base_url,
+        )
         mode_policy = MODE_POLICIES[request.mode]
         target = int(mode_policy["visit_source_count"])
         minimum_full_text = int(mode_policy["full_text_source_count"])
@@ -337,7 +341,11 @@ class AgentRuntime:
         request: ResearchRequest,
         retry_context: dict[str, Any],
     ) -> AsyncIterator[ResearchEvent]:
-        provider = self.provider_factory.create(request.provider)
+        provider = self.provider_factory.create(
+            request.provider,
+            api_key=request.api_key,
+            base_url=request.base_url,
+        )
         sources = [
             dict(source)
             for source in retry_context.get("sources", [])
