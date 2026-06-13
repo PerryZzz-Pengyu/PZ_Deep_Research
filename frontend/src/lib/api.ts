@@ -89,7 +89,10 @@ async function requestJson<T>(
   let response: Response;
   try {
     response = await fetch(url, init);
-  } catch {
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ApiError("请求未能在规定时间内完成，请重试。", "task_timeout", true);
+    }
     throw new ApiError("网络连接不稳定，请检查网络后重试。", "network_error", true);
   }
   if (!response.ok) throw await responseApiError(response, fallback);
@@ -101,6 +104,8 @@ export async function createResearchJob(input: {
   mode: ResearchMode;
   provider?: ProviderName;
   model?: string;
+  api_key?: string;
+  base_url?: string;
 }): Promise<ResearchJob> {
   return requestJson<ResearchJob>(`${API_BASE_URL}/api/research-jobs`, {
     method: "POST",
@@ -119,18 +124,18 @@ export async function getModelOptions(): Promise<ModelOptionsResponse> {
   );
 }
 
-export async function getResearchJob(jobId: string): Promise<ResearchJob> {
+export async function getResearchJob(jobId: string, signal?: AbortSignal): Promise<ResearchJob> {
   return requestJson<ResearchJob>(
     `${API_BASE_URL}/api/research-jobs/${jobId}`,
-    { headers: await identityHeaders() },
+    { headers: await identityHeaders(), signal },
     "暂时无法获取研究任务。",
   );
 }
 
-export async function getResearchEvents(jobId: string): Promise<ResearchEvent[]> {
+export async function getResearchEvents(jobId: string, signal?: AbortSignal): Promise<ResearchEvent[]> {
   return requestJson<ResearchEvent[]>(
     `${API_BASE_URL}/api/research-jobs/${jobId}/events`,
-    { headers: await identityHeaders() },
+    { headers: await identityHeaders(), signal },
     "暂时无法获取研究进度。",
   );
 }

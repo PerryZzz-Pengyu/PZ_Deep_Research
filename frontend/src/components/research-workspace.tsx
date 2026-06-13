@@ -1,31 +1,39 @@
 "use client";
 
+import { Accordion, Button, Card, Spinner, TextArea } from "@heroui/react";
 import {
-  ArrowLeft,
-  ArrowRight,
   Bot,
   CheckCircle2,
-  Clock3,
   Download,
-  ExternalLink,
   FileDown,
-  FileText,
-  History,
-  Loader2,
-  PauseCircle,
+  RotateCcw,
   Search,
-  Settings2,
   Sparkles,
   Square,
-  RefreshCw,
-  RotateCcw,
 } from "lucide-react";
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Components } from "react-markdown";
 
-import { AccountControl, useAppAuth } from "@/components/app-auth-provider";
+import { useAppAuth } from "@/components/app-auth-provider";
+import { LanguageSwitch } from "@/components/language-switch";
+import { ResearchModeTabs } from "@/components/research-mode-tabs";
+import {
+  CitationLink,
+  formatApaReference,
+  isVisitedSource,
+  markdownWithCitationLinks,
+  nodeText,
+  parseSources,
+  SourceCardItem,
+  type SourceItem,
+} from "@/components/research-sources";
+import {
+  MobileSourcesModal,
+  SourcesRail,
+  WorkbenchSidebar,
+} from "@/components/research-workspace-panels";
 import {
   ApiError,
   EVENT_STREAM_CLOSED,
@@ -41,26 +49,18 @@ import {
   retryResearchJob,
 } from "@/lib/api";
 import type { ResearchEventStream } from "@/lib/api";
+import { consumeHandoff } from "@/lib/handoff";
+import { useI18n } from "@/lib/i18n";
 import { downloadBlobFile, downloadMarkdownReport } from "@/lib/markdown-export";
 import type { ModelOption, ProviderName, ResearchEvent, ResearchJob, ResearchMode } from "@/lib/types";
 
 const ACTIVE_JOB_STORAGE_KEY = "pz-deep-research-active-job";
+const RESTORE_TIMEOUT_MS = 4_000;
 
-const modes: Array<{ value: ResearchMode; label: string; detail: string }> = [
-  { value: "quick", label: "快速", detail: "3源短文" },
-  { value: "deep", label: "深度", detail: "10源综述" },
-  { value: "expert", label: "专家", detail: "20源论文" },
-];
-
-const providers: Array<{ value: ProviderName; label: string }> = [
-  { value: "mock", label: "开发模式" },
-  { value: "openai", label: "OpenAI" },
-  { value: "anthropic", label: "Claude" },
-  { value: "gemini", label: "Gemini" },
-];
+type WorkbenchView = "empty" | "run" | "report" | "failed";
 
 const fallbackModelOptions: Record<ProviderName, ModelOption[]> = {
-  mock: [{ id: "", label: "开发模式" }],
+  mock: [{ id: "", label: "Dev mode" }],
   openai: [
     { id: "gpt-5.4-mini", label: "gpt-5.4-mini" },
     { id: "gpt-5.5", label: "gpt-5.5" },
@@ -87,30 +87,10 @@ const fallbackModelOptions: Record<ProviderName, ModelOption[]> = {
   ],
 };
 
-type SourceItem = {
-  citationId: string;
-  searchId?: string;
-  sourceKind?: string;
-  title: string;
-  url: string;
-  snippet?: string;
-  query?: string;
-  readStatus?: string;
-  evidenceLevel?: string;
-  evidenceNote?: string;
-  contentPreview?: string;
-};
-
-function getEventIcon(type: string) {
-  if (type === "completed") return <CheckCircle2 size={16} />;
-  if (type === "cancelled") return <Square size={15} />;
-  if (type.startsWith("tool")) return <Search size={16} />;
-  if (type.startsWith("llm")) return <Bot size={16} />;
-  return <Sparkles size={16} />;
-}
+const PROVIDER_ORDER: ProviderName[] = ["mock", "openai", "anthropic", "gemini"];
 
 function isProviderName(value: string): value is ProviderName {
-  return providers.some((item) => item.value === value);
+  return PROVIDER_ORDER.includes(value as ProviderName);
 }
 
 function mergeEvent(current: ResearchEvent[], nextEvent: ResearchEvent) {
@@ -118,313 +98,64 @@ function mergeEvent(current: ResearchEvent[], nextEvent: ResearchEvent) {
   return [...current, nextEvent];
 }
 
-function jobStatusLabel(status: ResearchJob["status"] | "") {
-  if (status === "queued") return "等待开始";
-  if (status === "running") return "研究中";
-  if (status === "completed") return "已完成";
-  if (status === "failed") return "失败";
-  if (status === "cancelled") return "已取消";
-  return "尚未创建";
-}
-
-function modeLabel(mode: ResearchMode) {
-  if (mode === "quick") return "快速";
-  if (mode === "deep") return "深度";
-  return "专家";
-}
-
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat("zh-CN", {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(value));
-}
-
-function ErrorNotice({
-  message,
-  canRetry = false,
-  isRetrying = false,
-  onRetry,
-}: {
-  message: string;
-  canRetry?: boolean;
-  isRetrying?: boolean;
-  onRetry?: () => void;
-}) {
-  if (!message) return null;
-  return (
-    <div className="error-line" role="alert">
-      <span>{message}</span>
-      {canRetry && onRetry ? (
-        <button type="button" disabled={isRetrying} onClick={onRetry}>
-          {isRetrying ? <Loader2 className="spin" size={15} /> : <RotateCcw size={15} />}
-          {isRetrying ? "正在重试" : "重试"}
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
-function parseSources(rawSources: unknown): SourceItem[] {
-  if (!Array.isArray(rawSources)) return [];
-  return rawSources.flatMap((source, index) => {
-    if (!source || typeof source !== "object") return [];
-    const maybeSource = source as {
-      citation_id?: unknown;
-      search_id?: unknown;
-      source_kind?: unknown;
-      title?: unknown;
-      url?: unknown;
-      snippet?: unknown;
-      query?: unknown;
-      read_status?: unknown;
-      evidence_level?: unknown;
-      evidence_note?: unknown;
-      content_preview?: unknown;
-    };
-    if (typeof maybeSource.url !== "string") return [];
-    return [
-      {
-        citationId:
-          typeof maybeSource.citation_id === "string"
-            ? maybeSource.citation_id
-            : typeof maybeSource.search_id === "string"
-              ? maybeSource.search_id
-              : String(index + 1),
-        searchId: typeof maybeSource.search_id === "string" ? maybeSource.search_id : undefined,
-        sourceKind: typeof maybeSource.source_kind === "string" ? maybeSource.source_kind : undefined,
-        title: typeof maybeSource.title === "string" ? maybeSource.title : maybeSource.url,
-        url: maybeSource.url,
-        snippet: typeof maybeSource.snippet === "string" ? maybeSource.snippet : undefined,
-        query: typeof maybeSource.query === "string" ? maybeSource.query : undefined,
-        readStatus: typeof maybeSource.read_status === "string" ? maybeSource.read_status : undefined,
-        evidenceLevel: typeof maybeSource.evidence_level === "string" ? maybeSource.evidence_level : undefined,
-        evidenceNote: typeof maybeSource.evidence_note === "string" ? maybeSource.evidence_note : undefined,
-        contentPreview: typeof maybeSource.content_preview === "string" ? maybeSource.content_preview : undefined,
-      },
-    ];
-  });
-}
-
-function isVisitedSource(source: SourceItem) {
-  if (source.sourceKind === "visited_source") return true;
-  return /^\d+$/.test(source.citationId) && source.readStatus !== "search_result";
-}
-
-function faviconUrl(url: string) {
-  try {
-    const hostname = new URL(url).hostname;
-    return `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`;
-  } catch {
-    return "";
-  }
-}
-
-function hostname(url: string) {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return url;
-  }
-}
-
-function formatApaReference(source: SourceItem) {
-  return `${source.title}. (n.d.). Retrieved from ${source.url}`;
-}
-
-function evidenceLabel(source: SourceItem) {
-  const value = source.evidenceLevel || source.readStatus;
-  if (value === "full_text") return "全文证据";
-  if (value === "partial_text") return "部分正文";
-  if (value === "metadata_only") return "访问受限";
-  if (value === "metadata") return "题录摘要";
-  if (value === "mock") return "开发占位";
-  if (value === "unavailable") return "不可用";
-  return value || "未分级";
-}
-
-function evidenceClass(source: SourceItem) {
-  const value = source.evidenceLevel || source.readStatus;
-  if (value === "full_text") return "strong";
-  if (value === "partial_text") return "medium";
-  if (value === "metadata" || value === "metadata_only") return "limited";
-  return "muted";
-}
-
-function markdownWithCitationLinks(report: string, sourceByCitation: Map<string, SourceItem>) {
-  return report.replace(/\[(\d+)\](?!\()/g, (match, citationId: string) => {
-    const source = sourceByCitation.get(citationId);
-    return source ? `[[${citationId}]](${source.url})` : match;
-  });
-}
-
-function nodeText(node: unknown): string {
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(nodeText).join("");
-  return "";
-}
-
-function markdownComponents(sourceByCitation: Map<string, SourceItem>): Components {
-  return {
-    a({ href, children }) {
-      const text = nodeText(children);
-      const match = /^\[(\d+)\]$/.exec(text);
-      if (match) {
-        const source = sourceByCitation.get(match[1]);
-        return (
-          <span className="citation-wrap">
-            <sup className="citation-mark">{text}</sup>
-            {source ? (
-              <span className="citation-popover" role="tooltip">
-                <span className="source-topline">
-                  <span
-                    className="source-favicon"
-                    style={faviconUrl(source.url) ? { backgroundImage: `url(${faviconUrl(source.url)})` } : undefined}
-                  />
-                  <span className="source-citation">[{source.citationId}]</span>
-                  <span className="source-domain">{hostname(source.url)}</span>
-                </span>
-                <strong>{source.title}</strong>
-                <span className={`evidence-badge ${evidenceClass(source)}`}>{evidenceLabel(source)}</span>
-                {source.evidenceNote ? <small>{source.evidenceNote}</small> : null}
-                <span className="source-url">{source.url}</span>
-              </span>
-            ) : null}
-          </span>
-        );
-      }
-      return (
-        <a href={href} rel="noreferrer" target="_blank">
-          {children}
-        </a>
-      );
-    },
-  };
-}
-
-function SourceCard({ source }: { source: SourceItem }) {
-  const icon = faviconUrl(source.url);
-  return (
-    <a className="source-card" href={source.url} rel="noreferrer" target="_blank">
-      <div className="source-topline">
-        <span className="source-favicon" style={icon ? { backgroundImage: `url(${icon})` } : undefined} />
-        <span className="source-citation">[{source.citationId}]</span>
-        <span className="source-domain">{hostname(source.url)}</span>
-        <span className={`evidence-badge ${evidenceClass(source)}`}>{evidenceLabel(source)}</span>
-        <ExternalLink size={13} />
-      </div>
-      <strong>{source.title}</strong>
-      {source.snippet ? <small>{source.snippet}</small> : null}
-      {source.evidenceNote ? <small>{source.evidenceNote}</small> : null}
-      <span className="source-url">{source.url}</span>
-    </a>
-  );
-}
-
-function ToolOutput({ content }: { content: string }) {
-  return (
-    <details className="tool-output">
-      <summary>查看工具返回</summary>
-      <pre>{content}</pre>
-    </details>
-  );
-}
-
-function EventDetail({ event }: { event: ResearchEvent }) {
-  if (event.type === "tool_result") {
-    const eventSources = parseSources(event.payload.sources);
-    const content = event.payload.content;
-    return (
-      <>
-        {typeof content === "string" && content ? <ToolOutput content={content} /> : null}
-        {eventSources.length ? (
-          <div className="event-source-grid">
-            {eventSources.map((source) => (
-              <SourceCard key={`${event.id}-${source.citationId}-${source.url}`} source={source} />
-            ))}
-          </div>
-        ) : null}
-      </>
-    );
-  }
-
-  if (event.type === "evidence_required") {
-    const missing = event.payload.missing;
-    return Array.isArray(missing) ? <p className="event-note">补充步骤：{missing.join("、")}</p> : null;
-  }
-
-  if (event.type === "visit_progress") {
-    const visited = event.payload.visited;
-    const fullText = event.payload.full_text;
-    const target = event.payload.target;
-    if (typeof visited === "number" && typeof target === "number") {
-      return (
-        <p className="event-note">
-          已访问 {visited} 个候选来源
-          {typeof fullText === "number" ? `，全文证据 ${fullText}/${target} 个` : ""}
-        </p>
-      );
-    }
-    return null;
-  }
-
-  if (event.type === "evidence_ready") {
-    const total = event.payload.total_cards;
-    return typeof total === "number" ? <p className="event-note">已抽取证据卡片 {total} 张</p> : null;
-  }
-
-  if (event.type === "source_selected") {
-    const total = event.payload.total_available;
-    const selected = event.payload.selected_count;
-    const target = event.payload.target;
-    const fullText = event.payload.full_text_count;
-    const degraded = event.payload.degraded === true;
-    const shortfall = event.payload.full_text_shortfall === true;
-    const notes: string[] = [];
-    if (degraded) notes.push("来源数量不足目标，已降级处理");
-    if (shortfall) notes.push("全文证据不足，部分结论基于摘要/受限来源");
-    return (
-      <p className="event-note">
-        已筛选来源：最终 {typeof selected === "number" ? selected : "?"}
-        {typeof target === "number" ? `/${target}` : ""} 个
-        {typeof fullText === "number" ? `，全文证据 ${fullText} 个` : ""}
-        {typeof total === "number" ? `（共访问 ${total} 个候选）` : ""}
-        {notes.length ? `（${notes.join("；")}）` : ""}
-      </p>
-    );
-  }
-
-  if (event.type === "citation_required") {
-    const missing = event.payload.missing;
-    return Array.isArray(missing) ? <p className="event-note">需要重写：{missing.join("、")}</p> : null;
-  }
-
-  if (event.type === "protocol_warning") {
-    const expectedTool = event.payload.expected_tool;
-    const actualTool = event.payload.actual_tool;
-    const toolCallCount = event.payload.tool_call_count;
-    if (typeof expectedTool === "string") {
-      return <p className="event-note">流程纠偏：当前需要 {expectedTool}，模型返回了 {String(actualTool || "其他输出")}。</p>;
-    }
-    if (typeof toolCallCount === "number") {
-      return <p className="event-note">流程纠偏：模型一次返回 {toolCallCount} 个工具调用，本轮只执行第一个。</p>;
-    }
-  }
-
-  if (event.type === "llm_result") {
-    const preview = event.payload.content_preview;
-    return typeof preview === "string" && preview ? <p className="event-note">{preview}</p> : null;
-  }
-
-  return null;
-}
-
 export function ResearchWorkspace() {
+  const { t, locale } = useI18n();
   const { isLoaded: isAuthLoaded, isSignedIn, userId } = useAppAuth();
-  const [query, setQuery] = useState("对比 Claude、ChatGPT 和 Gemini 做深度研究产品时各自的优势与风险");
+
+  const evidenceLabel = useCallback(
+    (source: SourceItem) => {
+      const value = source.evidenceLevel || source.readStatus;
+      const labels: Record<string, string> =
+        locale === "zh"
+          ? {
+              full_text: "全文证据",
+              partial_text: "部分正文",
+              metadata_only: "访问受限",
+              metadata: "题录摘要",
+              mock: "开发占位",
+              unavailable: "不可用",
+            }
+          : {
+              full_text: "Full-text evidence",
+              partial_text: "Partial text",
+              metadata_only: "Limited access",
+              metadata: "Metadata only",
+              mock: "Dev placeholder",
+              unavailable: "Unavailable",
+            };
+      if (value && labels[value]) return labels[value];
+      return value || (locale === "zh" ? "未分级" : "Ungraded");
+    },
+    [locale],
+  );
+
+  const jobStatusLabel = useCallback(
+    (status: ResearchJob["status"] | "") => {
+      if (status === "queued") return t.status.queued;
+      if (status === "running") return t.status.running;
+      if (status === "completed") return t.status.completed;
+      if (status === "failed") return t.status.failed;
+      if (status === "cancelled") return t.status.cancelled;
+      return t.status.idle;
+    },
+    [t],
+  );
+
+  const formatDateTime = useCallback(
+    (value: string) =>
+      new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en-US", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      }).format(new Date(value)),
+    [locale],
+  );
+
+  const [query, setQuery] = useState("");
   const [mode, setMode] = useState<ResearchMode>("deep");
   const [provider, setProvider] = useState<ProviderName>("mock");
   const [model, setModel] = useState("");
+  // BYOK key: kept in memory only (never persisted), sent per request in community edition.
+  const [apiKey, setApiKey] = useState("");
   const [modelOptions, setModelOptions] = useState(fallbackModelOptions);
   const [modelSelectionEnabled, setModelSelectionEnabled] = useState(false);
   const [events, setEvents] = useState<ResearchEvent[]>([]);
@@ -436,14 +167,23 @@ export function ResearchWorkspace() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [isRerunning, setIsRerunning] = useState(false);
   const [isExportingPdf, setIsExportingPdf] = useState(false);
-  const [isRestoring, setIsRestoring] = useState(true);
-  const [activeView, setActiveView] = useState<"research" | "history" | "detail">("research");
+  const [isRestoring, setIsRestoring] = useState(false);
+  const [view, setView] = useState<WorkbenchView>("empty");
   const [historyJobs, setHistoryJobs] = useState<ResearchJob[]>([]);
   const [selectedJob, setSelectedJob] = useState<ResearchJob | null>(null);
-  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [error, setError] = useState("");
   const [errorRetryable, setErrorRetryable] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [railOpen, setRailOpen] = useState(false);
   const eventSourceRef = useRef<ResearchEventStream | null>(null);
+  const toastTimerRef = useRef<number | null>(null);
+
+  const showToast = useCallback((message: string) => {
+    setToastMessage(message);
+    if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = window.setTimeout(() => setToastMessage(""), 2600);
+  }, []);
 
   const sources = useMemo(() => {
     let selected: SourceItem[] = [];
@@ -466,138 +206,168 @@ export function ResearchWorkspace() {
     return new Map(sources.map((source) => [source.citationId, source]));
   }, [sources]);
   const reportMarkdown = useMemo(() => markdownWithCitationLinks(report, sourceByCitation), [report, sourceByCitation]);
-  const reportMarkdownComponents = useMemo(() => markdownComponents(sourceByCitation), [sourceByCitation]);
+
+  const reportMarkdownComponents = useMemo<Components>(() => {
+    return {
+      a({ href, children }) {
+        const text = nodeText(children);
+        const match = /^\[(\d+)\]$/.exec(text);
+        if (match) {
+          const source = sourceByCitation.get(match[1]);
+          return (
+            <CitationLink evidenceLabel={evidenceLabel} href={href} source={source}>
+              {children}
+            </CitationLink>
+          );
+        }
+        return (
+          <a href={href} rel="noreferrer" target="_blank">
+            {children}
+          </a>
+        );
+      },
+    };
+  }, [sourceByCitation, evidenceLabel]);
 
   const currentModelOptions = modelOptions[provider] ?? fallbackModelOptions[provider];
   const selectedModel = currentModelOptions.some((item) => item.id === model)
     ? model
     : currentModelOptions[0]?.id ?? "";
 
-  const connectToJob = useCallback((targetJobId: string, afterEventId?: string) => {
-    eventSourceRef.current?.close();
-    const eventSource = createResearchEventSource(targetJobId, afterEventId);
-    eventSourceRef.current = eventSource;
+  const connectToJob = useCallback(
+    (targetJobId: string, afterEventId?: string) => {
+      eventSourceRef.current?.close();
+      const eventSource = createResearchEventSource(targetJobId, afterEventId);
+      eventSourceRef.current = eventSource;
 
-    eventSource.onopen = () => {
-      setError((current) => (current.startsWith("网络连接不稳定") ? "" : current));
-    };
+      eventSource.onopen = () => {
+        setError((current) => (current.startsWith(t.errors.networkUnstable.slice(0, 6)) ? "" : current));
+      };
 
-    eventSource.onmessage = (message) => {
-      const nextEvent = JSON.parse(message.data) as ResearchEvent;
-      if (nextEvent.type === "job_snapshot") {
-        const status = nextEvent.payload.status;
-        const finalReport = nextEvent.payload.final_report;
-        const draftReport = nextEvent.payload.draft_report;
-        if (typeof finalReport === "string" && finalReport) {
-          setReport(finalReport);
-        } else if (typeof draftReport === "string") {
-          setReport(draftReport);
-        }
-        if (
-          status === "queued" ||
-          status === "running" ||
-          status === "completed" ||
-          status === "failed" ||
-          status === "cancelled"
-        ) {
-          setJobStatus(status);
-          setIsRunning(status === "queued" || status === "running");
-          if (status === "failed" && typeof nextEvent.payload.error === "string") {
-            setError(nextEvent.payload.error);
-            setErrorRetryable(Boolean(nextEvent.payload.error_retryable));
+      eventSource.onmessage = (message) => {
+        const nextEvent = JSON.parse(message.data) as ResearchEvent;
+        if (nextEvent.type === "job_snapshot") {
+          const status = nextEvent.payload.status;
+          const finalReport = nextEvent.payload.final_report;
+          const draftReport = nextEvent.payload.draft_report;
+          if (typeof finalReport === "string" && finalReport) {
+            setReport(finalReport);
+          } else if (typeof draftReport === "string") {
+            setReport(draftReport);
           }
+          if (
+            status === "queued" ||
+            status === "running" ||
+            status === "completed" ||
+            status === "failed" ||
+            status === "cancelled"
+          ) {
+            setJobStatus(status);
+            setIsRunning(status === "queued" || status === "running");
+            if (status === "failed" && typeof nextEvent.payload.error === "string") {
+              setError(nextEvent.payload.error);
+              setErrorRetryable(Boolean(nextEvent.payload.error_retryable));
+            }
+          }
+          return;
         }
-        return;
-      }
-      if (nextEvent.type === "llm_delta") {
-        const delta = nextEvent.payload.delta;
-        if (typeof delta === "string") {
-          setLiveModelText((current) => current + delta);
+        if (nextEvent.type === "llm_delta") {
+          const delta = nextEvent.payload.delta;
+          if (typeof delta === "string") {
+            setLiveModelText((current) => current + delta);
+          }
+          return;
         }
-        return;
-      }
-      if (nextEvent.type === "report_delta") {
-        const delta = nextEvent.payload.delta;
-        const draftReport = nextEvent.payload.draft_report;
-        if (typeof draftReport === "string") {
-          setReport(draftReport);
-        } else if (typeof delta === "string") {
-          setReport((current) => current + delta);
+        if (nextEvent.type === "report_delta") {
+          const delta = nextEvent.payload.delta;
+          const draftReport = nextEvent.payload.draft_report;
+          if (typeof draftReport === "string") {
+            setReport(draftReport);
+          } else if (typeof delta === "string") {
+            setReport((current) => current + delta);
+          }
+          return;
         }
-        return;
-      }
-      if (nextEvent.type === "report_reset") {
-        setReport("");
+        if (nextEvent.type === "report_reset") {
+          setReport("");
+          setEvents((current) => mergeEvent(current, nextEvent));
+          return;
+        }
+
         setEvents((current) => mergeEvent(current, nextEvent));
-        return;
-      }
-
-      setEvents((current) => mergeEvent(current, nextEvent));
-      if (nextEvent.type === "llm_start") {
-        setLiveModelText("");
-      }
-      if (nextEvent.type === "completed") {
-        const finalReport = nextEvent.payload.final_report;
-        if (typeof finalReport === "string") {
-          setReport(finalReport);
+        if (nextEvent.type === "llm_start") {
+          setLiveModelText("");
         }
-        setJobStatus("completed");
-        setError("");
-        setErrorRetryable(false);
-        setSelectedJob((current) => (
-          current?.id === targetJobId ? { ...current, status: "completed", error: null } : current
-        ));
-        setIsRunning(false);
-        eventSource.close();
-        if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
-      }
-      if (nextEvent.type === "failed") {
-        setError(nextEvent.message);
-        setErrorRetryable(Boolean(nextEvent.payload.retryable));
-        setJobStatus("failed");
-        setSelectedJob((current) => (
-          current?.id === targetJobId
-            ? {
-                ...current,
-                status: "failed",
-                error: nextEvent.message,
-                error_retryable: Boolean(nextEvent.payload.retryable),
-                error_stage: typeof nextEvent.payload.stage === "string" ? nextEvent.payload.stage : null,
-              }
-            : current
-        ));
-        setIsRunning(false);
-        eventSource.close();
-        if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
-      }
-      if (nextEvent.type === "cancelled") {
-        setJobStatus("cancelled");
-        setIsRunning(false);
-        setIsCancelling(false);
-        eventSource.close();
-        if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
-      }
-    };
+        if (nextEvent.type === "completed") {
+          const finalReport = nextEvent.payload.final_report;
+          if (typeof finalReport === "string") {
+            setReport(finalReport);
+          }
+          setJobStatus("completed");
+          setError("");
+          setErrorRetryable(false);
+          setSelectedJob((current) => (
+            current?.id === targetJobId ? { ...current, status: "completed", error: null } : current
+          ));
+          setIsRunning(false);
+          setView("report");
+          showToast(t.wb.reportReady);
+          eventSource.close();
+          if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
+        }
+        if (nextEvent.type === "failed") {
+          setError(nextEvent.message);
+          setErrorRetryable(Boolean(nextEvent.payload.retryable));
+          setJobStatus("failed");
+          setSelectedJob((current) => (
+            current?.id === targetJobId
+              ? {
+                  ...current,
+                  status: "failed",
+                  error: nextEvent.message,
+                  error_retryable: Boolean(nextEvent.payload.retryable),
+                  error_stage: typeof nextEvent.payload.stage === "string" ? nextEvent.payload.stage : null,
+                }
+              : current
+          ));
+          setIsRunning(false);
+          setView("failed");
+          eventSource.close();
+          if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
+        }
+        if (nextEvent.type === "cancelled") {
+          setJobStatus("cancelled");
+          setIsRunning(false);
+          setIsCancelling(false);
+          setView("report");
+          eventSource.close();
+          if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
+        }
+      };
 
-    eventSource.onerror = () => {
-      if (eventSource.readyState !== EVENT_STREAM_CLOSED) {
-        setError("网络连接不稳定，正在自动恢复研究进度。");
+      eventSource.onerror = () => {
+        if (eventSource.readyState !== EVENT_STREAM_CLOSED) {
+          setError(t.errors.networkUnstable);
+          setErrorRetryable(false);
+          return;
+        }
+        setError(t.errors.connectionLost);
         setErrorRetryable(false);
-        return;
-      }
-      setError("连接暂时中断，请刷新页面恢复任务。");
-      setErrorRetryable(false);
-      setIsRunning(false);
-      if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
-    };
-  }, []);
+        setIsRunning(false);
+        if (eventSourceRef.current === eventSource) eventSourceRef.current = null;
+      };
+    },
+    [showToast, t],
+  );
 
   const restoreJob = useCallback(
     async (targetJobId: string) => {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), RESTORE_TIMEOUT_MS);
       const [job, restoredEvents] = await Promise.all([
-        getResearchJob(targetJobId),
-        getResearchEvents(targetJobId),
-      ]);
+        getResearchJob(targetJobId, controller.signal),
+        getResearchEvents(targetJobId, controller.signal),
+      ]).finally(() => window.clearTimeout(timeout));
       setJobId(job.id);
       setSelectedJob(job);
       setJobStatus(job.status);
@@ -615,8 +385,10 @@ export function ResearchWorkspace() {
       const shouldResume = job.status === "queued" || job.status === "running";
       setIsRunning(shouldResume);
       if (shouldResume) {
+        setView("run");
         connectToJob(job.id, restoredEvents.at(-1)?.id);
       } else {
+        setView(job.status === "failed" ? "failed" : "report");
         eventSourceRef.current?.close();
         eventSourceRef.current = null;
       }
@@ -626,27 +398,64 @@ export function ResearchWorkspace() {
   );
 
   const refreshHistory = useCallback(async () => {
-    setIsHistoryLoading(true);
-    setError("");
-    setErrorRetryable(false);
     try {
       setHistoryJobs(await listResearchJobs());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "获取研究历史失败");
-    } finally {
-      setIsHistoryLoading(false);
+    } catch {
+      // keep the previous list on failure; non-fatal for the workbench
     }
   }, []);
+
+  const startResearch = useCallback(
+    async (queryText: string, modeValue: ResearchMode) => {
+      const trimmed = queryText.trim();
+      if (!trimmed) return;
+
+      setError("");
+      setErrorRetryable(false);
+      setEvents([]);
+      setReport("");
+      setLiveModelText("");
+      setIsRunning(true);
+      setJobStatus("queued");
+      setView("run");
+      setMenuOpen(false);
+
+      try {
+        const trimmedKey = apiKey.trim();
+        const job = await createResearchJob({
+          query: trimmed,
+          mode: modeValue,
+          ...(modelSelectionEnabled ? { provider, model: selectedModel || undefined } : {}),
+          ...(modelSelectionEnabled && provider !== "mock" && trimmedKey
+            ? { api_key: trimmedKey }
+            : {}),
+        });
+        setJobId(job.id);
+        setSelectedJob(job);
+        setJobStatus(job.status);
+        window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, job.id);
+        connectToJob(job.id);
+        setHistoryJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : t.errors.createFailed);
+        setErrorRetryable(err instanceof ApiError ? err.retryable : false);
+        setIsRunning(false);
+        setJobStatus("failed");
+        setView("failed");
+      }
+    },
+    [apiKey, connectToJob, modelSelectionEnabled, provider, selectedModel, t],
+  );
 
   useEffect(() => {
     return () => {
       eventSourceRef.current?.close();
+      if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     };
   }, []);
 
   useEffect(() => {
     let ignore = false;
-
     getModelOptions()
       .then((payload) => {
         if (ignore) return;
@@ -658,21 +467,26 @@ export function ResearchWorkspace() {
         }
       })
       .catch(() => {
-        // 保留本地兜底列表即可，界面仍然可用。
+        // fall back to the local provider/model list; UI stays usable
       });
-
     return () => {
       ignore = true;
     };
   }, []);
 
+  // Boot: handoff from the marketing homepage takes priority, then restore an active job.
   useEffect(() => {
     if (!isAuthLoaded) return;
     let ignore = false;
-    const storedJobId = window.localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
-    if (!storedJobId) {
+
+    const handoff = consumeHandoff();
+    if (handoff) {
       const timer = window.setTimeout(() => {
-        if (!ignore) setIsRestoring(false);
+        if (ignore) return;
+        setQuery(handoff.query);
+        setMode(handoff.mode);
+        setIsRestoring(false);
+        if (handoff.autostart) void startResearch(handoff.query, handoff.mode);
       }, 0);
       return () => {
         ignore = true;
@@ -680,13 +494,22 @@ export function ResearchWorkspace() {
       };
     }
 
+    const storedJobId = window.localStorage.getItem(ACTIVE_JOB_STORAGE_KEY);
+    if (!storedJobId) {
+      return () => {
+        ignore = true;
+      };
+    }
+
     const timer = window.setTimeout(() => {
+      setIsRestoring(true);
       restoreJob(storedJobId)
         .catch(() => {
           if (ignore) return;
           window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
           setJobId("");
           setJobStatus("");
+          setView("empty");
         })
         .finally(() => {
           if (!ignore) setIsRestoring(false);
@@ -697,47 +520,28 @@ export function ResearchWorkspace() {
       ignore = true;
       window.clearTimeout(timer);
     };
-  }, [isAuthLoaded, restoreJob, userId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAuthLoaded, userId]);
 
+  // Keep the sidebar history fresh once auth resolves.
   useEffect(() => {
-    if (!isAuthLoaded || activeView !== "history") return;
-    const timer = window.setTimeout(() => {
-      void refreshHistory();
-    }, 0);
+    if (!isAuthLoaded) return;
+    const timer = window.setTimeout(() => void refreshHistory(), 0);
     return () => window.clearTimeout(timer);
-  }, [activeView, isAuthLoaded, isSignedIn, refreshHistory, userId]);
+  }, [isAuthLoaded, isSignedIn, refreshHistory, userId]);
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  // Mobile sidebar state is reflected on the body for the CSS drawer.
+  useEffect(() => {
+    document.body.classList.toggle("menu-open", menuOpen);
+    return () => {
+      document.body.classList.remove("menu-open");
+    };
+  }, [menuOpen]);
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!query.trim() || isRunning || isRestoring) return;
-
-    setError("");
-    setEvents([]);
-    setReport("");
-    setLiveModelText("");
-    setIsRunning(true);
-    setJobStatus("queued");
-
-    try {
-      const job = await createResearchJob({
-        query,
-        mode,
-        ...(modelSelectionEnabled
-          ? { provider, model: selectedModel || undefined }
-          : {}),
-      });
-      setJobId(job.id);
-      setSelectedJob(job);
-      setJobStatus(job.status);
-      window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, job.id);
-      connectToJob(job.id);
-      setHistoryJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "暂时无法创建研究任务。");
-      setErrorRetryable(err instanceof ApiError ? err.retryable : false);
-      setIsRunning(false);
-      setJobStatus("failed");
-    }
+    if (isRunning || isRestoring) return;
+    void startResearch(query, mode);
   }
 
   async function handleCancel() {
@@ -753,10 +557,12 @@ export function ResearchWorkspace() {
       setSelectedJob(cancelledJob);
       setJobStatus("cancelled");
       setIsRunning(false);
+      setView("report");
+      showToast(t.wb.cancelled);
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
     } catch (err) {
-      setError(err instanceof Error ? err.message : "取消研究任务失败");
+      setError(err instanceof Error ? err.message : t.errors.cancelFailed);
       setErrorRetryable(err instanceof ApiError ? err.retryable : false);
     } finally {
       setIsCancelling(false);
@@ -785,15 +591,12 @@ export function ResearchWorkspace() {
       setReport("");
       setLiveModelText("");
       setIsRunning(true);
+      setView("run");
       window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, rerunJob.id);
-      setHistoryJobs((current) => [
-        rerunJob,
-        ...current.filter((item) => item.id !== rerunJob.id),
-      ]);
-      setActiveView("research");
+      setHistoryJobs((current) => [rerunJob, ...current.filter((item) => item.id !== rerunJob.id)]);
       connectToJob(rerunJob.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "重新运行研究任务失败");
+      setError(err instanceof Error ? err.message : t.errors.rerunFailed);
       setErrorRetryable(err instanceof ApiError ? err.retryable : false);
     } finally {
       setIsRerunning(false);
@@ -820,15 +623,12 @@ export function ResearchWorkspace() {
       setError("");
       setErrorRetryable(false);
       setIsRunning(true);
+      setView("run");
       window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, retryJob.id);
-      setHistoryJobs((current) => [
-        retryJob,
-        ...current.filter((item) => item.id !== retryJob.id),
-      ]);
-      setActiveView("research");
+      setHistoryJobs((current) => [retryJob, ...current.filter((item) => item.id !== retryJob.id)]);
       connectToJob(retryJob.id);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "暂时无法重试研究任务。");
+      setError(err instanceof Error ? err.message : t.errors.retryFailed);
       setErrorRetryable(err instanceof ApiError ? err.retryable : true);
     } finally {
       setIsRerunning(false);
@@ -843,419 +643,498 @@ export function ResearchWorkspace() {
       const pdf = await exportResearchJobPdf(jobId);
       downloadBlobFile(pdf.blob, pdf.filename);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "导出 PDF 失败");
+      setError(err instanceof Error ? err.message : t.errors.pdfFailed);
     } finally {
       setIsExportingPdf(false);
     }
   }
 
-  return (
-    <main className="workspace-shell">
-      <aside className="sidebar">
-        <div className="brand-row">
-          <div className="brand-mark">PZ</div>
-          <div>
-            <strong>PZ Deep Research</strong>
-            <span>研究工作台</span>
-          </div>
-        </div>
+  function handleNewResearch() {
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    window.localStorage.removeItem(ACTIVE_JOB_STORAGE_KEY);
+    setView("empty");
+    setMenuOpen(false);
+    setRailOpen(false);
+    setJobId("");
+    setJobStatus("");
+    setSelectedJob(null);
+    setEvents([]);
+    setReport("");
+    setLiveModelText("");
+    setQuery("");
+    setError("");
+    setErrorRetryable(false);
+    setIsRunning(false);
+  }
 
-        <nav className="nav-list" aria-label="主导航">
-          <button
-            className={activeView === "research" ? "nav-item active" : "nav-item"}
-            type="button"
-            onClick={() => setActiveView("research")}
-          >
-            <Search size={16} />
-            研究
-          </button>
-          <button
-            className={activeView === "history" || activeView === "detail" ? "nav-item active" : "nav-item"}
-            type="button"
-            onClick={() => {
-              setActiveView("history");
-            }}
-          >
-            <History size={16} />
-            历史
-          </button>
-          <button className="nav-item" type="button">
-            <Settings2 size={16} />
-            设置
-          </button>
-        </nav>
+  function openHistoryJob(job: ResearchJob) {
+    setMenuOpen(false);
+    setIsRestoring(true);
+    restoreJob(job.id)
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : t.errors.detailFailed);
+      })
+      .finally(() => setIsRestoring(false));
+  }
 
-        <div className="sidebar-block">
-          <span className="block-label">当前任务</span>
-          <strong className="job-id-text">{jobId || "尚未创建"}</strong>
-          <span className={`job-status ${jobStatus || "idle"}`}>{jobStatusLabel(jobStatus)}</span>
-        </div>
+  const railSources = sources;
+  const railShown = view === "run" || view === "report";
+  const crumbCurrent =
+    view === "run"
+      ? t.wb.crumbResearching
+      : view === "empty"
+        ? t.wb.crumbNew
+        : query || t.wb.crumbNew;
 
-        <div className="sidebar-account">
-          <AccountControl />
-        </div>
-      </aside>
+  function getEventNode(type: string) {
+    if (type === "completed") return <CheckCircle2 size={15} />;
+    if (type === "cancelled") return <Square size={14} />;
+    if (type.startsWith("tool")) return <Search size={15} />;
+    if (type.startsWith("llm")) return <Bot size={15} />;
+    return <Sparkles size={15} />;
+  }
 
-      <section className="main-panel">
-        {activeView === "history" ? (
-          <div className="history-view">
-            <div className="history-header">
-              <div>
-                <span className="block-label">{isSignedIn ? "当前账号" : "当前访客"}</span>
-                <h1>研究历史</h1>
-              </div>
-              <button
-                className="icon-button"
-                type="button"
-                aria-label="刷新研究历史"
-                title="刷新研究历史"
-                disabled={isHistoryLoading}
-                onClick={() => void refreshHistory()}
-              >
-                <RefreshCw className={isHistoryLoading ? "spin" : undefined} size={17} />
-              </button>
-            </div>
-
-            <ErrorNotice message={error} />
-
-            <div className="history-list">
-              {isHistoryLoading && historyJobs.length === 0 ? (
-                <div className="empty-state">
-                  <Loader2 className="spin" size={18} />
-                  正在读取历史记录
-                </div>
-              ) : historyJobs.length === 0 ? (
-                <div className="empty-state">
-                  <Clock3 size={18} />
-                  暂无研究历史
-                </div>
-              ) : (
-                historyJobs.map((job) => (
-                  <button
-                    className="history-item"
-                    type="button"
-                    key={job.id}
-                    onClick={() => {
-                      setIsRestoring(true);
-                      restoreJob(job.id)
-                        .then(() => setActiveView("detail"))
-                        .catch((err) => {
-                          setError(err instanceof Error ? err.message : "打开报告详情失败");
-                        })
-                        .finally(() => setIsRestoring(false));
-                    }}
-                  >
-                    <span className="history-item-topline">
-                      <strong>{job.query}</strong>
-                      <span className={`job-status ${job.status}`}>{jobStatusLabel(job.status)}</span>
-                    </span>
-                    <span className="history-meta">
-                      {modeLabel(job.mode)}
-                      {modelSelectionEnabled ? <span>{job.provider}</span> : null}
-                      <time dateTime={job.updated_at}>
-                        {new Date(job.updated_at).toLocaleString("zh-CN")}
-                      </time>
-                    </span>
-                    <span className="history-id">{job.id}</span>
-                  </button>
-                ))
-              )}
-            </div>
-          </div>
-        ) : activeView === "detail" && selectedJob ? (
-          <div className="detail-view">
-            <div className="detail-header">
-              <div>
-                <button
-                  className="back-button"
-                  type="button"
-                  onClick={() => {
-                    setActiveView("history");
-                  }}
-                >
-                  <ArrowLeft size={16} />
-                  返回历史
-                </button>
-                <h1>报告详情</h1>
-              </div>
-              {selectedJob.status !== "failed" ? (
-                <button
-                  className="rerun-button"
-                  type="button"
-                  disabled={
-                    isRerunning ||
-                    selectedJob.status === "queued" ||
-                    selectedJob.status === "running"
-                  }
-                  onClick={() => void handleRerun()}
-                >
-                  {isRerunning ? <Loader2 className="spin" size={17} /> : <RotateCcw size={17} />}
-                  {isRerunning ? "正在创建" : "重新运行"}
-                </button>
-              ) : null}
-            </div>
-
-            <ErrorNotice
-              message={error}
-              canRetry={selectedJob.status === "failed" && errorRetryable}
-              isRetrying={isRerunning}
-              onRetry={() => void handleRetry()}
-            />
-
-            <section className="detail-summary" aria-label="报告任务信息">
-              <div className="detail-title-row">
-                <h2>{selectedJob.query}</h2>
-                <span className={`job-status ${selectedJob.status}`}>
-                  {jobStatusLabel(selectedJob.status)}
-                </span>
-              </div>
-              <dl className="detail-metadata">
-                <div>
-                  <dt>研究模式</dt>
-                  <dd>{modeLabel(selectedJob.mode)}</dd>
-                </div>
-                {modelSelectionEnabled ? (
-                  <div>
-                    <dt>模型</dt>
-                    <dd>{selectedJob.model || selectedJob.provider}</dd>
-                  </div>
-                ) : null}
-                <div>
-                  <dt>创建时间</dt>
-                  <dd>{formatDateTime(selectedJob.created_at)}</dd>
-                </div>
-                <div>
-                  <dt>更新时间</dt>
-                  <dd>{formatDateTime(selectedJob.updated_at)}</dd>
-                </div>
-                <div className="detail-id-row">
-                  <dt>任务 ID</dt>
-                  <dd>{selectedJob.id}</dd>
-                </div>
-                {selectedJob.rerun_of_job_id ? (
-                  <div className="detail-id-row">
-                    <dt>来源任务</dt>
-                    <dd>{selectedJob.rerun_of_job_id}</dd>
-                  </div>
-                ) : null}
-              </dl>
-            </section>
-
-            <div className="timeline detail-timeline">
-              <div className="section-title">
-                <Sparkles size={17} />
-                研究日志
-              </div>
-              {events.length === 0 ? (
-                <div className="empty-state">
-                  <PauseCircle size={18} />
-                  暂无研究日志
-                </div>
-              ) : (
-                events.map((event) => (
-                  <div className="event-row" key={event.id}>
-                    <div className="event-icon">{getEventIcon(event.type)}</div>
-                    <div>
-                      <strong>{event.message}</strong>
-                      <span>{new Date(event.created_at).toLocaleTimeString("zh-CN")}</span>
-                      <EventDetail event={event} />
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        ) : (
-          <>
-        <form className="research-form" onSubmit={handleSubmit}>
-          <div className="field-row">
-            <label htmlFor="query">研究问题</label>
-            {modelSelectionEnabled ? (
-              <div className="select-row">
-                <select
-                  aria-label="模型 Provider"
-                  value={provider}
-                  disabled={isRunning || isRestoring}
-                  onChange={(event) => {
-                    setProvider(event.target.value as ProviderName);
-                    setModel("");
-                  }}
-                >
-                  {providers.map((item) => (
-                    <option key={item.value} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  aria-label="模型"
-                  value={selectedModel}
-                  disabled={isRunning || isRestoring || provider === "mock"}
-                  onChange={(event) => setModel(event.target.value)}
-                >
-                  {currentModelOptions.map((item) => (
-                    <option key={`${provider}-${item.id || "default"}`} value={item.id}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-            ) : null}
-          </div>
-
-          <textarea
-            id="query"
-            value={query}
-            disabled={isRunning || isRestoring}
-            onChange={(event) => setQuery(event.target.value)}
-            rows={5}
-          />
-
-          <div className="control-row">
-            <div className="mode-tabs" role="tablist" aria-label="研究模式">
-              {modes.map((item) => (
-                <button
-                  key={item.value}
-                  className={mode === item.value ? "mode-tab active" : "mode-tab"}
-                  role="tab"
-                  aria-selected={mode === item.value}
-                  type="button"
-                  disabled={isRunning || isRestoring}
-                  onClick={() => setMode(item.value)}
-                >
-                  <span>{item.label}</span>
-                  <small>{item.detail}</small>
-                </button>
+  function renderEventDetail(event: ResearchEvent) {
+    if (event.type === "tool_result") {
+      const eventSources = parseSources(event.payload.sources);
+      const content = event.payload.content;
+      return (
+        <>
+          {typeof content === "string" && content ? (
+            <Accordion className="tool-output">
+              <Accordion.Item id={`tool-${event.id}`}>
+                <Accordion.Heading>
+                  <Accordion.Trigger className="tool-output-trigger">
+                    {locale === "zh" ? "查看工具返回" : "View tool output"}
+                    <Accordion.Indicator />
+                  </Accordion.Trigger>
+                </Accordion.Heading>
+                <Accordion.Panel>
+                  <Accordion.Body><pre>{content}</pre></Accordion.Body>
+                </Accordion.Panel>
+              </Accordion.Item>
+            </Accordion>
+          ) : null}
+          {eventSources.length ? (
+            <div className="event-source-grid">
+              {eventSources.map((source) => (
+                <SourceCardItem
+                  key={`${event.id}-${source.citationId}-${source.url}`}
+                  source={source}
+                  evidenceLabel={evidenceLabel}
+                />
               ))}
             </div>
+          ) : null}
+        </>
+      );
+    }
+    if (event.type === "llm_result") {
+      const preview = event.payload.content_preview;
+      return typeof preview === "string" && preview ? <p className="t-line">{preview}</p> : null;
+    }
+    if (event.type === "visit_progress") {
+      const visited = event.payload.visited;
+      const target = event.payload.target;
+      const fullText = event.payload.full_text;
+      if (typeof visited === "number" && typeof target === "number") {
+        return (
+          <p className="t-line mono">
+            {locale === "zh" ? `已访问 ${visited} 个候选来源` : `${visited} candidate sources visited`}
+            {typeof fullText === "number"
+              ? locale === "zh"
+                ? `，全文证据 ${fullText}/${target} 个`
+                : ` · full-text ${fullText}/${target}`
+              : ""}
+          </p>
+        );
+      }
+    }
+    if (event.type === "evidence_ready") {
+      const total = event.payload.total_cards;
+      return typeof total === "number" ? (
+        <p className="t-line mono">
+          {locale === "zh" ? `已抽取证据卡片 ${total} 张` : `${total} evidence cards extracted`}
+        </p>
+      ) : null;
+    }
+    if (event.type === "source_selected") {
+      const selected = event.payload.selected_count;
+      const target = event.payload.target;
+      const fullText = event.payload.full_text_count;
+      return (
+        <p className="t-line mono">
+          {locale === "zh" ? "已筛选来源：最终 " : "Sources selected: "}
+          {typeof selected === "number" ? selected : "?"}
+          {typeof target === "number" ? `/${target}` : ""}
+          {typeof fullText === "number"
+            ? locale === "zh"
+              ? `，全文证据 ${fullText} 个`
+              : ` · ${fullText} full-text`
+            : ""}
+        </p>
+      );
+    }
+    return null;
+  }
 
-            <div className="action-buttons">
-              {isRunning ? (
-                <button
-                  className="cancel-button"
-                  type="button"
-                  disabled={isCancelling}
-                  onClick={handleCancel}
-                >
-                  {isCancelling ? <Loader2 className="spin" size={17} /> : <Square size={15} />}
-                  {isCancelling ? "正在停止" : "停止"}
-                </button>
-              ) : null}
-              <button
-                className="submit-button"
-                type="submit"
-                disabled={isRunning || isRestoring || !query.trim()}
-              >
-                {isRestoring ? <Loader2 className="spin" size={18} /> : <ArrowRight size={18} />}
-                {isRestoring ? "正在恢复" : "开始"}
-              </button>
+  /* ---------- view bodies ---------- */
+
+  function renderEmpty() {
+    return (
+      <div className="empty-state">
+        <h1>{t.wb.emptyTitle}</h1>
+        <p className="sub">{t.wb.emptySub}</p>
+
+        <form onSubmit={handleSubmit}>
+          <Card className="ask-box flow-ring" variant="secondary">
+            <label className="sr-only" htmlFor="wb-ask">{t.wb.emptyTitle}</label>
+            <TextArea
+              id="wb-ask"
+              rows={2}
+              placeholder={t.wb.askPlaceholder}
+              value={query}
+              disabled={isRunning || isRestoring}
+              onChange={(event) => setQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && !event.shiftKey) {
+                  event.preventDefault();
+                  if (query.trim()) void startResearch(query, mode);
+                }
+              }}
+              variant="secondary"
+            />
+            <div className="ask-foot">
+              <ResearchModeTabs
+                ariaLabel={t.nav.modes}
+                disabled={isRunning || isRestoring}
+                labels={t.modes}
+                mode={mode}
+                onModeChange={setMode}
+              />
+              <Button className="go" type="submit" isDisabled={isRunning || isRestoring || !query.trim()} variant="primary">
+                {isRestoring ? <Spinner size="sm" /> : null}
+                {t.home.startResearch}
+              </Button>
             </div>
-          </div>
+          </Card>
         </form>
 
-        <ErrorNotice
-          message={error}
-          canRetry={jobStatus === "failed" && errorRetryable}
-          isRetrying={isRerunning}
-          onRetry={() => void handleRetry()}
-        />
+        {modelSelectionEnabled ? (
+          <Accordion className="adv" variant="surface">
+            <Accordion.Item id="advanced-model-settings">
+              <Accordion.Heading>
+                <Accordion.Trigger className="adv-trigger">
+                  {t.wb.advanced}
+                  <Accordion.Indicator />
+                </Accordion.Trigger>
+              </Accordion.Heading>
+              <Accordion.Panel>
+                <Accordion.Body>
+                  <div className="adv-grid">
+                    <div className="adv-field">
+                      <label htmlFor="adv-provider">Provider</label>
+                      <select
+                        id="adv-provider"
+                        value={provider}
+                        disabled={isRunning || isRestoring}
+                        onChange={(event) => {
+                          setProvider(event.target.value as ProviderName);
+                          setModel("");
+                        }}
+                      >
+                        {PROVIDER_ORDER.map((value) => (
+                          <option key={value} value={value}>{t.providers[value]}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="adv-field">
+                      <label htmlFor="adv-model">Model</label>
+                      <select
+                        id="adv-model"
+                        value={selectedModel}
+                        disabled={isRunning || isRestoring || provider === "mock"}
+                        onChange={(event) => setModel(event.target.value)}
+                      >
+                        {currentModelOptions.map((item) => (
+                          <option key={`${provider}-${item.id || "default"}`} value={item.id}>{item.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+                  {provider !== "mock" ? (
+                    <div className="adv-field adv-byok">
+                      <label htmlFor="adv-api-key">{t.wb.byokLabel}</label>
+                      <input
+                        id="adv-api-key"
+                        type="password"
+                        autoComplete="off"
+                        value={apiKey}
+                        disabled={isRunning || isRestoring}
+                        placeholder={t.wb.byokPlaceholder}
+                        onChange={(event) => setApiKey(event.target.value)}
+                      />
+                      <p className="adv-hint">{t.wb.byokHint}</p>
+                    </div>
+                  ) : null}
+                </Accordion.Body>
+              </Accordion.Panel>
+            </Accordion.Item>
+          </Accordion>
+        ) : null}
+
+        <div className="recent-block">
+          <h2>{t.wb.recentTitle}</h2>
+          {historyJobs.length === 0 ? (
+            <p className="recent-empty">{t.wb.recentEmpty}</p>
+          ) : (
+            <div className="recent-grid">
+              {historyJobs.slice(0, 6).map((job) => (
+                <Button key={job.id} className="recent-card" onPress={() => openHistoryJob(job)} variant="ghost">
+                  <span className="q">{job.query}</span>
+                  <span className="m">
+                    <span className={`s-dot${job.status === "failed" ? " failed" : ""}`} />
+                    {t.modes[job.mode]} · {formatDateTime(job.updated_at)}
+                    {job.status === "failed" ? (locale === "zh" ? " · 失败" : " · failed") : ""}
+                  </span>
+                </Button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function renderRun() {
+    return (
+      <>
+        <div className="run-head">
+          <p className="q-label">{t.modes[mode]} {t.wb.runLabelSuffix}</p>
+          <h1>{query}</h1>
+          <div className="run-meta">
+            <span className="chip"><span className="dot live" />{t.wb.running}</span>
+            {jobId ? <span className="chip mono">{jobId}</span> : null}
+          </div>
+        </div>
+
+        {error ? <ErrorNotice message={error} /> : null}
 
         <div className="timeline">
-          <div className="section-title">
-            <Sparkles size={17} />
-            研究进度
-          </div>
           {events.length === 0 ? (
-            <div className="empty-state">
-              <PauseCircle size={18} />
-              等待任务开始
+            <div className="t-step" data-state="active">
+              <div className="t-node"><Spinner color="current" size="sm" /></div>
+              <div className="t-title"><span className="shimmer">{t.wb.crumbResearching}</span></div>
             </div>
           ) : (
             events.map((event) => (
-              <div className="event-row" key={event.id}>
-                <div className="event-icon">{getEventIcon(event.type)}</div>
-                <div>
-                  <strong>{event.message}</strong>
-                  <span>{new Date(event.created_at).toLocaleTimeString("zh-CN")}</span>
-                  <EventDetail event={event} />
+              <div className="t-step" data-state="done" key={event.id}>
+                <div className="t-node">{getEventNode(event.type)}</div>
+                <div className="t-title">{event.message}</div>
+                <div className="t-detail">
+                  {renderEventDetail(event)}
+                  <span className="t-time mono">{new Date(event.created_at).toLocaleTimeString(locale === "zh" ? "zh-CN" : "en-US")}</span>
                 </div>
               </div>
             ))
           )}
+          {isRunning && events.length > 0 ? (
+            <div className="t-step" data-state="active">
+              <div className="t-node"><Spinner color="current" size="sm" /></div>
+              <div className="t-title">
+                <span className="shimmer">{liveModelText ? t.wb.liveOutput : t.wb.crumbResearching}</span>
+              </div>
+              {liveModelText ? (
+                <div className="t-detail">
+                  <Card className="draft-preview" variant="secondary">{liveModelText}</Card>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
-        {liveModelText ? (
-          <div className="stream-panel">
-            <div className="section-title compact-title">
-              <Bot size={15} />
-              模型实时输出
-            </div>
-            <pre>{liveModelText}</pre>
-          </div>
-        ) : null}
-          </>
-        )}
-      </section>
+        <div className="run-actions">
+          {isRunning ? (
+            <Button size="sm" variant="danger-soft" isDisabled={isCancelling} onPress={handleCancel}>
+              {isCancelling ? <Spinner color="current" size="sm" /> : <Square size={14} />}
+              {isCancelling ? t.wb.stopping : t.wb.cancel}
+            </Button>
+          ) : null}
+        </div>
+      </>
+    );
+  }
 
-      <aside className="report-panel">
-        <div className="report-header">
-          <div className="section-title">
-            <FileText size={17} />
-            研究报告
+  function renderReport() {
+    const status = selectedJob?.status ?? jobStatus;
+    return (
+      <>
+        <div className="report-head">
+          <p className="q-label kicker">{t.modes[mode]} {t.wb.reportLabelSuffix}</p>
+          <h1>{query}</h1>
+          <div className="run-meta">
+            <span className="chip"><b>{sources.length}</b>&nbsp;{t.wb.sourcesCited}</span>
+            <span className={`job-status ${status || "idle"}`}>{jobStatusLabel(status)}</span>
+            {jobId ? <span className="chip mono">{jobId}</span> : null}
+            {selectedJob ? <span className="chip">{formatDateTime(selectedJob.updated_at)}</span> : null}
           </div>
           <div className="report-actions">
-            <button
-              className="icon-button report-export-button"
-              type="button"
-              aria-label="导出 Markdown"
-              title="导出 Markdown"
-              disabled={!report}
-              onClick={() => downloadMarkdownReport({ query, report, jobId })}
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={!report}
+              onPress={() => downloadMarkdownReport({ query, report, jobId })}
             >
-              <Download size={17} />
-            </button>
-            <button
-              className="icon-button report-export-button"
-              type="button"
-              aria-label="导出 PDF"
-              title="导出 PDF"
-              disabled={!report || !jobId || isRunning || isExportingPdf}
-              onClick={() => void handlePdfExport()}
+              <Download size={15} />{t.wb.exportMd}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              isDisabled={!report || !jobId || isRunning || isExportingPdf}
+              onPress={() => void handlePdfExport()}
             >
-              {isExportingPdf ? <Loader2 className="spin" size={17} /> : <FileDown size={17} />}
-            </button>
+              {isExportingPdf ? <Spinner color="current" size="sm" /> : <FileDown size={15} />}{t.wb.exportPdf}
+            </Button>
+            {selectedJob && selectedJob.status !== "failed" ? (
+              <Button
+                size="sm"
+                variant="ghost"
+                isDisabled={isRerunning || selectedJob.status === "queued" || selectedJob.status === "running"}
+                onPress={() => void handleRerun()}
+              >
+                {isRerunning ? <Spinner color="current" size="sm" /> : <RotateCcw size={15} />}
+                {isRerunning ? t.wb.rerunning : t.wb.rerun}
+              </Button>
+            ) : null}
           </div>
         </div>
-        <article className="report-body">
+
+        {error ? <ErrorNotice message={error} /> : null}
+
+        <article className="report-body markdown-body">
           {report ? (
             <ReactMarkdown remarkPlugins={[remarkGfm]} components={reportMarkdownComponents}>
               {reportMarkdown}
             </ReactMarkdown>
           ) : (
-            "报告将在研究完成后显示。"
+            <p className="report-placeholder">{t.wb.reportPlaceholder}</p>
           )}
         </article>
 
-        <div className="source-list">
-          <div className="section-title">
-            <Search size={17} />
-            来源
+        {sources.length ? (
+          <div className="reference-list">
+            <div className="ref-title">{t.wb.references}</div>
+            {sources.map((source) => (
+              <p key={`reference-${source.url}`}>{formatApaReference(source)}</p>
+            ))}
           </div>
-          {sources.length === 0 ? (
-            <span className="muted">暂无来源</span>
-          ) : (
-            sources.map((source) => <SourceCard key={source.url} source={source} />)
-          )}
-          {sources.length ? (
-            <div className="reference-list">
-              <div className="section-title compact-title">参考文献</div>
-              {sources.map((source) => (
-                <p key={`reference-${source.url}`}>{formatApaReference(source)}</p>
-              ))}
-            </div>
-          ) : null}
+        ) : null}
+      </>
+    );
+  }
+
+  function renderFailed() {
+    return (
+      <>
+        <div className="run-head">
+          <p className="q-label">{t.modes[mode]} {t.wb.runLabelSuffix}</p>
+          <h1>{query}</h1>
         </div>
-      </aside>
-    </main>
+        <Card className="fail-card" variant="tertiary">
+          <h2>{error || t.wb.failTitle}</h2>
+          <p>{t.wb.failBody}</p>
+          {errorRetryable ? (
+            <Button size="sm" variant="primary" isDisabled={isRerunning} onPress={() => void handleRetry()}>
+              {isRerunning ? <Spinner color="current" size="sm" /> : <RotateCcw size={15} />}
+              {isRerunning ? t.wb.retrying : t.wb.retry}
+            </Button>
+          ) : null}
+        </Card>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <div className="atmosphere" aria-hidden="true" />
+
+      <div className="wb" data-rail={railShown ? "on" : "off"}>
+        <WorkbenchSidebar
+          formatDateTime={formatDateTime}
+          historyJobs={historyJobs}
+          jobId={jobId}
+          onNewResearch={handleNewResearch}
+          onOpenHistory={openHistoryJob}
+        />
+
+        {/* ---------- main ---------- */}
+        <main className="main">
+          <div className="topbar">
+            <Button
+              className="menu-btn"
+              size="sm"
+              variant="ghost"
+              aria-label={t.wb.openMenu}
+              onPress={() => setMenuOpen((open) => !open)}
+            >
+              <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                <path d="M2 4h12M2 8h12M2 12h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </Button>
+            <p className="crumb">{t.wb.crumbRoot} <span className="sep">/</span> <b>{crumbCurrent}</b></p>
+            <span className="spacer" />
+            <LanguageSwitch />
+            {railShown ? (
+              <MobileSourcesModal
+                evidenceLabel={evidenceLabel}
+                isOpen={railOpen}
+                onOpenChange={setRailOpen}
+                sources={railSources}
+                view={view}
+              />
+            ) : null}
+          </div>
+
+          <div className="main-scroll">
+            <div className="main-inner">
+              {view === "empty"
+                ? renderEmpty()
+                : view === "run"
+                  ? renderRun()
+                  : view === "failed"
+                    ? renderFailed()
+                    : renderReport()}
+            </div>
+          </div>
+        </main>
+
+        <SourcesRail
+          evidenceLabel={evidenceLabel}
+          isRunning={isRunning}
+          sources={railSources}
+          view={view}
+        />
+      </div>
+
+      <div
+        className="scrim"
+        onClick={() => {
+          setMenuOpen(false);
+        }}
+      />
+      <Card className={`toast${toastMessage ? " show" : ""}`} role="status" variant="tertiary">
+        {toastMessage}
+      </Card>
+    </>
+  );
+}
+
+function ErrorNotice({ message }: { message: string }) {
+  if (!message) return null;
+  return (
+    <div className="error-line" role="alert">
+      <span>{message}</span>
+    </div>
   );
 }

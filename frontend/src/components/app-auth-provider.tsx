@@ -1,120 +1,69 @@
 "use client";
 
 import {
-  ClerkProvider,
-  SignInButton,
-  UserButton,
-  useAuth,
-  useUser,
-} from "@clerk/nextjs";
-import { LogIn, UserRound } from "lucide-react";
-import {
   createContext,
   type ReactNode,
+  useCallback,
   useContext,
-  useLayoutEffect,
+  useMemo,
+  useState,
 } from "react";
 
-import { setAuthTokenProvider } from "@/lib/api";
-
-type AppAuthState = {
+export type AppAuthState = {
   configured: boolean;
   isLoaded: boolean;
   isSignedIn: boolean;
   userId: string | null;
 };
 
+type AppAuthContextValue = AppAuthState & {
+  updateAuth: (next: Omit<AppAuthState, "configured">) => void;
+};
+
 const publishableKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY?.trim() || "";
-const guestAuthState: AppAuthState = {
-  configured: false,
+const initialAuthState: AppAuthState = {
+  configured: Boolean(publishableKey),
+  // Authentication is optional. The product starts in guest mode while Clerk
+  // initializes so an external auth outage cannot freeze research.
   isLoaded: true,
   isSignedIn: false,
   userId: null,
 };
-const AppAuthContext = createContext<AppAuthState>(guestAuthState);
 
-function ClerkAuthBridge({ children }: { children: ReactNode }) {
-  const { getToken, isLoaded, isSignedIn, userId } = useAuth();
-
-  useLayoutEffect(() => {
-    setAuthTokenProvider(isSignedIn ? () => getToken() : null);
-    return () => setAuthTokenProvider(null);
-  }, [getToken, isSignedIn, userId]);
-
-  return (
-    <AppAuthContext.Provider
-      value={{
-        configured: true,
-        isLoaded,
-        isSignedIn: Boolean(isSignedIn),
-        userId: userId ?? null,
-      }}
-    >
-      {children}
-    </AppAuthContext.Provider>
-  );
-}
+const AppAuthContext = createContext<AppAuthContextValue>({
+  ...initialAuthState,
+  updateAuth: () => undefined,
+});
 
 export function AppAuthProvider({ children }: { children: ReactNode }) {
-  if (!publishableKey) {
-    return (
-      <AppAuthContext.Provider value={guestAuthState}>
-        {children}
-      </AppAuthContext.Provider>
-    );
-  }
+  const [state, setState] = useState(initialAuthState);
+  const updateAuth = useCallback((next: Omit<AppAuthState, "configured">) => {
+    setState((current) => {
+      const updated = { configured: Boolean(publishableKey), ...next };
+      return current.configured === updated.configured
+        && current.isLoaded === updated.isLoaded
+        && current.isSignedIn === updated.isSignedIn
+        && current.userId === updated.userId
+        ? current
+        : updated;
+    });
+  }, []);
+  const value = useMemo(() => ({ ...state, updateAuth }), [state, updateAuth]);
 
-  return (
-    <ClerkProvider publishableKey={publishableKey}>
-      <ClerkAuthBridge>{children}</ClerkAuthBridge>
-    </ClerkProvider>
-  );
+  return <AppAuthContext.Provider value={value}>{children}</AppAuthContext.Provider>;
 }
 
 export function useAppAuth(): AppAuthState {
-  return useContext(AppAuthContext);
+  const context = useContext(AppAuthContext);
+  return {
+    configured: context.configured,
+    isLoaded: context.isLoaded,
+    isSignedIn: context.isSignedIn,
+    userId: context.userId,
+  };
 }
 
-function ConfiguredAccountControl() {
-  const { isLoaded, isSignedIn, user } = useUser();
-
-  if (!isLoaded) {
-    return <div className="account-status muted">正在读取账号</div>;
-  }
-
-  if (!isSignedIn) {
-    return (
-      <SignInButton mode="modal">
-        <button className="account-sign-in" type="button">
-          <LogIn size={16} />
-          登录并同步历史
-        </button>
-      </SignInButton>
-    );
-  }
-
-  return (
-    <div className="account-profile">
-      <UserButton />
-      <span>
-        <strong>{user.fullName || user.primaryEmailAddress?.emailAddress || "已登录"}</strong>
-        <small>历史已绑定账号</small>
-      </span>
-    </div>
-  );
-}
-
-export function AccountControl() {
-  const { configured } = useAppAuth();
-  if (configured) return <ConfiguredAccountControl />;
-
-  return (
-    <div className="account-profile guest">
-      <UserRound size={20} />
-      <span>
-        <strong>访客模式</strong>
-        <small>历史保存在当前浏览器</small>
-      </span>
-    </div>
-  );
+export function useAppAuthRuntime() {
+  const { configured, updateAuth } = useContext(AppAuthContext);
+  return { configured, publishableKey, updateAuth };
 }
