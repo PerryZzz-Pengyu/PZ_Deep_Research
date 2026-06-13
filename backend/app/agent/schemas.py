@@ -21,6 +21,10 @@ class ResearchRequest(BaseModel):
     mode: ResearchMode = "deep"
     provider: Optional[ProviderName] = None
     model: Optional[str] = None
+    # BYOK credentials (community edition). exclude=True keeps them out of
+    # model_dump()/model_dump_json(), so they never reach persistence or SSE.
+    api_key: Optional[str] = Field(default=None, exclude=True, repr=False)
+    base_url: Optional[str] = Field(default=None, exclude=True, repr=False)
 
 
 class ResearchEvent(BaseModel):

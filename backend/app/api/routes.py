@@ -154,16 +154,22 @@ async def create_research_job(
         requested_provider=request.provider,
         requested_model=request.model,
     )
+    # BYOK is community-only; cloud edition ignores client-supplied credentials.
+    byok_api_key = request.api_key if settings.edition == "community" else None
+    byok_base_url = request.base_url if settings.edition == "community" else None
     routed_request = request.model_copy(
         update={
             "provider": route.provider,
             "model": route.model,
+            "api_key": byok_api_key,
+            "base_url": byok_base_url,
         }
     )
     missing = missing_provider_requirements(
         settings,
         route.provider,
         model_override=route.model,
+        api_key_override=byok_api_key,
     )
     if missing:
         logger.warning(
@@ -211,6 +217,7 @@ async def get_readiness() -> dict[str, object]:
         )
         database_ready = False
     return {
+        "edition": settings.edition,
         "providers": providers,
         "tools": {
             "search": {
