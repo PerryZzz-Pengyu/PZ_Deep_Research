@@ -76,7 +76,6 @@ PZ_Deep_Research/
     dependency-management.md
     api-key-setup.md
     auth-setup.md
-    neon-backup-restore.md
     changelog.md
   README.md
   README.zh-CN.md
@@ -130,7 +129,7 @@ PZ_Deep_Research/
 - 已为 ProviderFactory 增加测试，覆盖默认 Provider、共享默认模型、Provider 专属模型和未知 Provider。
 - OpenAI 已接入 Responses API 原生 streaming，并经过真实任务人工联调。
 - Claude 和 Gemini 已完成账号模型列表、最小真实生成和实际任务日志验证。
-- 生产路由 `openai-default-v1` 已上线：搜索规划和报告使用 `gpt-5.4-mini`，证据卡片使用 `gpt-5-nano`；客户端不能覆盖生产 Provider/模型。
+- 版本化 Cloud 路由接缝已实现；具体模型组合和路由版本已移入私有 Cloud 仓库。
 
 剩余工作：
 
@@ -201,9 +200,9 @@ PZ_Deep_Research/
 - 重新运行：终态任务按原问题、模式和原任务模型配置创建独立新任务，并通过 `rerun_of_job_id` 记录来源任务；运行中任务拒绝重复重跑。任务保存 `routing_version`，重跑和失败重试复用原路由版本。
 - 产品化错误与失败重试：工程异常统一映射为产品错误码，原始异常只写脱敏日志；失败任务显示单一“重试”按钮。报告阶段保存证据检查点并只重试报告，其他阶段执行完整研究重试。
 - PostgreSQL 生产准备：支持应用 pooled URL 与迁移 direct URL 分离、连接池参数、数据库 readiness 和安全连通性检查脚本。
-- Neon 真实实例已完成迁移、连接检查和后端重启恢复验收；已有 3298 字报告及 16 条任务事件在重启后完整恢复。
-- GPT 生产模型路由已实现：`MODEL_ROUTING_MODE=production` 时固定 OpenAI `gpt-5.4-mini` + `gpt-5-nano`，并隐藏 C 端模型选择器；`manual` 仅用于内部测试。
-- open-core 分离接缝已实现：`PZ_EDITION`（默认 `community`）区分社区版（单用户自托管、自选模型、BYOK、SQLite、访客、Docker 一键运行、Apache 2.0）与云端版（固定生产路由、忽略客户端 Key、商业资产在私有仓库）；泄露守卫 `check_no_secrets_tracked.py` 拦截商业文档误入库；双仓物理分离的迁移清单保存在私有 `project-docs/private/cloud-split-plan.md`。
+- PostgreSQL 通用存储与迁移能力保留公开；托管数据库实例、备份恢复数据和生产演练记录迁入私有 Cloud 仓库。
+- Cloud 版本化路由接缝已实现并默认未配置；实际 Provider、模型组合和路由版本由私有仓库注入。
+- open-core 分离接缝已实现：`PZ_EDITION`（默认 `community`）区分社区版（单用户自托管、自选模型、请求级 BYOK、SQLite、访客、Docker 一键运行、Apache 2.0）与云端版（私有路由、忽略客户端 Key、商业资产在私有仓库）；CI 泄露守卫拦截敏感路径、敏感文件名和私密标记。
 - Markdown 导出：浏览器直接下载当前报告原始 Markdown，保留引用和参考文献，使用研究问题生成安全文件名。
 - PDF 导出：后端按访客权限读取报告，使用 Playwright Chromium 生成 A4、分页、带页码和任务元数据的正式 PDF。
 - 数据归属预留 `user_id`，未来登录时可将匿名访客历史归并到账号。
@@ -212,9 +211,9 @@ PZ_Deep_Research/
 阶段 4 尚未完成：
 
 - 继续追问暂缓，等聊天系统设计后再实施。
-- 分阶段模型质量测试暂缓；当前先使用版本化 GPT 默认路由，后续评测后再升级路由版本。
+- 分阶段模型质量测试暂缓；Cloud 路由评测和升级在私有仓库进行。
 - 关键桌面/移动视口的视觉回归验证。
-- Neon 备份恢复演练和多实例部署验收。
+- 通用 PostgreSQL 多实例兼容性验证；具体托管数据库演练属于私有 Cloud 运营工作。
 
 阶段 4 退出条件：
 
@@ -234,7 +233,7 @@ PZ_Deep_Research/
 3. 证据卡片生成：从访问正文中抽取可引用事实、证据强度、局限和元数据，重点比较准确率、压缩率、速度和成本。
 4. 最终报告撰写：基于已选证据生成符合字数、引用、References 和结构要求的报告，重点比较事实一致性、引用覆盖率、可读性和格式服从度。
 
-质量测试可以使用 OpenAI、Claude、Gemini 的候选模型，但测试结论服务于后台模型编排，不向 C 端用户提供多模型切换。在质量测试恢复前，生产任务统一使用 `openai-default-v1`；后续每次调整模型组合都发布新的路由版本，便于质量追踪、成本分析和故障回溯。
+质量测试可以使用 OpenAI、Claude、Gemini 的候选模型，但 Cloud 测试结论、模型组合和路由版本只在私有仓库维护；公开仓只保留可替换的 Provider 与版本字段。
 
 ### 阶段 5：产品化
 
@@ -266,7 +265,7 @@ PZ_Deep_Research/
 | 阶段 1：项目基础 | 已完成 | 工程结构、运行环境和协作文档已经建立 |
 | 阶段 2：模型无关 Runtime | 基础完成 | Provider 抽象和人工真实调用已完成；Claude/Gemini 原生流式、质量测试和成本计算仍需补齐 |
 | 阶段 3：工具层 | MVP 完成 | SerpAPI + Jina 主链路可用；备用读取链路和学术元数据增强未完成 |
-| 阶段 4：网页端 MVP | 部分完成 | Neon 重启恢复、GPT 生产路由、隐藏模型选择、取消/恢复/历史/重跑、错误恢复和导出已完成；已接入 HeroUI/Prism 设计系统、营销落地页与中英多语言；质量测试暂缓，备份演练与视觉回归待完成 |
+| 阶段 4：网页端 MVP | 部分完成 | SQLite/PostgreSQL 重启恢复、Community 多模型 BYOK、取消/恢复/历史/重跑、错误恢复和导出已完成；已接入 HeroUI/Prism 设计系统、营销落地页与中英多语言；Cloud 路由和生产数据库运维转入私有仓库，质量测试与视觉回归待完成 |
 | 阶段 5：产品化 | 已开始 | Clerk 登录、匿名历史归并和账号隔离已完成；额度、支付、队列、安全、监控和部署仍待实施 |
 
 ## 下一实施里程碑
