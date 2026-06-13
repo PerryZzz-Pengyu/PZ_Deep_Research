@@ -65,7 +65,7 @@
 
 暂时不引入复杂测试体系，避免过早增加维护成本。
 
-截至 2026-06-13，后端 pytest 共 122 个用例通过，前端 Playwright Chromium 共 7 个端到端用例通过（前端重设计后按新 UI / 路由重写，测试英文界面）。
+截至 2026-06-13，后端 pytest 共 137 个用例通过，前端 Playwright Chromium 共 12 个端到端用例通过（默认端口 3000/8000；前端重设计后按新 UI / 路由重写，测试英文界面）。
 
 ## 测试优先开发原则
 
@@ -275,6 +275,8 @@ npm run test:e2e
 ```
 
 测试会把浏览器内原本指向 `localhost:8000` 的 API 请求路由到隔离后端，避免误用真实 Provider 或搜索配置。
+
+注意：`PLAYWRIGHT_FRONTEND_PORT` 应保持 `3000`。后端 `CORS_ORIGINS` 默认只允许 `localhost:3000` / `127.0.0.1:3000`，若把前端跑在其他端口，真实任务流的跨域 POST 会被拒为 `network_error` 导致用例失败；确需换端口时，要同步把该 origin 加入 `CORS_ORIGINS`。
 
 浏览器由 Playwright 安装到用户缓存：
 
