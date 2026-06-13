@@ -13,6 +13,54 @@ VISITOR_A = "11111111-1111-4111-8111-111111111111"
 VISITOR_B = "22222222-2222-4222-8222-222222222222"
 
 
+def test_sql_store_records_and_aggregates_usage_by_owner(tmp_path) -> None:
+    database_url = f"sqlite+aiosqlite:///{tmp_path / 'usage.db'}"
+
+    async def run_scenario():
+        store = SqlJobStore(database_url)
+        await store.initialize()
+        request = ResearchRequest(query="用量账本测试", mode="quick", provider="mock")
+        job_a1 = await store.create_job(request, provider="mock", anonymous_id=VISITOR_A)
+        job_a2 = await store.create_job(request, provider="mock", anonymous_id=VISITOR_A)
+        job_b = await store.create_job(request, provider="mock", anonymous_id=VISITOR_B)
+        await store.record_usage(
+            job_a1.id, input_tokens=100, output_tokens=40, llm_calls=2, tool_calls=3
+        )
+        await store.record_usage(
+            job_a2.id, input_tokens=50, output_tokens=10, llm_calls=1, tool_calls=1
+        )
+        await store.record_usage(
+            job_b.id, input_tokens=999, output_tokens=999, llm_calls=9, tool_calls=9
+        )
+        await store.dispose()
+
+        # New store instance: usage must survive reconnect.
+        store2 = SqlJobStore(database_url, auto_create_schema=False)
+        await store2.initialize()
+        reloaded = await store2.get_job(job_a1.id, anonymous_id=VISITOR_A)
+        usage_a = await store2.aggregate_usage(anonymous_id=VISITOR_A)
+        usage_b = await store2.aggregate_usage(anonymous_id=VISITOR_B)
+        await store2.dispose()
+        return reloaded, usage_a, usage_b
+
+    reloaded, usage_a, usage_b = asyncio.run(run_scenario())
+
+    assert reloaded.usage_input_tokens == 100
+    assert reloaded.usage_output_tokens == 40
+    assert reloaded.usage_llm_calls == 2
+    assert reloaded.usage_tool_calls == 3
+    # Owner A aggregates across both jobs; B is isolated.
+    assert usage_a == {
+        "input_tokens": 150,
+        "output_tokens": 50,
+        "llm_calls": 3,
+        "tool_calls": 4,
+        "job_count": 2,
+    }
+    assert usage_b["input_tokens"] == 999
+    assert usage_b["job_count"] == 1
+
+
 def test_sql_store_persists_jobs_events_and_report_drafts(tmp_path) -> None:
     database_url = f"sqlite+aiosqlite:///{tmp_path / 'research.db'}"
 
@@ -266,7 +314,7 @@ def test_alembic_upgrade_creates_versioned_product_schema(tmp_path) -> None:
     job, version = asyncio.run(run_scenario())
 
     assert job.query == "迁移后创建任务"
-    assert version == "20260611_04"
+    assert version == "20260613_05"
 
 
 def test_alembic_upgrade_baselines_matching_unversioned_schema(tmp_path) -> None:
@@ -285,4 +333,4 @@ def test_alembic_upgrade_baselines_matching_unversioned_schema(tmp_path) -> None
         await migrated_store.dispose()
         return version
 
-    assert asyncio.run(run_scenario()) == "20260611_04"
+    assert asyncio.run(run_scenario()) == "20260613_05"

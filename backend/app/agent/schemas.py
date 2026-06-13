@@ -60,6 +60,11 @@ class ResearchJob(BaseModel):
     error_code: Optional[str] = None
     error_retryable: bool = False
     error_stage: Optional[str] = None
+    # Per-job usage aggregate (raw counts only; cost/pricing is a Cloud concern).
+    usage_input_tokens: int = 0
+    usage_output_tokens: int = 0
+    usage_llm_calls: int = 0
+    usage_tool_calls: int = 0
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
 
