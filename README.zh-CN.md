@@ -9,6 +9,15 @@
 > [!WARNING]
 > 当前项目处于实验性 MVP 阶段。模型输出可能包含遗漏、错误或不准确引用，不应直接用于医疗、法律、金融等高风险决策。
 
+## 版本（Editions）
+
+PZ Deep Research 采用 open-core 模式，通过 `PZ_EDITION` 在运行时选择：
+
+- **社区版**（`PZ_EDITION=community`，默认）：完整、可自托管的单用户研究工具。用户自选 Provider 与模型、自带 API Key（BYOK），默认 SQLite + 访客模式，提供 Docker 一键运行。这是开源产品，采用 Apache 2.0 许可证。
+- **云端版**（`PZ_EDITION=cloud`）：托管的商业模式。使用版本化生产模型路由，忽略客户端传入的 provider/模型/Key。订阅、额度、计费、多租户与运营位于独立的私有仓库，不属于本开源仓库。
+
+一句话：开源版是你自己运行的完整单用户工具；付费云服务提供免配置、多用户、稳定可靠的托管体验。
+
 ## 核心能力
 
 - 后台支持 OpenAI、Anthropic Claude、Google Gemini 和离线 mock Provider。
@@ -55,7 +64,7 @@
 
 ## 技术栈
 
-- 前端：Next.js 16、React 19、TypeScript
+- 前端：Next.js 16、React 19、TypeScript、HeroUI v3.1.0、Tailwind CSS v4、中英双语界面
 - 后端：FastAPI、Python
 - 模型：OpenAI API、Anthropic API、Google Gemini API
 - 搜索：SerpAPI Google Scholar
@@ -71,7 +80,7 @@
 ```text
 .
 ├── backend/              # FastAPI、Agent Runtime、Provider、工具与测试
-├── frontend/             # Next.js 研究工作台
+├── frontend/             # Next.js：营销落地页 (/) + 研究工作台 (/workbench)
 ├── project-docs/         # 计划、产品、架构、测试与变更记录
 ├── .env.example          # 环境变量模板，不包含真实密钥
 ├── .nvmrc                # Node.js 版本声明
@@ -193,7 +202,7 @@ npm ci
 npm run dev
 ```
 
-访问 <http://localhost:3000>。
+访问 <http://localhost:3000> 查看营销落地页，或访问 <http://localhost:3000/workbench> 进入研究工作台。可用顶栏的语言切换（中 / EN）在中英文之间切换。
 
 ## 测试
 
@@ -253,8 +262,8 @@ PZ Deep Research 在早期设计阶段参考了 [Alibaba-NLP/DeepResearch](https
 
 ## 贡献与文档维护
 
-提交代码前请运行后端测试、前端 lint 和生产构建。每次修改代码、架构、配置、依赖、接口或产品行为时，需要同步更新 `project-docs/changelog.md`，并按影响范围更新其他项目文档。
+工作流详见 [CONTRIBUTING.md](CONTRIBUTING.md)。简而言之：提交前请运行后端测试、前端 lint 和生产构建；每次修改代码、架构、配置、依赖、接口或产品行为，需同步更新 `project-docs/changelog.md`，并按影响范围更新其他项目文档。外部贡献者需同意[贡献者许可协议（CLA）](CLA.md)。
 
 ## License
 
-本项目采用 [Apache License 2.0](LICENSE)。
+本仓库的社区版采用 [Apache License 2.0](LICENSE)。云端版代码为专有，位于独立私有仓库，不在本许可证覆盖范围内。

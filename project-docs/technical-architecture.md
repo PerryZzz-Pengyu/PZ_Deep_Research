@@ -33,12 +33,14 @@ Agent Runtime
 
 这样设计的原因是：C 端产品需要稳定的网页体验、可观察的任务进度、可替换的模型能力，以及后续可以扩展搜索、网页访问、文件解析、支付、登录等功能。
 
+额度、支付和成本保护属于后续产品化能力。公开架构只保留接口边界；具体定价、额度参数、成本阈值、供应商预算和结算策略在本地私有文档中维护，不写入公开仓库。
+
 ## 项目目录说明
 
 ```text
 PZ_Deep_Research/
   backend/              # 后端服务和 Agent Runtime
-  frontend/             # 前端网页工作台
+  frontend/             # 前端：营销落地页 (/) + 研究工作台 (/workbench)
   project-docs/         # 项目计划、产品文档、架构文档、变更日志
   README.md             # 英文项目入口说明
   README.zh-CN.md       # 简体中文项目入口说明
@@ -110,16 +112,20 @@ npm 11.16.0
 
 ### 使用 Next.js App Router
 
-位置：`frontend/src/app/`、`frontend/src/components/research-workspace.tsx`
+位置：`frontend/src/app/`、`frontend/src/components/research-workspace.tsx`、`frontend/src/components/home-page.tsx`
 
-当前方案：前端使用 Next.js App Router，第一屏直接是研究工作台。
+当前方案：前端使用 Next.js App Router，分为两条路由：
+
+- `/`：营销落地页（`app/page.tsx` + `home-page.tsx`），含 Hero、研究领域、工作原理、模式、报告预览、FAQ、CTA 和页脚。
+- `/workbench`：研究工作台（`app/workbench/page.tsx` + `research-workspace.tsx`），承载真实研究流程。
+- 落地页提问后通过 `localStorage` 一次性 handoff（`frontend/src/lib/handoff.ts`）跳转工作台并自动开跑。
 
 选择原因：
 
 - 后续适合部署到 Vercel。
 - App Router 适合构建产品型界面和后续服务端页面。
 - React 组件生态成熟，适合做任务进度、报告、来源、历史记录等交互界面。
-- C 端产品第一版不需要营销首页，应该直接进入可用体验。
+- 落地页负责对外讲清楚产品价值与能力边界，工作台保持纯粹的研究体验，两者职责分离。
 
 当前状态：
 
@@ -143,12 +149,23 @@ npm 11.16.0
 - 已实现失败任务产品化重试：用户只看到统一错误提示和一个“重试”按钮；成功或取消任务详情仍保留“重新运行”。
 - 已实现 Markdown 导出：浏览器使用 `Blob` 和临时下载链接导出当前原始报告，文件名由研究问题生成并清理非法字符。
 - 已实现正式 PDF 导出：前端请求受访客权限保护的后端接口，由 Playwright Chromium 输出 A4 PDF。
+- 已落地营销首页（`/`）：品牌、研究领域、工作原理、模式对比、报告预览、FAQ 和 CTA，并支持提问后 handoff 进工作台。
+- 已实现中 / 英多语言切换（默认中文）：见下「设计系统与多语言」。
 - 当前仍没有追问、Word/品牌模板导出、额度和支付交互。
+
+### 设计系统与多语言
+
+- 前端正式使用 HeroUI v3.1.0 与 Tailwind CSS v4。`globals.css` 按官方顺序导入 `tailwindcss` 和 `@heroui/styles`，HeroUI v3 不使用 `HeroUIProvider`。
+- `Button`、`Tabs`、`Card`、`TextArea`、`Modal`、`Tooltip`、`Spinner`、`Accordion` 等基础交互直接来自 `@heroui/react`；PZ 只保留品牌色、深色玻璃视觉、页面布局、报告排版和研究业务组件。
+- 基础层在 `frontend/src/app/globals.css`：PZ 品牌 token、玻璃 / 流光边框、渐变文字、chip、报告 Markdown 与来源样式；落地页和工作台布局分别位于 `app/home.css` 与 `app/workbench/workbench.css`，不再维护通用按钮、Tab、Tooltip、Modal 或 Spinner 状态机。
+- HeroUI 设计参考目录和 `heroui-mark*.svg` 已在正式接入后删除；PZ 使用 `components/brand-mark.tsx` 中自己的品牌标志。
+- 字体使用 Inter（UI/展示）与 Fira Code（代码/等宽），来源于 HeroUI，存放在 `frontend/public/fonts/`，均为 SIL OFL 1.1（可商用、嵌入、再分发），目录内附 `LICENSE.txt`。
+- 多语言由 `frontend/src/lib/i18n.tsx` 提供：`I18nProvider` + `useI18n` + 中英词典（中文为准、英文镜像），`localStorage` 持久化、SSR 安全、自动同步 `<html lang>`；切换器（`components/language-switch.tsx`）布置在首页导航栏与工作台顶栏。新增文案需中英同时补齐，否则 `Dict` 结构不一致会触发类型错误。
 
 后续可替换点：
 
-- UI 可升级为 shadcn/ui 组件体系。
 - 状态管理可从本地 state 升级为 SWR 或 React Query。
+- 多语言可在引入更多语种或服务端渲染需求时升级为成熟 i18n 框架（如 next-intl）。
 - 用户额度、套餐和账号删除后的数据生命周期仍需产品化设计。
 
 Markdown 导出选择纯前端实现，位置为 `frontend/src/lib/markdown-export.ts`。原因是最终报告已经完整存在于前端状态和数据库恢复结果中，导出不需要后端重新生成文件，也不应产生新的模型调用或引用变化。当前文件使用 UTF-8 `text/markdown` Blob，内容与页面当前报告一致，末尾保证至少一个换行。
@@ -184,7 +201,14 @@ PDF 导出位置：
 - 不把模型调用写死在 Agent 循环里，后续维护成本更低。
 - 可以单独测试 Agent 逻辑、模型 Provider 和工具层。
 
-模型路由状态：
+版本接缝（open-core）：
+
+- `PZ_EDITION`（默认 `community`）在 `Settings` 与 `resolve_model_route` 中决定路由策略：
+  - `community`：尊重客户端 Provider/模型（`routing_version=community`、`selection_enabled=True`），并支持 BYOK——`ResearchRequest.api_key`/`base_url` 标记 `exclude=True`，经 `ProviderFactory.create` 覆盖注入，绝不落库/日志/SSE；云端版强制剥离客户端 Key。
+  - `cloud`：维持下述固定生产路由，忽略客户端选择与 Key。`MODEL_ROUTING_MODE` 仍用于云端内部 mock/联调。
+- `/api/readiness` 返回当前 `edition`，前端据此决定是否暴露 Provider/模型选择与 BYOK 输入。
+
+模型路由状态（云端版）：
 
 - `MODEL_ROUTING_MODE=production` 为默认模式。后端忽略客户端传入的 Provider/模型，使用 `PRODUCTION_PROVIDER=openai` 和 `PRODUCTION_MODEL=gpt-5.4-mini` 生成搜索词与报告。
 - OpenAI 证据卡片继续使用 `EVIDENCE_EXTRACTION_MODEL=gpt-5-nano`，因此当前生产路由是“主模型 `gpt-5.4-mini` + 证据模型 `gpt-5-nano`”。
@@ -233,6 +257,13 @@ PDF 导出位置：
 - 在现有取消和刷新恢复基础上增加暂停、继续及跨进程恢复。
 - 增加 token 预算和成本预算控制，目前只有用量记录和成本字段透传。
 - 加强语义来源去重、论文元数据、事实级引用验证和来源可信度评分。
+
+### 商业化技术边界
+
+- 额度、支付、退款和任务结算必须由后端执行，前端不能作为账务事实来源。
+- 所有写操作需要事务和幂等保护，避免并发任务或重复回调造成重复结算。
+- 商业参数应通过服务端配置和版本化管理，不写死在公开前端代码或公开文档中。
+- 任务需要保留必要的用量与异常观测能力，但公开仓库不记录成本公式、利润目标或内部阈值。
 
 ## 模型结构化输出协议
 
