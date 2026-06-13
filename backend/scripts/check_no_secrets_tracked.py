@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """Guard against committing private business material to the public repo.
 
 The community repo keeps commercially sensitive docs out of version control via
@@ -15,6 +16,7 @@ Exit code 0 when clean, 1 when a secret path is tracked or staged.
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -23,6 +25,25 @@ from pathlib import Path
 # Keep this list in sync with the "Private business planning" block in .gitignore.
 SECRET_FILES: tuple[str, ...] = ("project-docs/business-model.md",)
 SECRET_DIRS: tuple[str, ...] = ("project-docs/private/",)
+# The sensitive-name heuristic only applies under these prefixes (where business
+# material lives), so public code/UI files like frontend/.../pricing.tsx are not
+# false-flagged.
+SENSITIVE_NAME_SCOPES: tuple[str, ...] = ("project-docs/",)
+SENSITIVE_NAME_PATTERN = re.compile(
+    r"(^|/)(business-model|pricing|unit-economics|commercial-plan|"
+    r"growth-plan|cloud-split-plan)(?:[._-]|$)",
+    re.IGNORECASE,
+)
+SENSITIVE_CONTENT_MARKERS: tuple[str, ...] = (
+    "> 私有商业资料：",
+    "PRIVATE COMMERCIAL MATERIAL",
+)
+PUBLIC_POLICY_FILES: frozenset[str] = frozenset(
+    {
+        "backend/scripts/check_no_secrets_tracked.py",
+        "backend/tests/test_secret_guard.py",
+    }
+)
 
 
 def _git_lines(repo_root: Path, *args: str) -> list[str]:
@@ -52,7 +73,24 @@ def _is_secret(path: str) -> bool:
     normalized = path.replace("\\", "/")
     if normalized in SECRET_FILES:
         return True
-    return any(normalized.startswith(prefix) for prefix in SECRET_DIRS)
+    if any(normalized.startswith(prefix) for prefix in SECRET_DIRS):
+        return True
+    if any(normalized.startswith(scope) for scope in SENSITIVE_NAME_SCOPES):
+        return bool(SENSITIVE_NAME_PATTERN.search(normalized))
+    return False
+
+
+def _contains_private_marker(root: Path, path: str) -> bool:
+    if path.replace("\\", "/") in PUBLIC_POLICY_FILES:
+        return False
+    target = root / path
+    if not target.is_file():
+        return False
+    try:
+        content = target.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return False
+    return any(marker in content for marker in SENSITIVE_CONTENT_MARKERS)
 
 
 def find_violations(root: Path) -> list[str]:
@@ -60,7 +98,11 @@ def find_violations(root: Path) -> list[str]:
     candidates: set[str] = set()
     candidates.update(_git_lines(root, "ls-files"))
     candidates.update(_git_lines(root, "diff", "--cached", "--name-only"))
-    return sorted(path for path in candidates if _is_secret(path))
+    return sorted(
+        path
+        for path in candidates
+        if _is_secret(path) or _contains_private_marker(root, path)
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

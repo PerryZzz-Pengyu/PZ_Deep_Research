@@ -8,7 +8,7 @@ from app.agent.providers import ProviderFactory
 from app.agent.providers.base import LLMProvider
 from app.agent.providers.mock_provider import MockProvider
 from app.agent.runtime import AgentRuntime
-from app.agent.schemas import ResearchRequest
+from app.agent.schemas import ResearchEvent, ResearchRequest
 from app.agent.tools import build_default_tool_registry
 from app.api import routes
 from app.config import Settings
@@ -63,12 +63,18 @@ def test_research_request_excludes_credentials_from_serialization() -> None:
         provider="openai",
         api_key=USER_KEY,
         base_url="https://proxy.example/v1",
+        search_api_key="serpapi-user-secret",
+        reader_api_key="jina-user-secret",
     )
 
     dumped = request.model_dump()
     assert "api_key" not in dumped
     assert "base_url" not in dumped
+    assert "search_api_key" not in dumped
+    assert "reader_api_key" not in dumped
     assert USER_KEY not in request.model_dump_json()
+    assert "serpapi-user-secret" not in request.model_dump_json()
+    assert "jina-user-secret" not in request.model_dump_json()
 
 
 def test_runtime_forwards_byok_credentials_to_factory() -> None:
@@ -205,3 +211,200 @@ def test_community_byok_allows_creation_without_server_key(monkeypatch) -> None:
 
     assert response.status_code == 200, response.text
     assert captured["request"].api_key == USER_KEY
+
+
+def test_community_create_job_forwards_tool_credentials(monkeypatch) -> None:
+    community_settings = Settings(
+        edition="community",
+        default_provider="mock",
+        openai_api_key="",
+        search_provider="mock",
+        serpapi_api_key="",
+    )
+    captured, run_job = _capture_run_job()
+    monkeypatch.setattr(routes, "settings", community_settings)
+    monkeypatch.setattr(routes, "job_store", InMemoryJobStore())
+    monkeypatch.setattr(routes, "run_research_job", run_job)
+
+    response = client.post(
+        "/api/research-jobs",
+        headers=VISITOR_HEADERS,
+        json={
+            "query": "社区版按请求透传模型、搜索和阅读凭据",
+            "mode": "quick",
+            "provider": "openai",
+            "model": "gpt-5.4-mini",
+            "api_key": USER_KEY,
+            "search_api_key": "serpapi-user-secret",
+            "reader_api_key": "jina-user-secret",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    request = captured["request"]
+    assert request.api_key == USER_KEY
+    assert request.search_api_key == "serpapi-user-secret"
+    assert request.reader_api_key == "jina-user-secret"
+    assert "serpapi-user-secret" not in response.text
+    assert "jina-user-secret" not in response.text
+
+
+def test_community_rerun_accepts_fresh_byok_credentials(monkeypatch) -> None:
+    async def prepare_store():
+        store = InMemoryJobStore()
+        original = await store.create_job(
+            ResearchRequest(
+                query="BYOK 任务需要重新输入凭据后重跑",
+                mode="quick",
+                provider="openai",
+                model="gpt-5.4-mini",
+            ),
+            provider="openai",
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+            routing_version="community",
+        )
+        await store.add_event(
+            ResearchEvent(
+                job_id=original.id,
+                type="completed",
+                message="完成",
+                payload={"final_report": "完成", "sources": []},
+            )
+        )
+        return store, original
+
+    community_settings = Settings(
+        edition="community",
+        openai_api_key="",
+        search_provider="mock",
+    )
+    captured, run_job = _capture_run_job()
+    store, original = asyncio.run(prepare_store())
+    monkeypatch.setattr(routes, "settings", community_settings)
+    monkeypatch.setattr(routes, "job_store", store)
+    monkeypatch.setattr(routes, "run_research_job", run_job)
+
+    response = client.post(
+        f"/api/research-jobs/{original.id}/rerun",
+        headers=VISITOR_HEADERS,
+        json={
+            "api_key": USER_KEY,
+            "search_api_key": "serpapi-rerun-secret",
+            "reader_api_key": "jina-rerun-secret",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    request = captured["request"]
+    assert request.api_key == USER_KEY
+    assert request.search_api_key == "serpapi-rerun-secret"
+    assert request.reader_api_key == "jina-rerun-secret"
+
+
+def test_cloud_rerun_ignores_client_credentials(monkeypatch) -> None:
+    async def prepare_store():
+        store = InMemoryJobStore()
+        original = await store.create_job(
+            ResearchRequest(
+                query="云端重跑必须忽略客户端凭据",
+                mode="quick",
+                provider="openai",
+                model="cloud-model",
+            ),
+            provider="openai",
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+            routing_version="cloud-route",
+        )
+        await store.add_event(
+            ResearchEvent(
+                job_id=original.id,
+                type="completed",
+                message="完成",
+                payload={"final_report": "完成", "sources": []},
+            )
+        )
+        return store, original
+
+    cloud_settings = Settings(
+        edition="cloud",
+        openai_api_key="server-key",
+        openai_model="cloud-model",
+        search_provider="mock",
+    )
+    captured, run_job = _capture_run_job()
+    store, original = asyncio.run(prepare_store())
+    monkeypatch.setattr(routes, "settings", cloud_settings)
+    monkeypatch.setattr(routes, "job_store", store)
+    monkeypatch.setattr(routes, "run_research_job", run_job)
+
+    response = client.post(
+        f"/api/research-jobs/{original.id}/rerun",
+        headers=VISITOR_HEADERS,
+        json={
+            "api_key": USER_KEY,
+            "search_api_key": "serpapi-client-secret",
+            "reader_api_key": "jina-client-secret",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    request = captured["request"]
+    assert request.api_key is None
+    assert request.search_api_key is None
+    assert request.reader_api_key is None
+
+
+def test_community_retry_accepts_fresh_byok_credentials(monkeypatch) -> None:
+    async def prepare_store():
+        store = InMemoryJobStore()
+        original = await store.create_job(
+            ResearchRequest(
+                query="BYOK 失败任务需要重新输入凭据后重试",
+                mode="quick",
+                provider="openai",
+                model="gpt-5.4-mini",
+            ),
+            provider="openai",
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+            routing_version="community",
+        )
+        await store.add_event(
+            ResearchEvent(
+                job_id=original.id,
+                type="failed",
+                message="上游服务暂时不可用",
+                payload={
+                    "error_code": "service_unavailable",
+                    "retryable": True,
+                    "stage": "search",
+                },
+            )
+        )
+        return store, original
+
+    community_settings = Settings(
+        edition="community",
+        openai_api_key="",
+        search_provider="mock",
+    )
+    captured, run_job = _capture_run_job()
+    store, original = asyncio.run(prepare_store())
+    monkeypatch.setattr(routes, "settings", community_settings)
+    monkeypatch.setattr(routes, "job_store", store)
+    monkeypatch.setattr(routes, "run_research_job", run_job)
+
+    response = client.post(
+        f"/api/research-jobs/{original.id}/retry",
+        headers=VISITOR_HEADERS,
+        json={
+            "api_key": USER_KEY,
+            "search_api_key": "serpapi-retry-secret",
+            "reader_api_key": "jina-retry-secret",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    request = captured["request"]
+    assert request.api_key == USER_KEY
+    assert request.search_api_key == "serpapi-retry-secret"
+    assert request.reader_api_key == "jina-retry-secret"

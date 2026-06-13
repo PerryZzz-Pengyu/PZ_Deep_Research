@@ -4,9 +4,32 @@ import asyncio
 
 import httpx
 
-from app.agent.tools import ToolRegistry
+from app.agent.tools import ToolRegistry, build_default_tool_registry
 from app.agent.tools.search import SearchTool
 from app.agent.tools.visit import VisitTool
+from app.config import Settings
+
+
+def test_default_tool_registry_uses_per_request_credentials() -> None:
+    settings = Settings(
+        search_provider="mock",
+        serpapi_api_key="server-serpapi-key",
+        jina_api_key="server-jina-key",
+    )
+
+    registry = build_default_tool_registry(
+        settings,
+        search_api_key_override="request-serpapi-key",
+        reader_api_key_override="request-jina-key",
+    )
+
+    search = registry._tools["search"]
+    visit = registry._tools["visit"]
+    assert isinstance(search, SearchTool)
+    assert isinstance(visit, VisitTool)
+    assert search.provider == "serpapi"
+    assert search.serpapi_api_key == "request-serpapi-key"
+    assert visit.jina_api_key == "request-jina-key"
 
 
 def test_search_tool_parses_serpapi_scholar_results_and_deduplicates_sources() -> None:
