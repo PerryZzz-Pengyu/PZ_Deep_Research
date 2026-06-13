@@ -9,6 +9,15 @@ The production interface exposes only the research question and Quick, Deep, or 
 > [!WARNING]
 > This project is an experimental MVP. Model-generated content may contain omissions, errors, or inaccurate citations and should not be used directly for medical, legal, financial, or other high-stakes decisions.
 
+## Editions
+
+PZ Deep Research follows an open-core model, selected at runtime via `PZ_EDITION`:
+
+- **Community Edition** (`PZ_EDITION=community`, the default): a complete, self-hostable single-user research tool. You pick the provider and model, bring your own API key (BYOK), and run on SQLite with guest mode. One-command Docker is provided. This is the open-source product, licensed under Apache 2.0.
+- **Cloud Edition** (`PZ_EDITION=cloud`): the hosted commercial mode. It uses versioned production model routing and ignores client-supplied provider/model/keys. Subscriptions, quotas, billing, multi-tenancy, and operations live in a separate private repository and are not part of this open-source repo.
+
+In short: the open-source edition is the complete single-user tool you run yourself; the paid cloud service offers a zero-config, multi-user, reliable hosted experience.
+
 ## Key Features
 
 - Supports OpenAI, Anthropic Claude, Google Gemini, and an offline mock provider on the backend.
@@ -55,7 +64,7 @@ Actual source counts depend on search results and webpage accessibility. When th
 
 ## Tech Stack
 
-- Frontend: Next.js 16, React 19, TypeScript
+- Frontend: Next.js 16, React 19, TypeScript, HeroUI v3.1.0, Tailwind CSS v4, bilingual UI (中文 / English)
 - Backend: FastAPI, Python
 - Models: OpenAI API, Anthropic API, Google Gemini API
 - Search: SerpAPI Google Scholar
@@ -71,7 +80,7 @@ Actual source counts depend on search results and webpage accessibility. When th
 ```text
 .
 ├── backend/              # FastAPI, Agent Runtime, providers, tools, and tests
-├── frontend/             # Next.js research workspace
+├── frontend/             # Next.js: marketing landing (/) + research workbench (/workbench)
 ├── project-docs/         # Plans, product docs, architecture, tests, and changelog
 ├── .env.example          # Environment template without real credentials
 ├── .nvmrc                # Node.js version declaration
@@ -193,7 +202,7 @@ npm ci
 npm run dev
 ```
 
-Open <http://localhost:3000>.
+Open <http://localhost:3000> for the marketing landing page, or <http://localhost:3000/workbench> for the research workbench. Use the language toggle (中 / EN) in the top bar to switch between Chinese and English.
 
 ## Testing
 
@@ -253,8 +262,8 @@ PZ Deep Research is not an official product of, affiliated with, endorsed by, or
 
 ## Contributing and Documentation
 
-Run the backend tests, frontend lint, and production build before submitting changes. Any change to code, architecture, configuration, dependencies, interfaces, or product behavior must also be recorded in `project-docs/changelog.md`, with other project documents updated as needed.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow. In short: run the backend tests, frontend lint, and production build before submitting changes; any change to code, architecture, configuration, dependencies, interfaces, or product behavior must also be recorded in `project-docs/changelog.md`, with other project documents updated as needed. External contributors are asked to agree to the [Contributor License Agreement](CLA.md).
 
 ## License
 
-Licensed under the [Apache License 2.0](LICENSE).
+The Community Edition in this repository is licensed under the [Apache License 2.0](LICENSE). Cloud Edition code is proprietary and lives in a separate private repository; it is not covered by this license.

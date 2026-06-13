@@ -9,15 +9,12 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# System packages: build tools for wheels, libpq for psycopg.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends build-essential libpq5 \
-    && rm -rf /var/lib/apt/lists/*
-
+# All Python deps ship prebuilt wheels (psycopg[binary] bundles libpq), so no
+# compiler toolchain is needed.
 COPY requirements.txt ./requirements.txt
 RUN pip install -r requirements.txt
 
-# Chromium is used for server-side PDF export.
+# Chromium (+ its system libraries) for server-side PDF export.
 RUN playwright install --with-deps chromium
 
 COPY . ./

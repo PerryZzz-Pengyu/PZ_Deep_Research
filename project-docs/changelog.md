@@ -16,6 +16,40 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-13 20:48 CST +0800
+
+### open-core 分离 Phase 4：文档与贡献规范
+
+- 新增 `CONTRIBUTING.md`（test-first 工作流、提交前检查清单含泄露守卫、可选 pre-commit 挂接、BYOK 安全约束）与 `CLA.md`（轻量入站贡献者许可协议模板，为未来双许可证留口；社区版维持 Apache 2.0）。
+- `README.md` / `README.zh-CN.md`：新增「Editions / 版本」小节说明社区版与云端版边界与一句话定位；贡献小节引用 CONTRIBUTING/CLA；许可证小节区分社区版 Apache 2.0 与云端私有。
+- `project-docs/product-doc.md`、`technical-architecture.md`、`project-plan.md`：补充 `PZ_EDITION` 接缝、社区/云端边界与 BYOK 说明。
+- 纯文档修改，无需先写测试；公开文档不含经营数字。
+- 提交说明：`CONTRIBUTING.md`/`CLA.md` 为干净新文件；README 与项目文档的编辑与进行中的未提交工作（前端重设计）交织，本次随该批一并保留未提交。
+- 影响文件：新增 `CONTRIBUTING.md`、`CLA.md`；编辑 `README.md`、`README.zh-CN.md`、`project-docs/product-doc.md`、`technical-architecture.md`、`project-plan.md`。
+
+## 2026-06-13 20:40 CST +0800
+
+### open-core 分离 Phase 5：双仓库分离迁移清单（私有）
+
+- 新增私有迁移指引 `project-docs/private/cloud-split-plan.md`（位于 gitignored 的 `private/`，不进公开仓，已用 `git check-ignore` 与泄露守卫确认不被跟踪）。
+- 内容：社区仓 / 云端仓资产归属、边界判定原则、人工执行的迁移步骤、`git filter-repo`/`git subtree` 草稿脚本（仅文档不运行），以及人工决策待办；不含具体经营数字。
+- 明确：建私有仓 `PZ_Deep_Research_Cloud` 与历史重写由人工执行；推荐云端仓以公开社区仓为上游依赖以实现物理隔离。
+- 影响文件：新增 `project-docs/private/cloud-split-plan.md`（不入库）；本 changelog。
+- 说明：Phase 4（README/产品/架构/计划 的 open-core 说明、CONTRIBUTING+CLA）尚未做；其中 README 等编辑与进行中的未提交工作交织。
+
+## 2026-06-13 20:33 CST +0800
+
+### open-core 分离 Phase 3b：前端社区版 BYOK 输入
+
+- 工作台高级选项在 `selection_enabled=true`（社区版）时新增「API Key（自带）」输入：`type=password`、`autoComplete=off`，仅对真实 Provider（非 mock）显示。
+- Key 只存于组件内存（`useState`，不写 localStorage/sessionStorage）；提交时仅在社区版 + 非 mock + 已填写时把 `api_key` 加入创建请求体。
+- provider/model 选择器无需新增——前端早已按 `/api/models` 的 `selection_enabled` 门控，Phase 1 让社区版自动返回 `true`。
+- 新增 i18n（中/英）BYOK 文案、`createResearchJob` 入参 `api_key`/`base_url`、`workbench.css` 对应样式。
+- 测试先行：`frontend/e2e/ui-resilience.spec.ts` 新增用例——社区版填写自带 Key 后创建请求体带 `api_key`，且 Key 不落任何浏览器存储。
+- 验证：`npm run lint`、`npm run build` 通过；默认端口（3000/8000）下 `npx playwright test` 全部 12 个端到端用例通过。
+- 更正：早先在非默认端口（3019/3021）跑 e2e 导致 7 个真实任务流用例失败，根因是这些前端 origin 不在后端 `CORS_ORIGINS` 允许列表中（跨域 POST 被拒为 network_error），与前端代码/重设计无关；切回默认端口后全绿。
+- 影响文件：`frontend/src/components/research-workspace.tsx`、`frontend/src/lib/api.ts`、`frontend/src/lib/i18n.tsx`、`frontend/src/app/workbench/workbench.css`、`frontend/e2e/ui-resilience.spec.ts`、`project-docs/testing-guide.md`。
+
 ## 2026-06-13 20:23 CST +0800
 
 ### open-core 分离 Phase 3a：社区版 Docker 一键运行
@@ -24,7 +58,8 @@
 - 社区默认零密钥可跑：compose 默认 `PZ_EDITION=community`、`DEFAULT_PROVIDER=mock`、`SEARCH_PROVIDER=mock`，SQLite 落在命名卷 `pz_data:/data`；要用真实模型可在 compose 写服务端 Key，或在工作台用 BYOK 自带 Key。
 - 后端镜像安装 Playwright Chromium 以支持服务端 PDF 导出；前端镜像在构建期注入 `NEXT_PUBLIC_API_BASE_URL`，Clerk publishable key 可选（缺省走访客模式）。
 - 镜像不内置任何密钥；`.dockerignore` 排除 `.env`、`.venv`、`node_modules`、本地数据库等。
-- 验证：本机未安装 docker，仅用 YAML 解析校验 `docker-compose.yml` 语法通过；完整 `docker compose up --build` 冒烟需在装有 Docker 的环境执行。
+- 后端 Dockerfile 移除了多余的 `build-essential`/`libpq5` apt 层（`psycopg[binary]` 自带 libpq，依赖均有预编译 wheel），既消除构建期 OOM，又显著瘦身。
+- 验证（2026-06-13，Docker 29.5.3 / Compose v5.1.4）：`docker compose build` 成功；`docker compose up -d` 后 `/api/readiness` 返回 `edition=community / sqlite / search=mock`，mock 任务 `routing_version=community` 跑到 `completed`，前端 `/workbench` HTTP 200。冒烟通过。
 - 影响文件：新增 `docker-compose.yml`、`backend/Dockerfile`、`backend/.dockerignore`、`frontend/Dockerfile`、`frontend/.dockerignore`。
 - 后续：Phase 3b 前端在社区版补 BYOK API Key 输入（provider/model 选择已随 `selection_enabled` 自动暴露）。
 

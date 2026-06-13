@@ -60,6 +60,7 @@
 - `PZ_EDITION` 默认 `community`，非法值回退 `community`；`community` 版路由尊重客户端 provider/model（`selection_enabled=True`、`routing_version=community`），`cloud` 版维持固定生产路由并忽略客户端选择。
 - `/api/readiness` 必须返回当前 `edition`。
 - BYOK（社区版自带 Key）：`ProviderFactory.create` 接受 `api_key`/`base_url` 覆盖，为空回退服务端配置；`ResearchRequest.api_key`/`base_url` 标记 `exclude=True`，序列化（含持久化与 SSE）不得出现凭据；community 版创建任务时透传客户端 Key 并据此判定就绪，cloud 版必须剥离客户端 Key 维持服务端固定路由。
+- 前端 BYOK：选择启用（`selection_enabled=true`，即社区版）时高级选项展示 API Key 输入；选择真实 Provider 并填写 Key 后，创建请求体必须带 `api_key`，且该 Key 只存于组件内存、不得写入 localStorage/sessionStorage（Playwright `ui-resilience.spec.ts` 覆盖）。
 - 本地手动端到端流程可以跑通。
 
 暂时不引入复杂测试体系，避免过早增加维护成本。
