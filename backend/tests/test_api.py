@@ -79,7 +79,21 @@ def test_readiness_endpoint_returns_provider_and_tool_status() -> None:
     assert payload["edition"] in {"community", "cloud"}
 
 
-def test_model_options_endpoint_returns_provider_candidates() -> None:
+def test_model_options_endpoint_returns_provider_candidates(monkeypatch) -> None:
+    # Pin a configured cloud edition so the assertion does not depend on the
+    # ambient .env (CI has none → community default → selection enabled).
+    monkeypatch.setattr(
+        routes,
+        "settings",
+        Settings(
+            edition="cloud",
+            model_routing_mode="production",
+            production_provider="openai",
+            production_model="gpt-5.4-mini",
+            model_routing_version="openai-default-v1",
+        ),
+    )
+
     response = client.get("/api/models")
 
     assert response.status_code == 200
