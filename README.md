@@ -4,7 +4,7 @@
 
 A consumer-facing deep research web application. Its backend supports OpenAI, Claude, and Gemini while combining academic search, webpage retrieval, evidence extraction, source selection, and citation validation to produce structured reports with traceable sources.
 
-The production interface exposes only the research question and Quick, Deep, or Expert mode. Backend routing currently fixes search planning and report writing to OpenAI `gpt-5.4-mini`, while evidence-card extraction uses `gpt-5-nano`. Provider/model selectors are hidden unless explicit internal manual mode is enabled.
+The Community Edition exposes provider/model selection and request-scoped BYOK credentials for the model, SerpAPI, and Jina. Credentials stay in memory for one request and are not written to browser storage, the database, logs, or SSE events.
 
 > [!WARNING]
 > This project is an experimental MVP. Model-generated content may contain omissions, errors, or inaccurate citations and should not be used directly for medical, legal, financial, or other high-stakes decisions.
@@ -14,7 +14,7 @@ The production interface exposes only the research question and Quick, Deep, or 
 PZ Deep Research follows an open-core model, selected at runtime via `PZ_EDITION`:
 
 - **Community Edition** (`PZ_EDITION=community`, the default): a complete, self-hostable single-user research tool. You pick the provider and model, bring your own API key (BYOK), and run on SQLite with guest mode. One-command Docker is provided. This is the open-source product, licensed under Apache 2.0.
-- **Cloud Edition** (`PZ_EDITION=cloud`): the hosted commercial mode. It uses versioned production model routing and ignores client-supplied provider/model/keys. Subscriptions, quotas, billing, multi-tenancy, and operations live in a separate private repository and are not part of this open-source repo.
+- **Cloud Edition** (`PZ_EDITION=cloud`): the hosted commercial mode. It uses private versioned routing configuration and ignores client-supplied provider/model/keys. Subscriptions, quotas, billing, multi-tenancy, deployment, and operations live in the separate private [`PZ_Deep_Research_Cloud`](https://github.com/PerryZzz-Pengyu/PZ_Deep_Research_Cloud) repository.
 
 In short: the open-source edition is the complete single-user tool you run yourself; the paid cloud service offers a zero-config, multi-user, reliable hosted experience.
 
@@ -50,7 +50,7 @@ User question
 
 The Runtime controls webpage visits. The model only generates search queries and the final report; it does not autonomously loop over `visit` calls. This keeps tasks bounded, stabilizes citation numbering, and reduces duplicate retrieval.
 
-The live production route is versioned as `openai-default-v1`. Client-supplied provider/model values are ignored in production mode; internal development can opt into manual routing with an environment variable.
+Community routing honors the provider and model selected by the user. The public repository contains only the Cloud extension seam; concrete hosted routing versions and operating parameters are supplied by the private Cloud repository.
 
 ## Research Modes
 
@@ -117,7 +117,15 @@ node -v
 npm -v
 ```
 
-### 3. Configure environment variables
+### 3. One-command Community Docker
+
+```bash
+docker compose up --build
+```
+
+Open <http://localhost:3000/workbench>. The default stack uses mock model/search providers, SQLite, and guest mode, so it starts without secrets. For real research, enter model, SerpAPI, and optional Jina credentials in Advanced options for each request, or configure server-side keys.
+
+### 4. Configure environment variables for local development
 
 ```bash
 cp .env.example .env
@@ -137,6 +145,8 @@ A real research run requires:
 - `SERPAPI_API_KEY`.
 - `JINA_API_KEY` is recommended for more reliable webpage retrieval and higher service limits.
 
+Community users can enter these as request-scoped BYOK values in the workbench instead of saving them in `.env`.
+
 Never commit `.env`, `frontend/.env.local`, or real API credentials. See the [API key setup guide](project-docs/api-key-setup.md) for details.
 
 Authentication is optional. To enable Clerk sign-in, configure:
@@ -152,26 +162,16 @@ CLERK_AUTHORIZED_PARTIES=http://localhost:3000,http://127.0.0.1:3000
 
 See the Chinese [authentication and history binding guide](project-docs/auth-setup.md). Without Clerk configuration, the application continues in browser-scoped guest mode.
 
-The default production route is:
-
-```text
-MODEL_ROUTING_MODE=production
-PRODUCTION_PROVIDER=openai
-PRODUCTION_MODEL=gpt-5.4-mini
-MODEL_ROUTING_VERSION=openai-default-v1
-EVIDENCE_EXTRACTION_MODEL=gpt-5-nano
-```
-
-Local development stores data in `data/pz_deep_research.db` by default. For Neon PostgreSQL, use the pooled URL for application traffic and the direct URL for migrations and backups:
+Local development stores data in `data/pz_deep_research.db` by default. PostgreSQL deployments can provide separate application and migration URLs:
 
 ```text
 DATABASE_URL=postgresql://user:password@pooled-host/database?sslmode=require
 DATABASE_MIGRATION_URL=postgresql://user:password@direct-host/database?sslmode=require
 ```
 
-Run `cd backend && PYTHONPATH=. .venv/bin/python scripts/check_database.py` to verify connectivity without printing credentials. Neon remains standard PostgreSQL, so the application can later move to another managed or self-hosted PostgreSQL service without rewriting the storage layer.
+Run `cd backend && PYTHONPATH=. .venv/bin/python scripts/check_database.py` to verify connectivity without printing credentials.
 
-### 4. Start the backend
+### 5. Start the backend
 
 ```bash
 python3 -m venv backend/.venv
@@ -191,7 +191,7 @@ curl http://127.0.0.1:8000/health
 curl http://127.0.0.1:8000/api/readiness
 ```
 
-### 5. Start the frontend
+### 6. Start the frontend
 
 Open another terminal:
 
@@ -223,15 +223,11 @@ npm run test:e2e
 
 See the [testing guide](project-docs/testing-guide.md) for the complete test strategy and manual acceptance flow. Project documentation is currently maintained in Chinese.
 
-Latest local verification on June 11, 2026:
-
-- 122 backend pytest cases passed.
-- 7 Playwright Chromium end-to-end cases passed.
-- The local `8000/3000` services and frontend smoke check passed without a Next.js error overlay or browser console errors.
+Latest verification is recorded in [project-docs/testing-guide.md](project-docs/testing-guide.md) and [project-docs/changelog.md](project-docs/changelog.md).
 
 ## Privacy, Cost, and Security
 
-- User questions are sent to the provider selected by the internal task configuration or model router. The current development UI allows manual selection; the production consumer UI is intended to hide it.
+- Community questions and request-scoped credentials are sent to the provider selected in the workbench. Cloud routing is controlled by the private service configuration.
 - Search queries are sent to SerpAPI; visited URLs and webpage content are processed through Jina Reader.
 - API usage costs and third-party service quotas are the responsibility of the operator.
 - Optional Clerk authentication is supported. FastAPI verifies Clerk session JWTs locally and uses the token `sub` as the trusted `user_id`.

@@ -16,6 +16,29 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-13 22:54 CST +0800
+
+### Review 修复：守卫误判收窄 + Neon 文档备份
+
+- 复核 Codex 的双仓库/BYOK 改动：后端 145、前端 12 e2e、lint/tsc/build、泄露守卫与 Docker 冒烟均通过。
+- 修复泄露守卫敏感文件名启发式的误判风险：该启发式现仅作用于 `project-docs/`，公开代码文件（如 `frontend/.../pricing.tsx`）不再被误拦；新增对应回归测试（先失败后通过）。后端用例数 144 → 145。
+- 删除公开仓 `project-docs/neon-backup-restore.md` 前，先将其完整备份到 gitignored 的 `project-docs/private/neon-backup-restore.md`，供迁移到私有 Cloud 仓库；该文件历史仍可从 `8a9ef42` 等提交恢复。
+- 影响文件：`backend/scripts/check_no_secrets_tracked.py`、`backend/tests/test_secret_guard.py`、`project-docs/testing-guide.md`。
+
+## 2026-06-13 22:29 CST +0800
+
+### open-core 双仓库落地与 Community BYOK 闭环
+
+- 建立并推送独立私有仓库 `PZ_Deep_Research_Cloud`，以 Git submodule 引用公开 Community 仓库；云端路由、生产数据库运维和正式部署配置迁入私有仓库维护。
+- 公开仓库删除具体生产路由默认值与 Neon 备份恢复操作文档，只保留 Cloud 扩展接口、通用配置说明和可选数据库抽象。
+- Community 版补齐请求级 BYOK：模型、SerpAPI 搜索和 Jina 阅读凭据只在任务执行期间驻留内存，不写入任务存储、事件流或响应；创建、重跑和失败重试均可重新提交临时凭据。
+- Agent Runtime 改为按请求构建工具注册表，避免并发任务间共享或串用搜索、阅读凭据。
+- 工作台增加模型、搜索和阅读密钥输入；每次创建、重跑或重试请求结束后立即清空 React state 与输入框。
+- 修复 Playwright E2E 的 TypeScript 类型错误；新增 BYOK 透传、重跑、重试、Cloud 忽略客户端凭据和工具覆盖测试。
+- 新增 GitHub Actions Community CI，强制执行仓库边界检查、后端测试、前端 lint、TypeScript 检查和生产构建。
+- 泄露守卫从路径检查扩展为敏感文件名和私有内容标记检查，并增加重命名文件仍被阻止的回归测试。
+- 影响文件：后端请求模型、Runtime、工具注册、API 路由与配置；前端工作台、API 客户端、样式、i18n 与 E2E；README、项目文档、CI 和泄露守卫。
+
 ## 2026-06-13 20:48 CST +0800
 
 ### open-core 分离 Phase 4：文档与贡献规范

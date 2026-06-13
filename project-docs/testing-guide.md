@@ -39,7 +39,7 @@
 - 前端能展示工具返回正文、来源证据强度和引用 hover 卡片。
 - ProviderFactory 能正确创建多模型 Provider。
 - 配置层能提供默认模型，并识别真实 Provider 缺少的 API Key。
-- 生产路由必须忽略客户端 Provider/模型并固定到版本化 GPT 配置；内部手动模式仍可用于 mock 与模型联调。
+- Cloud 路由必须忽略客户端 Provider/模型与全部 BYOK 凭据；公开仓只验证通用版本化路由接缝，不包含实际 Cloud 模型组合。
 - API 能返回 `/api/readiness` 配置体检信息。
 - `/api/readiness` 能返回数据库连接状态和数据库类型，不泄露连接信息。
 - API 能返回供内部联调使用的 `/api/models` 模型候选列表。
@@ -56,16 +56,16 @@
 - 登录状态下 SSE 必须使用 Bearer 请求头，不能把会话 token 放在 URL 查询参数中。
 - 服务启动时必须把遗留的 queued/running 任务标记为中断失败。
 - Alembic 初始迁移必须同时支持 SQLite 执行和 PostgreSQL 离线 SQL 编译。
-- 私有商业文档守卫（`scripts/check_no_secrets_tracked.py`）必须在 `business-model.md` 或 `private/` 被跟踪/暂存时报错退出，正常时通过。
+- 私有商业文档守卫（`scripts/check_no_secrets_tracked.py`）必须在敏感路径、敏感文件名或私有内容标记被跟踪/暂存时报错退出，正常时通过；敏感文件名启发式只作用于 `project-docs/`，公开代码文件（如 `frontend/.../pricing.tsx`）不被误判。
 - `PZ_EDITION` 默认 `community`，非法值回退 `community`；`community` 版路由尊重客户端 provider/model（`selection_enabled=True`、`routing_version=community`），`cloud` 版维持固定生产路由并忽略客户端选择。
 - `/api/readiness` 必须返回当前 `edition`。
-- BYOK（社区版自带 Key）：`ProviderFactory.create` 接受 `api_key`/`base_url` 覆盖，为空回退服务端配置；`ResearchRequest.api_key`/`base_url` 标记 `exclude=True`，序列化（含持久化与 SSE）不得出现凭据；community 版创建任务时透传客户端 Key 并据此判定就绪，cloud 版必须剥离客户端 Key 维持服务端固定路由。
-- 前端 BYOK：选择启用（`selection_enabled=true`，即社区版）时高级选项展示 API Key 输入；选择真实 Provider 并填写 Key 后，创建请求体必须带 `api_key`，且该 Key 只存于组件内存、不得写入 localStorage/sessionStorage（Playwright `ui-resilience.spec.ts` 覆盖）。
+- BYOK（社区版自带 Key）：模型、SerpAPI 和 Jina 凭据均为请求级覆盖并标记 `exclude=True`；序列化、持久化、日志和 SSE 不得出现凭据；创建、重跑和失败重试必须接受重新输入的临时凭据，Cloud 版必须剥离全部客户端凭据。
+- 前端 BYOK：选择启用（`selection_enabled=true`，即社区版）时高级选项展示模型、SerpAPI 和 Jina 密钥输入；凭据只存于组件内存，不得写入 localStorage/sessionStorage，并在创建、重跑或重试请求结束后清空（Playwright `ui-resilience.spec.ts` 覆盖）。
 - 本地手动端到端流程可以跑通。
 
 暂时不引入复杂测试体系，避免过早增加维护成本。
 
-截至 2026-06-13，后端 pytest 共 137 个用例通过，前端 Playwright Chromium 共 12 个端到端用例通过（默认端口 3000/8000；前端重设计后按新 UI / 路由重写，测试英文界面）。
+截至 2026-06-13，后端 pytest 共 145 个用例通过，前端 Playwright Chromium 共 12 个端到端用例通过（默认端口 3000/8000；测试覆盖访客降级、任务恢复、BYOK 和移动端来源弹窗）。
 
 ## 测试优先开发原则
 
@@ -129,7 +129,7 @@ backend/tests/
   - `/health` 健康检查正常。
   - `/api/readiness` 可以返回 Provider 和工具配置状态。
   - `/api/models` 可以返回 OpenAI 候选模型。
-  - 生产模式会隐藏模型选择，创建任务时忽略客户端指定的 Claude/Gemini 并使用 `openai-default-v1`。
+  - Cloud 模式会隐藏模型选择，并忽略客户端指定的 Provider、模型和全部 BYOK Key。
   - `/api/models/openai` 在缺少 OpenAI Key 时返回配置错误。
   - `/api/research-jobs` 可以创建 mock 研究任务。
   - 过短 query 会被 API 校验拒绝。
@@ -155,7 +155,7 @@ backend/tests/
   - 中文占位符不会被误判为真实 OpenAI API Key 或模型名。
   - 真实 Provider 缺少 API Key 和搜索 Key 时会被识别。
   - 配置齐全的真实 Provider 会通过配置检查。
-  - 默认生产路由为 OpenAI `gpt-5.4-mini`，内部 `manual` 模式保留请求模型选择。
+  - 公开仓的 Cloud 路由默认未配置；显式注入私有路由参数后忽略客户端选择，内部 `manual` 模式保留联调能力。
   - Clerk 公钥、authorized parties 和时钟偏差可以从环境变量读取。
 - `test_provider_factory.py`
   - 默认 Provider 创建正确。
