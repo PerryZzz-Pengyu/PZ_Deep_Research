@@ -193,6 +193,49 @@ class InMemoryJobStore:
             context = self._retry_contexts.get(job_id)
             return dict(context) if context else None
 
+    async def record_usage(
+        self,
+        job_id: str,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        llm_calls: int,
+        tool_calls: int,
+    ) -> None:
+        async with self._lock:
+            job = self._jobs.get(job_id)
+            if job is not None:
+                job.usage_input_tokens = int(input_tokens)
+                job.usage_output_tokens = int(output_tokens)
+                job.usage_llm_calls = int(llm_calls)
+                job.usage_tool_calls = int(tool_calls)
+
+    async def aggregate_usage(
+        self,
+        *,
+        anonymous_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict[str, int]:
+        async with self._lock:
+            totals = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "llm_calls": 0,
+                "tool_calls": 0,
+                "job_count": 0,
+            }
+            for job_id, job in self._jobs.items():
+                if not self._owner_matches(
+                    job_id, anonymous_id=anonymous_id, user_id=user_id
+                ):
+                    continue
+                totals["input_tokens"] += job.usage_input_tokens
+                totals["output_tokens"] += job.usage_output_tokens
+                totals["llm_calls"] += job.usage_llm_calls
+                totals["tool_calls"] += job.usage_tool_calls
+                totals["job_count"] += 1
+            return totals
+
     async def check_connection(self) -> bool:
         return True
 

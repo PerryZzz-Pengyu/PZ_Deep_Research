@@ -12,11 +12,13 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     MetaData,
     String,
     Table,
     Text,
     and_,
+    func,
     insert,
     select,
     update,
@@ -47,6 +49,10 @@ jobs = Table(
     Column("error_retryable", Boolean, nullable=False, default=False),
     Column("error_stage", String(32), nullable=True),
     Column("retry_context", JSON, nullable=True),
+    Column("usage_input_tokens", Integer, nullable=False, server_default="0"),
+    Column("usage_output_tokens", Integer, nullable=False, server_default="0"),
+    Column("usage_llm_calls", Integer, nullable=False, server_default="0"),
+    Column("usage_tool_calls", Integer, nullable=False, server_default="0"),
     Column("anonymous_id", String(128), nullable=True),
     Column("user_id", String(128), nullable=True),
     Column("created_at", DateTime(timezone=True), nullable=False),
@@ -97,6 +103,10 @@ def _job_from_row(row) -> ResearchJob:
         error_code=row.error_code,
         error_retryable=bool(row.error_retryable),
         error_stage=row.error_stage,
+        usage_input_tokens=row.usage_input_tokens or 0,
+        usage_output_tokens=row.usage_output_tokens or 0,
+        usage_llm_calls=row.usage_llm_calls or 0,
+        usage_tool_calls=row.usage_tool_calls or 0,
         created_at=_as_utc(row.created_at),
         updated_at=_as_utc(row.updated_at),
     )
@@ -400,6 +410,55 @@ class SqlJobStore:
                 select(jobs.c.retry_context).where(jobs.c.id == job_id)
             )
         return dict(value) if isinstance(value, dict) else None
+
+    async def record_usage(
+        self,
+        job_id: str,
+        *,
+        input_tokens: int,
+        output_tokens: int,
+        llm_calls: int,
+        tool_calls: int,
+    ) -> None:
+        await self._ready()
+        async with self.engine.begin() as connection:
+            await connection.execute(
+                update(jobs)
+                .where(jobs.c.id == job_id)
+                .values(
+                    usage_input_tokens=int(input_tokens),
+                    usage_output_tokens=int(output_tokens),
+                    usage_llm_calls=int(llm_calls),
+                    usage_tool_calls=int(tool_calls),
+                )
+            )
+
+    async def aggregate_usage(
+        self,
+        *,
+        anonymous_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> dict[str, int]:
+        await self._ready()
+        statement = select(
+            func.coalesce(func.sum(jobs.c.usage_input_tokens), 0),
+            func.coalesce(func.sum(jobs.c.usage_output_tokens), 0),
+            func.coalesce(func.sum(jobs.c.usage_llm_calls), 0),
+            func.coalesce(func.sum(jobs.c.usage_tool_calls), 0),
+            func.count(jobs.c.id),
+        )
+        owner_clause = self._owner_clause(anonymous_id=anonymous_id, user_id=user_id)
+        if owner_clause is not None:
+            statement = statement.where(owner_clause)
+        async with self.engine.connect() as connection:
+            row = (await connection.execute(statement)).first()
+        return {
+            "input_tokens": int(row[0] or 0),
+            "output_tokens": int(row[1] or 0),
+            "llm_calls": int(row[2] or 0),
+            "tool_calls": int(row[3] or 0),
+            "job_count": int(row[4] or 0),
+        }
 
     async def recover_incomplete_jobs(self) -> int:
         await self._ready()

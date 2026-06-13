@@ -101,6 +101,7 @@ npm 11.16.0
 - 创建真实 Provider 任务前会检查必要环境变量，避免任务创建后才失败。
 - 运行任务会登记当前 `asyncio.Task`。取消接口先原子更新状态并记录 `cancelled` 事件，再取消后台协程，防止任务取消后仍写入 `completed`。
 - 任务、事件、报告草稿和最终报告已写入 SQLite/PostgreSQL 兼容存储。
+- 用量账本：`research_jobs` 增加每任务用量聚合列（输入/输出 token、LLM 调用数、工具调用数），由 `run_research_job` 在 `llm_result`/`tool_result` 流式事件中累计并经 `record_usage` 持久化（取消/失败也保留部分用量）；`GET /api/usage` 按访客/账号归属返回聚合（`aggregate_usage`）。这是社区版"用量展示"与云端"额度/计费"的共用地基；**公开仓只存原始计数，成本与定价计算属于私有 Cloud**。
 - 应用启动时会把上次异常退出遗留的 queued/running 任务标记为中断失败。
 
 后续可替换点：

@@ -257,6 +257,14 @@ async def get_readiness() -> dict[str, object]:
     }
 
 
+@router.get("/usage")
+async def get_account_usage(
+    identity: RequestIdentity = Depends(get_request_identity),
+) -> dict[str, int]:
+    # Owner-scoped raw usage totals. Cost/pricing is intentionally a Cloud concern.
+    return await job_store.aggregate_usage(**identity.owner_kwargs)
+
+
 @router.get("/models")
 async def get_model_options() -> dict[str, object]:
     route = resolve_model_route(settings)
@@ -746,10 +754,25 @@ async def run_research_job(
             if retry_context
             else runtime.run(job_id, request)
         )
+        usage_input = usage_output = usage_llm_calls = usage_tool_calls = 0
         async for event in event_stream:
             current_job = await job_store.get_job(job_id)
             if not current_job or current_job.status == "cancelled":
                 return
+            if event.type in {"llm_result", "tool_result"}:
+                if event.type == "llm_result":
+                    usage_llm_calls += 1
+                    usage_input = int(event.payload.get("total_input_tokens") or usage_input)
+                    usage_output = int(event.payload.get("total_output_tokens") or usage_output)
+                else:
+                    usage_tool_calls += 1
+                await job_store.record_usage(
+                    job_id,
+                    input_tokens=usage_input,
+                    output_tokens=usage_output,
+                    llm_calls=usage_llm_calls,
+                    tool_calls=usage_tool_calls,
+                )
             if event.type == "report_checkpoint":
                 await job_store.save_retry_context(job_id, event.payload)
                 continue
