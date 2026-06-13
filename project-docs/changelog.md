@@ -16,6 +16,17 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-14 00:01 CST +0800
+
+### 社区版发布就绪 Tier 1 P0：冷启动验证 + BYOK 上手文档；NOTICE 补充
+
+- 干净机器冷启动验证：在 `/tmp` 全新 `git clone`（无 `.env`）执行 `docker compose up --build`，确认 `edition=community / sqlite / search=mock`、mock 任务零密钥跑到 `completed`、`/api/usage` 正常、前端 `/workbench` HTTP 200；勾选清单 P0 对应项。
+- README（中/英）Quickstart 新增"最快路径：Docker（社区版）"小节：明确"mock 零配置试用"与"BYOK 真实结果"两条路径，并给出在工作台高级选项粘贴 OpenAI/SerpAPI/Jina Key、仅本次请求使用不落存储的步骤；原手动启动步骤归入"手动启动"。
+- `NOTICE` 补充：① 捆绑的 SIL OFL-1.1 字体（Inter、Fira Code）再分发归属，指向 `frontend/public/fonts/LICENSE.txt`；② Editions 说明（本仓为社区版 Apache 2.0，Cloud 版在私有仓、不在本许可证覆盖范围）。
+- 复核 `.nvmrc`（v24.16.0）、`.python-version`（3.14.5）、`LICENSE`（标准 Apache 2.0 文本）：均与现状一致，无需更新。
+- 纯文档/验证（无代码），按规则只更新 changelog 与相关文档。
+- 影响文件：`README.md`、`README.zh-CN.md`、`NOTICE`、`project-docs/community-launch-checklist.md`。
+
 ## 2026-06-13 23:45 CST +0800
 
 ### 用量账本：每任务用量聚合 + 按账号 `/api/usage`（Tier 2 地基）
