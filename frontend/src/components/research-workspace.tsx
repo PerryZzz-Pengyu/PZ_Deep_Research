@@ -48,7 +48,7 @@ import {
   rerunResearchJob,
   retryResearchJob,
 } from "@/lib/api";
-import type { ResearchEventStream } from "@/lib/api";
+import type { ResearchCredentials, ResearchEventStream } from "@/lib/api";
 import { consumeHandoff } from "@/lib/handoff";
 import { useI18n } from "@/lib/i18n";
 import { downloadBlobFile, downloadMarkdownReport } from "@/lib/markdown-export";
@@ -156,6 +156,8 @@ export function ResearchWorkspace() {
   const [model, setModel] = useState("");
   // BYOK key: kept in memory only (never persisted), sent per request in community edition.
   const [apiKey, setApiKey] = useState("");
+  const [searchApiKey, setSearchApiKey] = useState("");
+  const [readerApiKey, setReaderApiKey] = useState("");
   const [modelOptions, setModelOptions] = useState(fallbackModelOptions);
   const [modelSelectionEnabled, setModelSelectionEnabled] = useState(false);
   const [events, setEvents] = useState<ResearchEvent[]>([]);
@@ -183,6 +185,23 @@ export function ResearchWorkspace() {
     setToastMessage(message);
     if (toastTimerRef.current) window.clearTimeout(toastTimerRef.current);
     toastTimerRef.current = window.setTimeout(() => setToastMessage(""), 2600);
+  }, []);
+
+  const currentCredentials = useCallback((): ResearchCredentials => {
+    const modelKey = apiKey.trim();
+    const searchKey = searchApiKey.trim();
+    const readerKey = readerApiKey.trim();
+    return {
+      ...(modelKey ? { api_key: modelKey } : {}),
+      ...(searchKey ? { search_api_key: searchKey } : {}),
+      ...(readerKey ? { reader_api_key: readerKey } : {}),
+    };
+  }, [apiKey, readerApiKey, searchApiKey]);
+
+  const clearCredentials = useCallback(() => {
+    setApiKey("");
+    setSearchApiKey("");
+    setReaderApiKey("");
   }, []);
 
   const sources = useMemo(() => {
@@ -421,14 +440,12 @@ export function ResearchWorkspace() {
       setMenuOpen(false);
 
       try {
-        const trimmedKey = apiKey.trim();
+        const credentials = currentCredentials();
         const job = await createResearchJob({
           query: trimmed,
           mode: modeValue,
           ...(modelSelectionEnabled ? { provider, model: selectedModel || undefined } : {}),
-          ...(modelSelectionEnabled && provider !== "mock" && trimmedKey
-            ? { api_key: trimmedKey }
-            : {}),
+          ...(modelSelectionEnabled && provider !== "mock" ? credentials : {}),
         });
         setJobId(job.id);
         setSelectedJob(job);
@@ -442,9 +459,19 @@ export function ResearchWorkspace() {
         setIsRunning(false);
         setJobStatus("failed");
         setView("failed");
+      } finally {
+        clearCredentials();
       }
     },
-    [apiKey, connectToJob, modelSelectionEnabled, provider, selectedModel, t],
+    [
+      clearCredentials,
+      connectToJob,
+      currentCredentials,
+      modelSelectionEnabled,
+      provider,
+      selectedModel,
+      t,
+    ],
   );
 
   useEffect(() => {
@@ -579,7 +606,7 @@ export function ResearchWorkspace() {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     try {
-      const rerunJob = await rerunResearchJob(selectedJob.id);
+      const rerunJob = await rerunResearchJob(selectedJob.id, currentCredentials());
       setSelectedJob(rerunJob);
       setJobId(rerunJob.id);
       setJobStatus(rerunJob.status);
@@ -599,6 +626,7 @@ export function ResearchWorkspace() {
       setError(err instanceof Error ? err.message : t.errors.rerunFailed);
       setErrorRetryable(err instanceof ApiError ? err.retryable : false);
     } finally {
+      clearCredentials();
       setIsRerunning(false);
     }
   }
@@ -609,7 +637,7 @@ export function ResearchWorkspace() {
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
     try {
-      const retryJob = await retryResearchJob(jobId);
+      const retryJob = await retryResearchJob(jobId, currentCredentials());
       setSelectedJob(retryJob);
       setJobId(retryJob.id);
       setJobStatus(retryJob.status);
@@ -631,6 +659,7 @@ export function ResearchWorkspace() {
       setError(err instanceof Error ? err.message : t.errors.retryFailed);
       setErrorRetryable(err instanceof ApiError ? err.retryable : true);
     } finally {
+      clearCredentials();
       setIsRerunning(false);
     }
   }
@@ -781,6 +810,53 @@ export function ResearchWorkspace() {
 
   /* ---------- view bodies ---------- */
 
+  function renderCredentialFields() {
+    if (!modelSelectionEnabled || provider === "mock") return null;
+    return (
+      <div className="credential-fields">
+        <div className="adv-field adv-byok">
+          <label htmlFor="adv-api-key">{t.wb.byokLabel}</label>
+          <input
+            id="adv-api-key"
+            type="password"
+            autoComplete="off"
+            value={apiKey}
+            disabled={isRunning || isRestoring || isRerunning}
+            placeholder={t.wb.byokPlaceholder}
+            onChange={(event) => setApiKey(event.target.value)}
+          />
+          <p className="adv-hint">{t.wb.byokHint}</p>
+        </div>
+        <div className="adv-field adv-byok">
+          <label htmlFor="adv-search-api-key">{t.wb.searchKeyLabel}</label>
+          <input
+            id="adv-search-api-key"
+            type="password"
+            autoComplete="off"
+            value={searchApiKey}
+            disabled={isRunning || isRestoring || isRerunning}
+            placeholder={t.wb.searchKeyPlaceholder}
+            onChange={(event) => setSearchApiKey(event.target.value)}
+          />
+          <p className="adv-hint">{t.wb.searchKeyHint}</p>
+        </div>
+        <div className="adv-field adv-byok">
+          <label htmlFor="adv-reader-api-key">{t.wb.readerKeyLabel}</label>
+          <input
+            id="adv-reader-api-key"
+            type="password"
+            autoComplete="off"
+            value={readerApiKey}
+            disabled={isRunning || isRestoring || isRerunning}
+            placeholder={t.wb.readerKeyPlaceholder}
+            onChange={(event) => setReaderApiKey(event.target.value)}
+          />
+          <p className="adv-hint">{t.wb.readerKeyHint}</p>
+        </div>
+      </div>
+    );
+  }
+
   function renderEmpty() {
     return (
       <div className="empty-state">
@@ -863,21 +939,7 @@ export function ResearchWorkspace() {
                       </select>
                     </div>
                   </div>
-                  {provider !== "mock" ? (
-                    <div className="adv-field adv-byok">
-                      <label htmlFor="adv-api-key">{t.wb.byokLabel}</label>
-                      <input
-                        id="adv-api-key"
-                        type="password"
-                        autoComplete="off"
-                        value={apiKey}
-                        disabled={isRunning || isRestoring}
-                        placeholder={t.wb.byokPlaceholder}
-                        onChange={(event) => setApiKey(event.target.value)}
-                      />
-                      <p className="adv-hint">{t.wb.byokHint}</p>
-                    </div>
-                  ) : null}
+                  {renderCredentialFields()}
                 </Accordion.Body>
               </Accordion.Panel>
             </Accordion.Item>
@@ -1010,6 +1072,14 @@ export function ResearchWorkspace() {
           </div>
         </div>
 
+        {modelSelectionEnabled && provider !== "mock" ? (
+          <Card className="request-credentials" variant="secondary">
+            <h2>{t.wb.requestCredentialsTitle}</h2>
+            <p>{t.wb.requestCredentialsHint}</p>
+            {renderCredentialFields()}
+          </Card>
+        ) : null}
+
         {error ? <ErrorNotice message={error} /> : null}
 
         <article className="report-body markdown-body">
@@ -1044,6 +1114,7 @@ export function ResearchWorkspace() {
         <Card className="fail-card" variant="tertiary">
           <h2>{error || t.wb.failTitle}</h2>
           <p>{t.wb.failBody}</p>
+          {renderCredentialFields()}
           {errorRetryable ? (
             <Button size="sm" variant="primary" isDisabled={isRerunning} onPress={() => void handleRetry()}>
               {isRerunning ? <Spinner color="current" size="sm" /> : <RotateCcw size={15} />}

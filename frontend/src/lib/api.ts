@@ -15,6 +15,13 @@ type AuthTokenProvider = () => Promise<string | null>;
 
 let authTokenProvider: AuthTokenProvider | null = null;
 
+export type ResearchCredentials = {
+  api_key?: string;
+  base_url?: string;
+  search_api_key?: string;
+  reader_api_key?: string;
+};
+
 export function setAuthTokenProvider(provider: AuthTokenProvider | null): void {
   authTokenProvider = provider;
 }
@@ -104,9 +111,7 @@ export async function createResearchJob(input: {
   mode: ResearchMode;
   provider?: ProviderName;
   model?: string;
-  api_key?: string;
-  base_url?: string;
-}): Promise<ResearchJob> {
+} & ResearchCredentials): Promise<ResearchJob> {
   return requestJson<ResearchJob>(`${API_BASE_URL}/api/research-jobs`, {
     method: "POST",
     headers: await identityHeaders({
@@ -148,18 +153,32 @@ export async function cancelResearchJob(jobId: string): Promise<ResearchJob> {
   );
 }
 
-export async function rerunResearchJob(jobId: string): Promise<ResearchJob> {
+export async function rerunResearchJob(
+  jobId: string,
+  credentials: ResearchCredentials = {},
+): Promise<ResearchJob> {
   return requestJson<ResearchJob>(
     `${API_BASE_URL}/api/research-jobs/${jobId}/rerun`,
-    { method: "POST", headers: await identityHeaders() },
+    {
+      method: "POST",
+      headers: await identityHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(credentials),
+    },
     "暂时无法重新运行研究任务。",
   );
 }
 
-export async function retryResearchJob(jobId: string): Promise<ResearchJob> {
+export async function retryResearchJob(
+  jobId: string,
+  credentials: ResearchCredentials = {},
+): Promise<ResearchJob> {
   return requestJson<ResearchJob>(
     `${API_BASE_URL}/api/research-jobs/${jobId}/retry`,
-    { method: "POST", headers: await identityHeaders() },
+    {
+      method: "POST",
+      headers: await identityHeaders({ "Content-Type": "application/json" }),
+      body: JSON.stringify(credentials),
+    },
     "暂时无法重试研究任务。",
   );
 }

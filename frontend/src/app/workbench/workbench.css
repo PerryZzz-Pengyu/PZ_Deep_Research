@@ -380,7 +380,7 @@ body {
 }
 
 .adv-field select,
-.adv-byok input {
+.credential-fields input {
   width: 100%;
   appearance: none;
   background: rgba(255, 255, 255, 0.05);
@@ -392,14 +392,44 @@ body {
   outline: none;
 }
 
-.adv-byok {
+.credential-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
   padding: 0 16px 16px;
+}
+
+.request-credentials {
+  margin: 18px 0;
+  padding: 16px;
+}
+
+.request-credentials > h2 {
+  font-size: 14px;
+}
+
+.request-credentials > p {
+  margin: 6px 0 14px;
+  color: var(--ink-3);
+  font-size: 12px;
+}
+
+.request-credentials .credential-fields,
+.fail-card .credential-fields {
+  padding: 0;
+  margin: 14px 0;
 }
 
 .adv-hint {
   margin-top: 6px;
   font: 400 11px/1.4 "Inter", sans-serif;
   color: var(--ink-3);
+}
+
+@media (max-width: 760px) {
+  .credential-fields {
+    grid-template-columns: 1fr;
+  }
 }
 
 .recent-block {
