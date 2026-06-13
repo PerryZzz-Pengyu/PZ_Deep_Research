@@ -1,0 +1,10 @@
+本目录下的网络字体均采用 SIL Open Font License, Version 1.1 (OFL-1.1)，可免费商用、嵌入与再分发。
+The webfonts in this directory are licensed under the SIL Open Font License v1.1 (OFL-1.1).
+
+- Inter         © The Inter Project Authors (https://github.com/rsms/inter)
+- Fira Code     © The Fira Code Project Authors (https://github.com/tonsky/FiraCode)
+
+License text: https://openfontlicense.org/open-font-license-official-text/
+
+OFL 允许：商业使用、嵌入应用/网站、修改、再分发。
+OFL 要求：保留本许可声明；不得单独销售字体本身。
