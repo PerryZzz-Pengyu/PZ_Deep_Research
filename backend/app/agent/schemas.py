@@ -25,6 +25,15 @@ class ResearchRequest(BaseModel):
     # model_dump()/model_dump_json(), so they never reach persistence or SSE.
     api_key: Optional[str] = Field(default=None, exclude=True, repr=False)
     base_url: Optional[str] = Field(default=None, exclude=True, repr=False)
+    search_api_key: Optional[str] = Field(default=None, exclude=True, repr=False)
+    reader_api_key: Optional[str] = Field(default=None, exclude=True, repr=False)
+
+
+class ResearchCredentials(BaseModel):
+    api_key: Optional[str] = Field(default=None, exclude=True, repr=False)
+    base_url: Optional[str] = Field(default=None, exclude=True, repr=False)
+    search_api_key: Optional[str] = Field(default=None, exclude=True, repr=False)
+    reader_api_key: Optional[str] = Field(default=None, exclude=True, repr=False)
 
 
 class ResearchEvent(BaseModel):

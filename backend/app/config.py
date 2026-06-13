@@ -42,6 +42,7 @@ DEFAULT_GEMINI_MODEL_OPTIONS = (
 DEFAULT_OPENAI_EVIDENCE_MODEL = "gpt-5-nano"
 DEFAULT_ANTHROPIC_EVIDENCE_MODEL = "claude-haiku-4-5-20251001"
 DEFAULT_GEMINI_EVIDENCE_MODEL = "gemini-2.5-flash-lite"
+DEFAULT_CLOUD_ROUTING_VERSION = "cloud-unconfigured"
 DEFAULT_SEARCH_PROVIDER = "serpapi"
 DEFAULT_ACADEMIC_SEARCH_ENGINE = "google_scholar"
 DEFAULT_DATABASE_URL = f"sqlite+aiosqlite:///{PROJECT_ROOT / 'data' / 'pz_deep_research.db'}"
@@ -62,9 +63,9 @@ class Settings:
     default_provider: str = "mock"
     default_model: str = ""
     model_routing_mode: str = "production"
-    production_provider: str = "openai"
-    production_model: str = DEFAULT_OPENAI_MODEL
-    model_routing_version: str = "openai-default-v1"
+    production_provider: str = ""
+    production_model: str = ""
+    model_routing_version: str = DEFAULT_CLOUD_ROUTING_VERSION
     mock_provider_delay_seconds: float = 0.0
     llm_max_retries: int = 3
     llm_retry_base_delay_seconds: float = 2.0
@@ -180,9 +181,12 @@ def get_settings() -> Settings:
         default_provider=_get_env("DEFAULT_PROVIDER", "mock"),
         default_model=_get_env("DEFAULT_MODEL", ""),
         model_routing_mode=_get_env("MODEL_ROUTING_MODE", "production").lower(),
-        production_provider=_get_env("PRODUCTION_PROVIDER", "openai").lower(),
-        production_model=_get_env("PRODUCTION_MODEL", DEFAULT_OPENAI_MODEL),
-        model_routing_version=_get_env("MODEL_ROUTING_VERSION", "openai-default-v1"),
+        production_provider=_get_env("PRODUCTION_PROVIDER", "").lower(),
+        production_model=_get_env("PRODUCTION_MODEL", ""),
+        model_routing_version=_get_env(
+            "MODEL_ROUTING_VERSION",
+            DEFAULT_CLOUD_ROUTING_VERSION,
+        ),
         mock_provider_delay_seconds=_get_float_env("MOCK_PROVIDER_DELAY_SECONDS", 0.0),
         llm_max_retries=_get_int_env("LLM_MAX_RETRIES", 3),
         llm_retry_base_delay_seconds=_get_float_env("LLM_RETRY_BASE_DELAY_SECONDS", 2.0),
@@ -287,7 +291,13 @@ def resolve_model_route(
     )
 
 
-def missing_search_requirements(settings: Settings) -> list[str]:
+def missing_search_requirements(
+    settings: Settings,
+    *,
+    api_key_override: str | None = None,
+) -> list[str]:
+    if api_key_override:
+        return []
     if settings.search_provider == "serpapi":
         return [] if settings.serpapi_api_key else ["SERPAPI_API_KEY"]
     if settings.search_provider == "mock":
@@ -314,6 +324,7 @@ def missing_provider_requirements(
     model_override: str | None = None,
     require_real_search: bool = True,
     api_key_override: str | None = None,
+    search_api_key_override: str | None = None,
 ) -> list[str]:
     normalized = provider.lower()
     missing: list[str] = []
@@ -338,5 +349,10 @@ def missing_provider_requirements(
         missing.append(f"{normalized.upper()}_MODEL")
 
     if require_real_search and normalized in {"openai", "anthropic", "gemini"}:
-        missing.extend(missing_search_requirements(settings))
+        missing.extend(
+            missing_search_requirements(
+                settings,
+                api_key_override=search_api_key_override,
+            )
+        )
     return missing
