@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import asdict, replace
 from typing import Any, Optional
 
@@ -123,6 +123,7 @@ class AgentRuntime:
         provider_factory: ProviderFactory,
         tool_registry: ToolRegistry,
         *,
+        tool_registry_factory: Callable[[ResearchRequest], ToolRegistry] | None = None,
         max_llm_retries: int = 1,
         llm_retry_base_delay_seconds: float = 0.0,
         llm_timeout_seconds: float = 60.0,
@@ -132,6 +133,7 @@ class AgentRuntime:
     ) -> None:
         self.provider_factory = provider_factory
         self.tool_registry = tool_registry
+        self.tool_registry_factory = tool_registry_factory
         self.max_llm_retries = max(0, max_llm_retries)
         self.llm_retry_base_delay_seconds = max(0.0, llm_retry_base_delay_seconds)
         self.llm_timeout_seconds = max(0.1, llm_timeout_seconds)
@@ -143,7 +145,16 @@ class AgentRuntime:
         self.evidence_extraction_concurrency = max(1, evidence_extraction_concurrency)
 
     async def run(self, job_id: str, request: ResearchRequest) -> AsyncIterator[ResearchEvent]:
-        provider = self.provider_factory.create(request.provider)
+        provider = self.provider_factory.create(
+            request.provider,
+            api_key=request.api_key,
+            base_url=request.base_url,
+        )
+        tool_registry = (
+            self.tool_registry_factory(request)
+            if self.tool_registry_factory
+            else self.tool_registry
+        )
         mode_policy = MODE_POLICIES[request.mode]
         target = int(mode_policy["visit_source_count"])
         minimum_full_text = int(mode_policy["full_text_source_count"])
@@ -200,7 +211,7 @@ class AgentRuntime:
                 message="调用工具：search",
                 payload={"tool": "search", "arguments": {"query": queries}},
             )
-            search_result = await self.tool_registry.call("search", {"query": queries})
+            search_result = await tool_registry.call("search", {"query": queries})
             new_candidates = self._mark_search_candidates(search_result.sources, searched_urls)
             yield ResearchEvent(
                 job_id=job_id,
@@ -233,6 +244,7 @@ class AgentRuntime:
                 visited_urls,
                 goal,
                 job_id,
+                tool_registry,
             ):
                 yield event
 
@@ -337,7 +349,11 @@ class AgentRuntime:
         request: ResearchRequest,
         retry_context: dict[str, Any],
     ) -> AsyncIterator[ResearchEvent]:
-        provider = self.provider_factory.create(request.provider)
+        provider = self.provider_factory.create(
+            request.provider,
+            api_key=request.api_key,
+            base_url=request.base_url,
+        )
         sources = [
             dict(source)
             for source in retry_context.get("sources", [])
@@ -761,6 +777,7 @@ class AgentRuntime:
         visited_urls: set[str],
         goal: str,
         job_id: str,
+        tool_registry: ToolRegistry,
     ) -> AsyncIterator[ResearchEvent]:
         """按相关性滚动访问有限候选：全文达标早停，候选耗尽则降级退出。"""
         remaining = [source for source in queue if source["url"] not in visited_urls]
@@ -776,7 +793,7 @@ class AgentRuntime:
                 message="调用工具：visit",
                 payload={"tool": "visit", "arguments": {"url": urls, "goal": goal}},
             )
-            visit_result = await self.tool_registry.call("visit", {"url": urls, "goal": goal})
+            visit_result = await tool_registry.call("visit", {"url": urls, "goal": goal})
 
             new_visited: list[dict[str, str]] = []
             for source in visit_result.sources:

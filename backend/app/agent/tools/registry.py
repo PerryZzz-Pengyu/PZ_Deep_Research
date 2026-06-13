@@ -23,16 +23,23 @@ class ToolRegistry:
         return sorted(self._tools)
 
 
-def build_default_tool_registry(settings: Settings) -> ToolRegistry:
+def build_default_tool_registry(
+    settings: Settings,
+    *,
+    search_api_key_override: str | None = None,
+    reader_api_key_override: str | None = None,
+) -> ToolRegistry:
+    search_api_key = search_api_key_override or settings.serpapi_api_key
+    search_provider = "serpapi" if search_api_key_override else settings.search_provider
     return ToolRegistry(
         [
             SearchTool(
-                provider=settings.search_provider,
-                serpapi_api_key=settings.serpapi_api_key,
+                provider=search_provider,
+                serpapi_api_key=search_api_key,
                 academic_engine=settings.academic_search_engine,
             ),
             VisitTool(
-                jina_api_key=settings.jina_api_key,
+                jina_api_key=reader_api_key_override or settings.jina_api_key,
                 max_concurrency=settings.visit_max_concurrency,
             ),
         ]

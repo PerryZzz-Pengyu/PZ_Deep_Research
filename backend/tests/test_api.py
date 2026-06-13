@@ -76,9 +76,24 @@ def test_readiness_endpoint_returns_provider_and_tool_status() -> None:
     assert "openai" in payload["providers"]
     assert "tools" in payload
     assert "search" in payload["tools"]
+    assert payload["edition"] in {"community", "cloud"}
 
 
-def test_model_options_endpoint_returns_provider_candidates() -> None:
+def test_model_options_endpoint_returns_provider_candidates(monkeypatch) -> None:
+    # Pin a configured cloud edition so the assertion does not depend on the
+    # ambient .env (CI has none → community default → selection enabled).
+    monkeypatch.setattr(
+        routes,
+        "settings",
+        Settings(
+            edition="cloud",
+            model_routing_mode="production",
+            production_provider="openai",
+            production_model="gpt-5.4-mini",
+            model_routing_version="openai-default-v1",
+        ),
+    )
+
     response = client.get("/api/models")
 
     assert response.status_code == 200
@@ -101,6 +116,7 @@ def test_create_research_job_uses_production_route(monkeypatch) -> None:
         return None
 
     production_settings = Settings(
+        edition="cloud",
         model_routing_mode="production",
         production_provider="openai",
         production_model="gpt-5.4-mini",
@@ -128,6 +144,38 @@ def test_create_research_job_uses_production_route(monkeypatch) -> None:
     assert payload["provider"] == "openai"
     assert payload["model"] == "gpt-5.4-mini"
     assert payload["routing_version"] == "openai-default-v1"
+
+
+def test_create_research_job_community_edition_honors_client_provider(monkeypatch) -> None:
+    async def do_not_run_job(job_id: str, request: ResearchRequest) -> None:
+        return None
+
+    community_settings = Settings(
+        edition="community",
+        default_provider="mock",
+        anthropic_api_key="user-supplied-not-needed-here",
+        serpapi_api_key="test-serpapi-key",
+    )
+    monkeypatch.setattr(routes, "settings", community_settings)
+    monkeypatch.setattr(routes, "job_store", InMemoryJobStore())
+    monkeypatch.setattr(routes, "run_research_job", do_not_run_job)
+
+    response = client.post(
+        "/api/research-jobs",
+        headers=VISITOR_HEADERS,
+        json={
+            "query": "社区版应当尊重客户端选择",
+            "mode": "quick",
+            "provider": "anthropic",
+            "model": "claude-opus-4-8",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["provider"] == "anthropic"
+    assert payload["model"] == "claude-opus-4-8"
+    assert payload["routing_version"] == "community"
 
 
 def test_openai_available_models_requires_api_key(monkeypatch) -> None:

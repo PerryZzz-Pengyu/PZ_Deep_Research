@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from app.config import get_settings, missing_provider_requirements, resolve_model_route
+from app.config import (
+    Settings,
+    get_settings,
+    missing_provider_requirements,
+    resolve_model_route,
+)
 
 
 def test_get_settings_uses_provider_default_models_when_env_is_blank(monkeypatch) -> None:
@@ -52,13 +57,19 @@ def test_get_settings_uses_provider_default_models_when_env_is_blank(monkeypatch
     assert settings.anthropic_evidence_model == "claude-haiku-4-5-20251001"
     assert settings.gemini_evidence_model == "gemini-2.5-flash-lite"
     assert settings.model_routing_mode == "production"
-    assert settings.production_provider == "openai"
-    assert settings.production_model == "gpt-5.4-mini"
-    assert settings.model_routing_version == "openai-default-v1"
+    assert settings.production_provider == ""
+    assert settings.production_model == ""
+    assert settings.model_routing_version == "cloud-unconfigured"
 
 
 def test_production_model_route_ignores_client_provider_and_model() -> None:
-    settings = get_settings()
+    settings = Settings(
+        edition="cloud",
+        model_routing_mode="production",
+        production_provider="cloud-provider",
+        production_model="cloud-model",
+        model_routing_version="cloud-route-v1",
+    )
 
     route = resolve_model_route(
         settings,
@@ -66,17 +77,59 @@ def test_production_model_route_ignores_client_provider_and_model() -> None:
         requested_model="claude-opus-4-8",
     )
 
-    assert route.provider == "openai"
-    assert route.model == "gpt-5.4-mini"
-    assert route.routing_version == "openai-default-v1"
+    assert route.provider == "cloud-provider"
+    assert route.model == "cloud-model"
+    assert route.routing_version == "cloud-route-v1"
     assert route.selection_enabled is False
 
 
+def test_get_settings_defaults_to_community_edition(monkeypatch) -> None:
+    monkeypatch.delenv("PZ_EDITION", raising=False)
+
+    assert get_settings().edition == "community"
+
+
+def test_get_settings_reads_cloud_edition(monkeypatch) -> None:
+    monkeypatch.setenv("PZ_EDITION", "Cloud")
+
+    assert get_settings().edition == "cloud"
+
+
+def test_get_settings_invalid_edition_falls_back_to_community(monkeypatch) -> None:
+    monkeypatch.setenv("PZ_EDITION", "enterprise")
+
+    assert get_settings().edition == "community"
+
+
+def test_community_edition_route_honors_client_selection() -> None:
+    settings = Settings(
+        edition="community",
+        model_routing_mode="production",
+        production_provider="cloud-provider",
+        production_model="cloud-model",
+        model_routing_version="cloud-route-v1",
+    )
+
+    route = resolve_model_route(
+        settings,
+        requested_provider="anthropic",
+        requested_model="claude-opus-4-8",
+    )
+
+    assert route.provider == "anthropic"
+    assert route.model == "claude-opus-4-8"
+    assert route.routing_version == "community"
+    assert route.selection_enabled is True
+
+
 def test_manual_model_route_preserves_internal_selection() -> None:
+    # manual routing is a cloud-internal mode; pin the edition so the test does
+    # not depend on the ambient .env (CI has none → community default).
     settings = get_settings()
     manual_settings = settings.__class__(
         **{
             **settings.__dict__,
+            "edition": "cloud",
             "model_routing_mode": "manual",
         }
     )

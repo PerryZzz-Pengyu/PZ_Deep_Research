@@ -14,24 +14,31 @@ class ProviderFactory:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
 
-    def create(self, provider_name: Optional[str]) -> LLMProvider:
+    def create(
+        self,
+        provider_name: Optional[str],
+        *,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> LLMProvider:
+        # BYOK overrides (community edition); fall back to server-side settings.
         provider = (provider_name or self.settings.default_provider).lower()
         if provider == "mock":
             return MockProvider(delay_seconds=self.settings.mock_provider_delay_seconds)
         if provider == "openai":
             return OpenAIProvider(
-                api_key=self.settings.openai_api_key,
-                base_url=self.settings.openai_base_url,
+                api_key=api_key or self.settings.openai_api_key,
+                base_url=base_url or self.settings.openai_base_url,
                 default_model=self.settings.openai_model or self.settings.default_model,
             )
         if provider == "anthropic":
             return AnthropicProvider(
-                api_key=self.settings.anthropic_api_key,
+                api_key=api_key or self.settings.anthropic_api_key,
                 default_model=self.settings.anthropic_model or self.settings.default_model,
             )
         if provider == "gemini":
             return GeminiProvider(
-                api_key=self.settings.gemini_api_key,
+                api_key=api_key or self.settings.gemini_api_key,
                 default_model=self.settings.gemini_model or self.settings.default_model,
             )
         raise ValueError(f"未知模型 Provider: {provider_name}")
