@@ -18,3 +18,19 @@ reference repository.
 PZ Deep Research is not an official project of, affiliated with, endorsed by,
 or sponsored by Alibaba-NLP, Qwen, OpenAI, Anthropic, Google, SerpAPI, or
 Jina AI. All product names and trademarks belong to their respective owners.
+
+Third-party fonts
+-----------------
+
+This repository redistributes the following web fonts under the SIL Open Font
+License, Version 1.1 (OFL-1.1). See frontend/public/fonts/LICENSE.txt.
+
+  Inter      (c) The Inter Project Authors      https://github.com/rsms/inter
+  Fira Code  (c) The Fira Code Project Authors  https://github.com/tonsky/FiraCode
+
+Editions
+--------
+
+This repository is the PZ Deep Research Community Edition, licensed under the
+Apache License, Version 2.0. The hosted Cloud Edition is maintained in a
+separate, private repository and is not covered by this license.

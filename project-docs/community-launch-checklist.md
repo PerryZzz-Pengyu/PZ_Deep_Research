@@ -20,9 +20,10 @@
 ## 待办（按优先级；owner：U=用户 Owner，C=Codex 实施，K=Claude 顾问）
 
 ### P0 — 真正开箱即用（阻塞发布）
-- [ ] **干净机器冷启动验证**：在未克隆过的环境 `git clone` → `docker compose up --build`，确认 mock 零密钥跑通一次研究、前端 `/workbench` 可用。（C；验收：录一遍过程）
-- [ ] **BYOK 上手文档**：README/Quickstart 增加"如何在工作台填自己的 OpenAI/SerpAPI/Jina Key 并跑一次"的图文步骤。（C/K）
-- [ ] **零依赖最短路径**：明确"只想试用 → 用 mock"与"要真实结果 → BYOK"两条路径，避免新用户卡在缺 Key。（C）
+- [x] **干净机器冷启动验证**：2026-06-14 在 `/tmp` 全新 `git clone`（无 `.env`）→ `docker compose up --build` 验证通过：`/api/readiness` 返回 `edition=community / sqlite / search=mock`，mock 任务零密钥跑到 `completed`，`/api/usage` 正常，前端 `/workbench` HTTP 200。（C）
+- [x] **BYOK 上手文档**：README（中/英）Quickstart 增加"在工作台高级选项选 provider/模型并粘贴自己的 OpenAI/SerpAPI/Jina Key、仅本次请求使用不落存储"的步骤。（C）
+- [x] **零依赖最短路径**：README 明确"只想试用 → mock 零配置"与"要真实结果 → BYOK"两条路径。（C）
+  - 留待补充：录一段冷启动 + BYOK 的演示 GIF/截图（归入 P1 演示素材）。
 
 ### P1 — 可信与可读（影响转化）
 - [ ] **演示素材**：一段真实 BYOK 研究的 GIF/短视频（含搜索→访问→证据→带引用报告→导出）。（U/C）

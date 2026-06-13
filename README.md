@@ -93,6 +93,33 @@ Actual source counts depend on search results and webpage accessibility. When th
 
 ## Quick Start
 
+### Fastest path: Docker (Community Edition)
+
+One command brings up the full stack with zero secrets:
+
+```bash
+git clone https://github.com/PerryZzz-Pengyu/PZ_Deep_Research.git
+cd PZ_Deep_Research
+docker compose up --build
+```
+
+Then open <http://localhost:3000/workbench>. Two ways to run research:
+
+- **Just trying it (zero config):** keep the default provider `mock` — it runs the
+  full pipeline offline with placeholder search/results, so you can see the flow
+  without any API key.
+- **Real results (bring your own key, BYOK):** in the workbench open **Advanced
+  options**, pick a provider (OpenAI / Claude / Gemini), choose a model, and paste
+  your own API key. A SerpAPI key (academic search) and an optional Jina key
+  (webpage reading) can be pasted there too. Keys are used only for that request —
+  they are never written to the database, logs, or storage.
+
+The Docker stack defaults to `PZ_EDITION=community`, SQLite, guest mode, and the
+mock provider. To use server-side keys instead of BYOK, set them in the
+`docker-compose.yml` backend `environment` block.
+
+### Manual setup
+
 ### 1. Clone the repository
 
 ```bash
