@@ -16,6 +16,18 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-13 23:45 CST +0800
+
+### 用量账本：每任务用量聚合 + 按账号 `/api/usage`（Tier 2 地基）
+
+- `ResearchJob` 与 `research_jobs` 表新增每任务用量聚合：`usage_input_tokens`/`usage_output_tokens`/`usage_llm_calls`/`usage_tool_calls`（**不含成本/定价**——定价计算属私有 Cloud）。
+- 存储层新增 `record_usage` 与 `aggregate_usage`（SQL 与内存两套实现）；`run_research_job` 在 `llm_result`/`tool_result` 流式事件中累计并持久化，取消/失败也保留部分用量。
+- 新增 `GET /api/usage`：按访客/账号归属返回聚合用量（与历史同一归属隔离）。
+- 新增 Alembic 迁移 `20260613_05`（幂等、支持 SQLite 执行与离线 SQL；迁移头从 `20260611_04` 推进）。
+- 测试先行：`test_sql_store` 覆盖 record/aggregate 跨重连与归属隔离并更新迁移头断言；`test_api` 覆盖 `/api/usage` 归属聚合与"响应不含 cost/price/usd"红线，并扩展 mock 任务用例断言用量被记录。后端 pytest 148 通过；`PZ_EDITION=community` 模拟 CI 同样 148 通过。
+- 定位：社区版"用量展示"与云端"额度/计费"的共用地基（Tier 2）。
+- 影响文件：`backend/app/agent/schemas.py`、`backend/app/storage/sql.py`、`backend/app/storage/memory.py`、`backend/app/api/routes.py`、`backend/migrations/versions/20260613_05_add_usage_aggregate.py`、`backend/tests/test_sql_store.py`、`backend/tests/test_api.py`；`project-docs/technical-architecture.md`、`project-plan.md`、`testing-guide.md`。
+
 ## 2026-06-13 23:35 CST +0800
 
 ### 规划：社区版发布清单 + 模型质量评测方案

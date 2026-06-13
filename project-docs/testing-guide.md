@@ -61,11 +61,12 @@
 - `/api/readiness` 必须返回当前 `edition`。
 - BYOK（社区版自带 Key）：模型、SerpAPI 和 Jina 凭据均为请求级覆盖并标记 `exclude=True`；序列化、持久化、日志和 SSE 不得出现凭据；创建、重跑和失败重试必须接受重新输入的临时凭据，Cloud 版必须剥离全部客户端凭据。
 - 前端 BYOK：选择启用（`selection_enabled=true`，即社区版）时高级选项展示模型、SerpAPI 和 Jina 密钥输入；凭据只存于组件内存，不得写入 localStorage/sessionStorage，并在创建、重跑或重试请求结束后清空（Playwright `ui-resilience.spec.ts` 覆盖）。
+- 用量账本：每任务持久化用量聚合（输入/输出 token、LLM 调用数、工具调用数，**不含成本/定价**——定价属于私有 Cloud）；`record_usage`/`aggregate_usage` 跨数据库重连保留并按访客/账号归属聚合隔离；`/api/usage` 返回归属内聚合且响应不出现 cost/price/usd；mock 任务完成后必须记录到 LLM 与工具调用数。
 - 本地手动端到端流程可以跑通。
 
 暂时不引入复杂测试体系，避免过早增加维护成本。
 
-截至 2026-06-13，后端 pytest 共 145 个用例通过，前端 Playwright Chromium 共 12 个端到端用例通过（默认端口 3000/8000；测试覆盖访客降级、任务恢复、BYOK 和移动端来源弹窗）。
+截至 2026-06-13，后端 pytest 共 148 个用例通过，前端 Playwright Chromium 共 12 个端到端用例通过（默认端口 3000/8000；测试覆盖访客降级、任务恢复、BYOK 和移动端来源弹窗）。Alembic 最新迁移头为 `20260613_05`（新增每任务用量聚合列）。
 
 ## 测试优先开发原则
 
@@ -131,7 +132,8 @@ backend/tests/
   - `/api/models` 可以返回 OpenAI 候选模型。
   - Cloud 模式会隐藏模型选择，并忽略客户端指定的 Provider、模型和全部 BYOK Key。
   - `/api/models/openai` 在缺少 OpenAI Key 时返回配置错误。
-  - `/api/research-jobs` 可以创建 mock 研究任务。
+  - `/api/research-jobs` 可以创建 mock 研究任务，且完成后用量账本记录到 LLM 与工具调用数。
+  - `/api/usage` 按归属返回用量聚合，且响应不暴露成本/定价字段。
   - 过短 query 会被 API 校验拒绝。
   - `run_research_job` 不会把 `llm_delta` 和 `report_delta` 写入历史事件存储。
   - 报告 delta 会累计到任务草稿，`report_reset` 会清空草稿。
@@ -171,6 +173,7 @@ backend/tests/
   - 重新运行任务血缘和 Alembic 版本化迁移可以持久化。
   - 产品错误元数据、报告检查点、数据库 `SELECT 1` 和第三个 Alembic 迁移可以持久化。
   - `routing_version` 和第四个 Alembic 迁移可以跨数据库重连持久化。
+  - 每任务用量聚合（`record_usage`）跨重连保留，`aggregate_usage` 按归属求和且访客间隔离；第五个 Alembic 迁移新增用量列。
 - `test_error_handling.py`
   - 超时、网络、Provider 鉴权、来源读取失败能映射为稳定产品错误码。
   - 用户事件和 payload 不包含原始 API Key 或 Provider 错误正文。
