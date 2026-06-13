@@ -86,7 +86,7 @@ test("community edition forwards a bring-your-own API key without persisting it"
     });
   });
 
-  let capturedBody: Record<string, unknown> | null = null;
+  let capturedBody: Record<string, unknown> = {};
   await page.route("**/api/research-jobs", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     capturedBody = route.request().postDataJSON();
@@ -96,8 +96,8 @@ test("community edition forwards a bring-your-own API key without persisting it"
       body: JSON.stringify({
         id: "byok-job",
         rerun_of_job_id: null,
-        query: capturedBody?.query,
-        mode: capturedBody?.mode,
+        query: capturedBody.query,
+        mode: capturedBody.mode,
         provider: "openai",
         model: "gpt-5.4-mini",
         status: "queued",
@@ -125,14 +125,30 @@ test("community edition forwards a bring-your-own API key without persisting it"
   await page.getByRole("button", { name: "Advanced options", exact: true }).click();
   const keyInput = page.locator("#adv-api-key");
   await expect(keyInput).toBeVisible();
+  const searchKeyInput = page.locator("#adv-search-api-key");
+  const readerKeyInput = page.locator("#adv-reader-api-key");
   const userKey = "sk-user-playwright-byok-1234567890";
+  const searchKey = "serpapi-user-playwright-secret";
+  const readerKey = "jina-user-playwright-secret";
   await keyInput.fill(userKey);
+  await searchKeyInput.fill(searchKey);
+  await readerKeyInput.fill(readerKey);
 
   await query.fill("Verify BYOK key forwarding");
   await page.getByRole("button", { name: "Start research", exact: true }).click();
 
-  await expect.poll(() => capturedBody?.api_key).toBe(userKey);
-  expect(capturedBody?.provider).toBe("openai");
+  await expect.poll(() => capturedBody.api_key).toBe(userKey);
+  expect(capturedBody.provider).toBe("openai");
+  expect(capturedBody.search_api_key).toBe(searchKey);
+  expect(capturedBody.reader_api_key).toBe(readerKey);
+
+  // The run view unmounts the credential fields. Return to the form and verify
+  // the component state was actually cleared before the next submission.
+  await page.getByRole("button", { name: "New research", exact: true }).click();
+  await page.getByRole("button", { name: "Advanced options", exact: true }).click();
+  await expect(keyInput).toHaveValue("");
+  await expect(searchKeyInput).toHaveValue("");
+  await expect(readerKeyInput).toHaveValue("");
 
   // The key lives only in component memory and must never be written to storage.
   const leaked = await page.evaluate((needle) => {
