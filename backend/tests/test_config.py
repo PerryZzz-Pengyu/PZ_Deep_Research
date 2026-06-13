@@ -123,10 +123,13 @@ def test_community_edition_route_honors_client_selection() -> None:
 
 
 def test_manual_model_route_preserves_internal_selection() -> None:
+    # manual routing is a cloud-internal mode; pin the edition so the test does
+    # not depend on the ambient .env (CI has none → community default).
     settings = get_settings()
     manual_settings = settings.__class__(
         **{
             **settings.__dict__,
+            "edition": "cloud",
             "model_routing_mode": "manual",
         }
     )
