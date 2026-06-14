@@ -108,6 +108,9 @@ docker compose up --build
 - **只想试用（零配置）**：保持默认 provider `mock`——它用占位的搜索/结果离线跑完整流程，无需任何 API Key 即可看到完整链路。
 - **要真实结果（自带 Key，BYOK）**：在工作台展开**高级选项**，选择 provider（OpenAI / Claude / Gemini）与模型，粘贴你自己的 API Key；学术搜索的 SerpAPI Key 与可选的网页阅读 Jina Key 也在此填写。Key 仅用于该次请求，**不写入数据库、日志或任何存储**。
 
+> [!NOTE]
+> 自定义 OpenAI 兼容的 `base_url`（用于代理或本地模型）时，必须与你自己的 API Key 一起提交——服务端 Key 绝不会被转发到客户端指定的地址。若你对外开放共享/公开实例，设 `BYOK_RESTRICT_BASE_URL=true` 强制 https 并拦截内网地址。
+
 Docker 栈默认 `PZ_EDITION=community`、SQLite、访客模式与 mock provider。若想用服务端 Key 而非 BYOK，在 `docker-compose.yml` 后端 `environment` 段填入即可。
 
 ### 手动启动

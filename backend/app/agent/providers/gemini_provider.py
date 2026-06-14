@@ -44,4 +44,10 @@ class GeminiProvider(LLMProvider):
             )
         finally:
             await client.aio.aclose()
-        return LLMResult(content=response.text or "", model=selected_model)
+        usage = getattr(response, "usage_metadata", None)
+        return LLMResult(
+            content=response.text or "",
+            model=selected_model,
+            input_tokens=getattr(usage, "prompt_token_count", None),
+            output_tokens=getattr(usage, "candidates_token_count", None),
+        )

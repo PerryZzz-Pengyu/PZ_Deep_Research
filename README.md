@@ -114,6 +114,12 @@ Then open <http://localhost:3000/workbench>. Two ways to run research:
   (webpage reading) can be pasted there too. Keys are used only for that request —
   they are never written to the database, logs, or storage.
 
+> [!NOTE]
+> A custom OpenAI-compatible `base_url` (for a proxy or a local model) must be
+> sent together with your own API key — the server key is never forwarded to a
+> client-supplied endpoint. If you expose a shared or public instance, set
+> `BYOK_RESTRICT_BASE_URL=true` to force https and block internal-network targets.
+
 The Docker stack defaults to `PZ_EDITION=community`, SQLite, guest mode, and the
 mock provider. To use server-side keys instead of BYOK, set them in the
 `docker-compose.yml` backend `environment` block.

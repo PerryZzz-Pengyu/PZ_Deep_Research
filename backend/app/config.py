@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -101,6 +104,11 @@ class Settings:
     pdf_export_timeout_seconds: float = 45.0
     pdf_export_max_concurrency: int = 2
     pdf_chromium_executable_path: str = ""
+    # When true (shared / public-demo deployments), a client-supplied BYOK
+    # base_url must use https and may not point at private/loopback addresses.
+    # Default false keeps local-LLM endpoints (e.g. Ollama at localhost) usable
+    # for single-user self-hosting; link-local/metadata is blocked regardless.
+    byok_restrict_base_url: bool = False
 
 
 @dataclass(frozen=True)
@@ -126,15 +134,70 @@ class ByokCredentials:
     reader_api_key: str | None = None
 
 
+class ByokCredentialError(ValueError):
+    """Client-supplied BYOK credentials are unsafe or internally inconsistent."""
+
+
+def validate_byok_base_url(url: str, *, restrict_network: bool) -> None:
+    """Reject a client base_url that could be abused for SSRF / key exfiltration.
+
+    A literal IP host is always range-checked (cheap, no DNS), so the
+    169.254.169.254 cloud-metadata address and other reserved ranges are blocked
+    even by default. ``restrict_network`` (shared / public-demo deployments)
+    additionally forces https, resolves hostnames via DNS, and blocks
+    private/loopback so the server cannot probe an internal network. It stays off
+    by default so single-user self-hosting can point BYOK at a local LLM (e.g.
+    Ollama on localhost) with a custom hostname.
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    allowed_schemes = ("https",) if restrict_network else ("http", "https")
+    if scheme not in allowed_schemes:
+        raise ByokCredentialError(
+            "base_url 必须使用 https" if restrict_network else "base_url 必须是 http(s) URL"
+        )
+    host = parsed.hostname
+    if not host:
+        raise ByokCredentialError("base_url 缺少有效主机名")
+
+    try:
+        candidates = [ipaddress.ip_address(host)]
+    except ValueError:
+        # Hostname: only resolve in strict mode (public/shared deployments) so
+        # default self-hosting does not depend on DNS or block custom hostnames.
+        if not restrict_network:
+            return
+        try:
+            infos = socket.getaddrinfo(host, parsed.port)
+        except socket.gaierror as exc:
+            raise ByokCredentialError("base_url 主机无法解析") from exc
+        candidates = [ipaddress.ip_address(info[4][0]) for info in infos]
+
+    for ip in candidates:
+        if ip.is_link_local or ip.is_reserved or ip.is_multicast or ip.is_unspecified:
+            raise ByokCredentialError("base_url 指向受限网络地址")
+        if restrict_network and (ip.is_private or ip.is_loopback):
+            raise ByokCredentialError("base_url 指向内网地址")
+
+
 def resolve_byok_credentials(settings: Settings, source: object | None) -> ByokCredentials:
     # BYOK is community-only; the cloud edition never honors client credentials.
     if source is None or settings.edition != "community":
         return ByokCredentials()
+    api_key = getattr(source, "api_key", None) or None
+    base_url = getattr(source, "base_url", None) or None
+    # A client base_url must never pair with the server API key: that would send
+    # the server key to an attacker-controlled endpoint. Only honor a custom
+    # base_url as part of a complete BYOK pair, and validate it for SSRF.
+    if base_url and not api_key:
+        raise ByokCredentialError("提供自定义 base_url 时必须同时提供 API Key")
+    if base_url:
+        validate_byok_base_url(base_url, restrict_network=settings.byok_restrict_base_url)
     return ByokCredentials(
-        api_key=getattr(source, "api_key", None),
-        base_url=getattr(source, "base_url", None),
-        search_api_key=getattr(source, "search_api_key", None),
-        reader_api_key=getattr(source, "reader_api_key", None),
+        api_key=api_key,
+        base_url=base_url,
+        search_api_key=getattr(source, "search_api_key", None) or None,
+        reader_api_key=getattr(source, "reader_api_key", None) or None,
     )
 
 
@@ -146,6 +209,13 @@ def _get_int_env(name: str, default: int) -> int:
         return int(raw)
     except ValueError:
         return default
+
+
+def _get_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _get_float_env(name: str, default: float) -> float:
@@ -279,6 +349,7 @@ def get_settings() -> Settings:
         pdf_export_timeout_seconds=_get_float_env("PDF_EXPORT_TIMEOUT_SECONDS", 45.0),
         pdf_export_max_concurrency=_get_int_env("PDF_EXPORT_MAX_CONCURRENCY", 2),
         pdf_chromium_executable_path=_get_env("PDF_CHROMIUM_EXECUTABLE_PATH", ""),
+        byok_restrict_base_url=_get_bool_env("BYOK_RESTRICT_BASE_URL", False),
     )
 
 

@@ -23,12 +23,17 @@ class ProviderFactory:
     ) -> LLMProvider:
         # BYOK overrides (community edition); fall back to server-side settings.
         provider = (provider_name or self.settings.default_provider).lower()
+        # Safety net: never pair a client-supplied base_url with the server API
+        # key — that would exfiltrate the server key to an attacker-controlled
+        # endpoint. The request layer already rejects this, but guard here too
+        # since this is where the key and endpoint combine into an HTTP client.
+        client_base_url = base_url if api_key else None
         if provider == "mock":
             return MockProvider(delay_seconds=self.settings.mock_provider_delay_seconds)
         if provider == "openai":
             return OpenAIProvider(
                 api_key=api_key or self.settings.openai_api_key,
-                base_url=base_url or self.settings.openai_base_url,
+                base_url=client_base_url or self.settings.openai_base_url,
                 default_model=self.settings.openai_model or self.settings.default_model,
             )
         if provider == "anthropic":
