@@ -16,6 +16,20 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-14 09:38 CST +0800
+
+### 安全修复（P1，发布阻塞）：堵住 BYOK base_url 导致的服务端 Key 外泄
+
+- **问题**：社区版客户端可只传 `base_url`（不传 api_key），`ProviderFactory` 会把客户端 URL 与**服务端** OpenAI Key 配对，导致服务端 Key 被发往攻击者地址（已复现）。
+- **修复**：
+  - `backend/app/agent/providers/factory.py`：安全网——客户端 `base_url` 只在客户端同时提供 `api_key` 时才使用,绝不与服务端 Key 配对。
+  - `backend/app/config.py`：新增 `ByokCredentialError`、`validate_byok_base_url`,`resolve_byok_credentials` 提前强制「base_url 必须配对 api_key」并做 SSRF 校验;始终拦截 link-local/元数据地址(`169.254.169.254`),新增开关 `BYOK_RESTRICT_BASE_URL`(默认 false;true 时强制 https、解析主机名并拦内网,供共享/公开 demo 用)。
+  - `backend/app/main.py`：注册 `ByokCredentialError` → HTTP 400(`code=invalid_byok_credentials`)处理器,请求期即返回清晰错误。
+- **测试**：新增 `backend/tests/test_byok_base_url_guard.py`（工厂丢弃未配对 URL、配对放行、元数据地址恒拦、本地 LLM 宽松放行、严格模式拦 loopback/强制 https、API 层 400）。后端 157 项通过。
+- **影响文件**：上述 + `.env.example`、`README.md`、`README.zh-CN.md`。
+- **后续**：DNS 校验存在 rebind 的 TOCTOU 残留(单用户自托管可接受);严格模式同步 DNS 在异步路径中阻塞极短,job 创建期一次,可接受。
+- **配套**：本轮还合入 `refactor(backend): centralize edition-gated BYOK resolution`,把 create/rerun/retry 三处重复的 edition 门控收敛到 `resolve_byok_credentials`。
+
 ## 2026-06-14 00:01 CST +0800
 
 ### 社区版发布就绪 Tier 1 P0：冷启动验证 + BYOK 上手文档；NOTICE 补充
