@@ -16,6 +16,16 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-14 10:02 CST +0800
+
+### 修复（P1）：Gemini 接入 token 用量,账本不再计零
+
+- **问题**：`GeminiProvider.generate` 返回的 `LLMResult` 未填 `input_tokens`/`output_tokens`,导致 Gemini 任务在用量账本(`GET /api/usage`)里被计为零,不能作为计费依据。
+- **修复**：`backend/app/agent/providers/gemini_provider.py` 从响应的 `usage_metadata` 读取 `prompt_token_count` → `input_tokens`、`candidates_token_count` → `output_tokens`,用 `getattr` 容错;缺失 usage 时记 `None` 而非崩溃,与 OpenAI/Anthropic 行为对齐。
+- **测试(TDD)**：新增 `backend/tests/test_gemini_provider.py`(记录 token、缺失 usage 两用例;先红后绿)。后端 159 项通过。
+- **影响文件**：上述 + `project-docs/technical-architecture.md`(移除「Gemini token 用量」待办项)。
+- **后续**：真实模型成本计算仍属 Cloud 关注点;社区账本只记原始 token 计数。
+
 ## 2026-06-14 09:38 CST +0800
 
 ### 安全修复（P1，发布阻塞）：堵住 BYOK base_url 导致的服务端 Key 外泄

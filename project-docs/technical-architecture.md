@@ -694,7 +694,7 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 当前未完成：
 
 - OpenAI、Claude、Gemini 已完成不同程度的人工真实调用，但尚未形成覆盖四类任务职责的可重复质量测试集。
-- Claude、Gemini 原生 streaming、Gemini token 用量和真实模型成本计算。
+- Claude、Gemini 原生 streaming 和真实模型成本计算。（Gemini token 用量已从 `usage_metadata` 接入账本）
 - 关键桌面/移动视口视觉回归验证。
 - Clerk 真实环境下的注册、登录、退出、匿名历史认领和跨设备浏览器验收。
 - 真实 PostgreSQL、备份恢复和独立任务队列验证。
