@@ -48,3 +48,6 @@ Qwen Deep Research/
 # vendor budgets, and other commercially sensitive material out of the public repo.
 project-docs/business-model.md
 project-docs/private/
+
+# Local agent instructions (personal workflow, not shared).
+CLAUDE.md
