@@ -86,7 +86,7 @@
 
 ### open-core 双仓库落地与 Community BYOK 闭环
 
-- 建立并推送独立私有仓库 `PZ_Deep_Research_Cloud`，以 Git submodule 引用公开 Community 仓库；云端路由、生产数据库运维和正式部署配置迁入私有仓库维护。
+- 建立并推送独立的私有 Cloud 仓，以 Git submodule 引用公开 Community 仓库；云端路由、生产数据库运维和正式部署配置迁入私有仓库维护。
 - 公开仓库删除具体生产路由默认值与 Neon 备份恢复操作文档，只保留 Cloud 扩展接口、通用配置说明和可选数据库抽象。
 - Community 版补齐请求级 BYOK：模型、SerpAPI 搜索和 Jina 阅读凭据只在任务执行期间驻留内存，不写入任务存储、事件流或响应；创建、重跑和失败重试均可重新提交临时凭据。
 - Agent Runtime 改为按请求构建工具注册表，避免并发任务间共享或串用搜索、阅读凭据。
@@ -113,7 +113,7 @@
 
 - 新增私有迁移指引 `project-docs/private/cloud-split-plan.md`（位于 gitignored 的 `private/`，不进公开仓，已用 `git check-ignore` 与泄露守卫确认不被跟踪）。
 - 内容：社区仓 / 云端仓资产归属、边界判定原则、人工执行的迁移步骤、`git filter-repo`/`git subtree` 草稿脚本（仅文档不运行），以及人工决策待办；不含具体经营数字。
-- 明确：建私有仓 `PZ_Deep_Research_Cloud` 与历史重写由人工执行；推荐云端仓以公开社区仓为上游依赖以实现物理隔离。
+- 明确：建私有 Cloud 仓与历史重写由人工执行；推荐云端仓以公开社区仓为上游依赖以实现物理隔离。
 - 影响文件：新增 `project-docs/private/cloud-split-plan.md`（不入库）；本 changelog。
 - 说明：Phase 4（README/产品/架构/计划 的 open-core 说明、CONTRIBUTING+CLA）尚未做；其中 README 等编辑与进行中的未提交工作交织。
 
