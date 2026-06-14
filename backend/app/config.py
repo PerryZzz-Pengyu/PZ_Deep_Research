@@ -111,6 +111,33 @@ class ModelRoute:
     selection_enabled: bool
 
 
+@dataclass(frozen=True)
+class ByokCredentials:
+    """Edition-gated bring-your-own-key credentials.
+
+    Cloud edition ignores any client-supplied credentials, so every field is
+    ``None`` there. Resolving this in one place keeps the four-field gating from
+    drifting across call sites and leaking client keys into the cloud edition.
+    """
+
+    api_key: str | None = None
+    base_url: str | None = None
+    search_api_key: str | None = None
+    reader_api_key: str | None = None
+
+
+def resolve_byok_credentials(settings: Settings, source: object | None) -> ByokCredentials:
+    # BYOK is community-only; the cloud edition never honors client credentials.
+    if source is None or settings.edition != "community":
+        return ByokCredentials()
+    return ByokCredentials(
+        api_key=getattr(source, "api_key", None),
+        base_url=getattr(source, "base_url", None),
+        search_api_key=getattr(source, "search_api_key", None),
+        reader_api_key=getattr(source, "reader_api_key", None),
+    )
+
+
 def _get_int_env(name: str, default: int) -> int:
     raw = os.getenv(name, "").strip()
     if not raw:

@@ -19,6 +19,7 @@ from app.config import (
     missing_provider_requirements,
     missing_search_requirements,
     provider_model,
+    resolve_byok_credentials,
     resolve_model_route,
 )
 from app.error_handling import classify_failure, redact_sensitive, sanitize_failed_event
@@ -159,31 +160,23 @@ async def create_research_job(
         requested_provider=request.provider,
         requested_model=request.model,
     )
-    # BYOK is community-only; cloud edition ignores client-supplied credentials.
-    byok_api_key = request.api_key if settings.edition == "community" else None
-    byok_base_url = request.base_url if settings.edition == "community" else None
-    byok_search_api_key = (
-        request.search_api_key if settings.edition == "community" else None
-    )
-    byok_reader_api_key = (
-        request.reader_api_key if settings.edition == "community" else None
-    )
+    byok = resolve_byok_credentials(settings, request)
     routed_request = request.model_copy(
         update={
             "provider": route.provider,
             "model": route.model,
-            "api_key": byok_api_key,
-            "base_url": byok_base_url,
-            "search_api_key": byok_search_api_key,
-            "reader_api_key": byok_reader_api_key,
+            "api_key": byok.api_key,
+            "base_url": byok.base_url,
+            "search_api_key": byok.search_api_key,
+            "reader_api_key": byok.reader_api_key,
         }
     )
     missing = missing_provider_requirements(
         settings,
         route.provider,
         model_override=route.model,
-        api_key_override=byok_api_key,
-        search_api_key_override=byok_search_api_key,
+        api_key_override=byok.api_key,
+        search_api_key_override=byok.search_api_key,
     )
     if missing:
         logger.warning(
@@ -498,20 +491,13 @@ async def rerun_research_job(
         raise HTTPException(status_code=409, detail="任务仍在运行，无法重新运行")
 
     credentials = credentials or ResearchCredentials()
-    byok_api_key = credentials.api_key if settings.edition == "community" else None
-    byok_base_url = credentials.base_url if settings.edition == "community" else None
-    byok_search_api_key = (
-        credentials.search_api_key if settings.edition == "community" else None
-    )
-    byok_reader_api_key = (
-        credentials.reader_api_key if settings.edition == "community" else None
-    )
+    byok = resolve_byok_credentials(settings, credentials)
     missing = missing_provider_requirements(
         settings,
         source_job.provider,
         model_override=source_job.model,
-        api_key_override=byok_api_key,
-        search_api_key_override=byok_search_api_key,
+        api_key_override=byok.api_key,
+        search_api_key_override=byok.search_api_key,
     )
     if missing:
         raise HTTPException(
@@ -528,10 +514,10 @@ async def rerun_research_job(
         mode=source_job.mode,
         provider=source_job.provider,
         model=source_job.model,
-        api_key=byok_api_key,
-        base_url=byok_base_url,
-        search_api_key=byok_search_api_key,
-        reader_api_key=byok_reader_api_key,
+        api_key=byok.api_key,
+        base_url=byok.base_url,
+        search_api_key=byok.search_api_key,
+        reader_api_key=byok.reader_api_key,
     )
     rerun_job = await job_store.create_job(
         request,
@@ -561,20 +547,13 @@ async def retry_failed_research_job(
         raise HTTPException(status_code=409, detail="当前失败不可直接重试，请重新发起研究")
 
     credentials = credentials or ResearchCredentials()
-    byok_api_key = credentials.api_key if settings.edition == "community" else None
-    byok_base_url = credentials.base_url if settings.edition == "community" else None
-    byok_search_api_key = (
-        credentials.search_api_key if settings.edition == "community" else None
-    )
-    byok_reader_api_key = (
-        credentials.reader_api_key if settings.edition == "community" else None
-    )
+    byok = resolve_byok_credentials(settings, credentials)
     missing = missing_provider_requirements(
         settings,
         source_job.provider,
         model_override=source_job.model,
-        api_key_override=byok_api_key,
-        search_api_key_override=byok_search_api_key,
+        api_key_override=byok.api_key,
+        search_api_key_override=byok.search_api_key,
     )
     if missing:
         logger.warning(
@@ -590,10 +569,10 @@ async def retry_failed_research_job(
         mode=source_job.mode,
         provider=source_job.provider,
         model=source_job.model,
-        api_key=byok_api_key,
-        base_url=byok_base_url,
-        search_api_key=byok_search_api_key,
-        reader_api_key=byok_reader_api_key,
+        api_key=byok.api_key,
+        base_url=byok.base_url,
+        search_api_key=byok.search_api_key,
+        reader_api_key=byok.reader_api_key,
     )
     retry_context = None
     if source_job.error_stage == "report":
