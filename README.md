@@ -56,9 +56,9 @@ Community routing honors the provider and model selected by the user. The public
 
 | Mode | Search strategy | Target final sources | Report body |
 | --- | --- | ---: | ---: |
-| Quick | 1 high-intent English query | 3 | 400-500 Chinese characters |
-| Deep | 3 high-intent English queries | 10 | 1,300-1,500 Chinese characters |
-| Expert | 2 search stages, 5 English queries per stage | 20 | 3,000-3,500 Chinese characters |
+| Quick | 1 high-intent English query | 3 | 350-900 Chinese characters |
+| Deep | 3 high-intent English queries | 10 | 1,100-2,600 Chinese characters |
+| Expert | 2 search stages, 5 English queries per stage | 20 | 2,700-5,200 Chinese characters |
 
 Actual source counts depend on search results and webpage accessibility. When the target cannot be reached, the system produces a degraded report from the available evidence and explicitly states the limitations.
 

@@ -249,20 +249,20 @@ def test_mode_policies_match_product_spec() -> None:
     assert MODE_POLICIES["quick"]["search_query_count"] == 1
     assert MODE_POLICIES["quick"]["visit_source_count"] == 3
     assert MODE_POLICIES["quick"]["full_text_source_count"] == 1
-    assert MODE_POLICIES["quick"]["min_report_chars"] == 400
-    assert MODE_POLICIES["quick"]["max_report_chars"] == 500
+    assert MODE_POLICIES["quick"]["min_report_chars"] == 350
+    assert MODE_POLICIES["quick"]["max_report_chars"] == 900
 
     assert MODE_POLICIES["deep"]["search_query_count"] == 3
     assert MODE_POLICIES["deep"]["visit_source_count"] == 10
     assert MODE_POLICIES["deep"]["full_text_source_count"] == 3
-    assert MODE_POLICIES["deep"]["min_report_chars"] == 1300
-    assert MODE_POLICIES["deep"]["max_report_chars"] == 1500
+    assert MODE_POLICIES["deep"]["min_report_chars"] == 1100
+    assert MODE_POLICIES["deep"]["max_report_chars"] == 2600
 
     assert MODE_POLICIES["expert"]["search_query_count"] == 5
     assert MODE_POLICIES["expert"]["visit_source_count"] == 20
     assert MODE_POLICIES["expert"]["full_text_source_count"] == 5
-    assert MODE_POLICIES["expert"]["min_report_chars"] == 3000
-    assert MODE_POLICIES["expert"]["max_report_chars"] == 3500
+    assert MODE_POLICIES["expert"]["min_report_chars"] == 2700
+    assert MODE_POLICIES["expert"]["max_report_chars"] == 5200
     assert MODE_POLICIES["expert"]["first_visit_source_count"] == 10
     assert MODE_POLICIES["expert"]["search_rounds"] == 2
 
@@ -683,6 +683,62 @@ def test_report_validation_failure_is_marked_as_report_stage() -> None:
 
     assert events[-1].type == "failed"
     assert events[-1].payload["stage"] == "report"
+
+
+def test_report_length_only_shortfall_falls_back_to_draft() -> None:
+    # 报告格式与引用都合格，仅字数始终低于下限：重写用尽后应采用最后一版草稿
+    # 收尾为 completed，而不是整单失败。
+    async def run_runtime():
+        short_but_valid = LLMResult(
+            content=(
+                "<answer>\n"
+                f"{'研' * 200} [1]\n\n"
+                "## References\n"
+                "Source. (n.d.). Evidence source. https://example.com/paper-1\n"
+                "</answer>"
+            ),
+            model="openai-test",
+        )
+        provider = SequenceProvider(
+            [
+                LLMResult(
+                    content=(
+                        '<tool_call>\n{"name":"search","arguments":{"query":'
+                        '["report length fallback"]}}\n</tool_call>'
+                    ),
+                    model="openai-test",
+                ),
+                short_but_valid,
+                short_but_valid,
+                short_but_valid,
+            ]
+        )
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry(
+                [
+                    FixedTool(
+                        "search",
+                        ToolResult(name="search", content="搜索结果", sources=make_sources(3)),
+                    ),
+                    EchoVisitTool(),
+                ]
+            ),
+        )
+        request = ResearchRequest(
+            query="验证字数兜底",
+            mode="quick",
+            provider="openai",
+        )
+        return [event async for event in runtime.run("report-length-fallback-job", request)]
+
+    events = asyncio.run(run_runtime())
+
+    assert events[-1].type == "completed"
+    assert "研" * 200 in events[-1].payload["final_report"]
+    warnings = [event for event in events if event.type == "report_length_warning"]
+    assert warnings, "应发出字数兜底警告事件"
+    assert warnings[-1].payload["missing"] == ["report_too_short"]
 
 
 def test_non_transient_provider_error_does_not_retry() -> None:
@@ -1256,7 +1312,7 @@ def test_report_rewrite_uses_bounded_fresh_context() -> None:
     async def run_runtime():
         too_long_answer = (
             "<answer>\n"
-            + ("研" * 1600)
+            + ("研" * 2800)
             + " [1]\n\n## References\n"
             + "Source. (n.d.). Evidence source. https://example.com/paper-1\n"
             + "</answer>"
@@ -1317,9 +1373,9 @@ def test_report_rewrite_uses_bounded_fresh_context() -> None:
     assert all("<tool_response>" not in message.content for message in initial_report_messages)
     assert all("<tool_response>" not in message.content for message in rewrite_messages)
     assert "<previous_report>" in rewrite_messages[1].content
-    assert "压缩到约 1400 字" in rewrite_messages[1].content
-    assert "保留上一稿约 88% 的正文" in rewrite_messages[1].content
-    assert "必须至少删除 200 个计数字符" in rewrite_messages[1].content
+    assert "压缩到约 1850 字" in rewrite_messages[1].content
+    assert "保留上一稿约 66% 的正文" in rewrite_messages[1].content
+    assert "必须至少删除 950 个计数字符" in rewrite_messages[1].content
     assert "可引用来源（证据卡片）" not in rewrite_messages[1].content
     assert "full text evidence" not in rewrite_messages[1].content
     assert rewrite_messages[1].content.count("<previous_report>") == 1

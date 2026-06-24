@@ -36,12 +36,12 @@ MODE_POLICIES = {
         "search_query_count": 1,
         "visit_source_count": 3,
         "full_text_source_count": 1,
-        "min_report_chars": 400,
-        "max_report_chars": 500,
+        "min_report_chars": 350,
+        "max_report_chars": 900,
         "report_style": "essay",
         "search_guidance": "Use exactly 1 high-intent English search query.",
         "visit_guidance": "Visit 3 key sources before answering.",
-        "report_guidance": "Write an essay-style report with 400-500 Chinese body characters.",
+        "report_guidance": "Write an essay-style report with 350-900 Chinese body characters.",
     },
     "deep": {
         "max_rounds": 18,
@@ -49,12 +49,12 @@ MODE_POLICIES = {
         "search_query_count": 3,
         "visit_source_count": 10,
         "full_text_source_count": 3,
-        "min_report_chars": 1300,
-        "max_report_chars": 1500,
+        "min_report_chars": 1100,
+        "max_report_chars": 2600,
         "report_style": "literature_review",
         "search_guidance": "Use exactly 3 high-intent English search queries.",
         "visit_guidance": "Visit 10 key sources before answering.",
-        "report_guidance": "Write a literature-review-style report with 1300-1500 Chinese body characters.",
+        "report_guidance": "Write a literature-review-style report with 1100-2600 Chinese body characters.",
     },
     "expert": {
         "max_rounds": 32,
@@ -63,12 +63,12 @@ MODE_POLICIES = {
         "visit_source_count": 20,
         "full_text_source_count": 5,
         "first_visit_source_count": 10,
-        "min_report_chars": 3000,
-        "max_report_chars": 3500,
+        "min_report_chars": 2700,
+        "max_report_chars": 5200,
         "report_style": "paper",
         "search_guidance": "Use exactly 5 high-intent English search queries in each search stage.",
         "visit_guidance": "Visit 20 key sources in total before the final answer.",
-        "report_guidance": "Write a paper-style final report with 3000-3500 Chinese body characters.",
+        "report_guidance": "Write a paper-style final report with 2700-5200 Chinese body characters.",
     },
 }
 
@@ -483,58 +483,79 @@ class AgentRuntime:
                 max_body_chars=max_body_chars,
             )
             if missing_report_format:
-                if streamed_report:
+                length_only = set(missing_report_format) <= {
+                    "report_too_short",
+                    "report_too_long",
+                }
+                # 优雅兜底：重写次数用尽后，若格式与引用都合格、只是字数未命中
+                # 目标区间，则直接采用最后一版草稿收尾，而不是整单失败。
+                if report_attempts >= 2 and length_only:
                     yield ResearchEvent(
                         job_id=job_id,
-                        type="report_reset",
-                        message="报告草稿格式不合格，准备重写",
-                        payload={"round": round_index},
-                    )
-                if report_attempts >= 2:
-                    yield ResearchEvent(
-                        job_id=job_id,
-                        type="failed",
-                        message="研究报告经过重写后仍未满足格式或字数要求",
+                        type="report_length_warning",
+                        message="报告字数未完全命中目标区间，已采用最后一版草稿",
                         payload={
                             "round": round_index,
-                            "stage": "report",
                             "missing": missing_report_format,
                             "body_char_count": body_char_count,
                             "min_body_chars": min_body_chars,
                             "max_body_chars": max_body_chars,
                         },
                     )
-                    return
-                report_attempts += 1
-                yield ResearchEvent(
-                    job_id=job_id,
-                    type="citation_required",
-                    message="研究报告格式、引用或字数不合格，已要求模型重写",
-                    payload={
-                        "round": round_index,
-                        "missing": missing_report_format,
-                        "attempt": report_attempts,
-                        "body_char_count": body_char_count,
-                        "min_body_chars": min_body_chars,
-                        "max_body_chars": max_body_chars,
-                        "content_preview": answer[:1000],
-                    },
-                )
-                report_messages = [
-                    LLMMessage(role="system", content=SYSTEM_PROMPT),
-                    LLMMessage(
-                        role="user",
-                        content=self._build_report_rewrite_request(
-                            missing_report_format,
-                            selected_cards,
-                            min_body_chars=min_body_chars,
-                            max_body_chars=max_body_chars,
-                            body_char_count=body_char_count,
-                            previous_answer=answer,
+                    # 不重置、不重写，落到下方成功收尾逻辑。
+                else:
+                    if streamed_report:
+                        yield ResearchEvent(
+                            job_id=job_id,
+                            type="report_reset",
+                            message="报告草稿格式不合格，准备重写",
+                            payload={"round": round_index},
+                        )
+                    if report_attempts >= 2:
+                        yield ResearchEvent(
+                            job_id=job_id,
+                            type="failed",
+                            message="研究报告经过重写后仍未满足格式或字数要求",
+                            payload={
+                                "round": round_index,
+                                "stage": "report",
+                                "missing": missing_report_format,
+                                "body_char_count": body_char_count,
+                                "min_body_chars": min_body_chars,
+                                "max_body_chars": max_body_chars,
+                            },
+                        )
+                        return
+                    report_attempts += 1
+                    yield ResearchEvent(
+                        job_id=job_id,
+                        type="citation_required",
+                        message="研究报告格式、引用或字数不合格，已要求模型重写",
+                        payload={
+                            "round": round_index,
+                            "missing": missing_report_format,
+                            "attempt": report_attempts,
+                            "body_char_count": body_char_count,
+                            "min_body_chars": min_body_chars,
+                            "max_body_chars": max_body_chars,
+                            "content_preview": answer[:1000],
+                        },
+                    )
+                    report_messages = [
+                        LLMMessage(role="system", content=SYSTEM_PROMPT),
+                        LLMMessage(
+                            role="user",
+                            content=self._build_report_rewrite_request(
+                                missing_report_format,
+                                selected_cards,
+                                min_body_chars=min_body_chars,
+                                max_body_chars=max_body_chars,
+                                body_char_count=body_char_count,
+                                previous_answer=answer,
+                            ),
                         ),
-                    ),
-                ]
-                continue
+                    ]
+                    continue
 
             if not streamed_report:
                 for chunk in self._chunk_text(answer):

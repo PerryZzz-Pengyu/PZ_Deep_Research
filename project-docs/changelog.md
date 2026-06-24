@@ -16,6 +16,19 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-24 16:41 CST +0800
+
+### 修复：deep/expert 研究任务在报告阶段反复触发字数质检后失败
+
+- **问题**：用户连续两次 deep 模式研究任务失败，前端只显示通用兜底文案“研究服务繁忙 / 服务负载过高”。排查本地任务库（dev 后端实际连本地 sqlite，不是 `.env` 里的 Neon）发现两次都是 `error_code=system_error`、`error_stage=report`：任务顺利走完搜索/访问/证据阶段，但卡在报告生成的字数质检上。事件显示 `body_char_count=1211 < min 1300`，反复 `report_reset`/`citation_required` 重写，撞不进 deep 模式 1300–1500 的 200 字窄窗，重写用尽后判失败。
+- **根因**：`MODE_POLICIES` 的报告字数窗口过窄（quick 400–500、deep 1300–1500、expert 3000–3500，各仅 200–500 字宽），`_count_report_body_chars` 只数 `isalnum()` 字符，模型很难精准命中；且重写 3 次仍不达标时无论原因一律硬失败（`backend/app/agent/runtime.py`）。
+- **测试先行（TDD）**：先更新 `test_mode_policies_match_product_spec` 到新区间、新增 `test_report_length_only_shortfall_falls_back_to_draft`（格式/引用合格但字数始终偏短 → 应 `completed` 采用草稿、发出 `report_length_warning`），两者先在旧实现下红灯；并同步调整受窗口放宽影响的 `test_report_rewrite_uses_bounded_fresh_context` 期望值。
+- **修复**：（1）放宽字数窗口——quick 350–900、deep 1100–2600、expert 2700–5200；（2）优雅兜底——报告重写用尽后若仅剩字数问题（`report_too_short`/`report_too_long`）而格式与引用均合格，则发出 `report_length_warning` 并采用最后一版草稿收尾，而非整单失败；仍存在格式/引用问题时维持原失败行为。
+- **一致性**：同步更新模型提示词（`backend/app/agent/prompts.py`、`prompt_templates/system_prompt.en.md`、`system_prompt.zh-CN.md`）与各规格文档（`README.md`、`README.zh-CN.md`、`project-docs/product-doc.md`、`technical-architecture.md`、`project-plan.md`、`testing-guide.md`）的字数区间，避免“告知模型的目标”与“校验区间”不一致。
+- **前端**：`report_length_warning` 为信息性事件，时间线 `getEventNode` 默认分支可优雅显示其 message，无需改前端代码。
+- **社区 / 商业私有边界**：报告质检与字数策略属社区版 Runtime 能力，公开仓实现并测试；Cloud 私有仓沿用，不重复实现。
+- **验证**：`PYTHONPATH=backend backend/.venv/bin/python -m pytest backend/tests` 共 160 项通过。
+
 ## 2026-06-24 16:05 CST +0800
 
 ### 修复：已登录用户点击首页导航“登录”按钮抛 Clerk 单 session 错误
