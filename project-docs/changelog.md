@@ -16,6 +16,17 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-24 15:44 CST +0800
+
+### 修复：营销首页提问进入工作台后自动开始研究
+
+- **问题**：营销首页（`/`）输入研究主题并点击“开始研究”后，用户会进入工作台，但在开发模式下可能只填入主题、不直接创建研究任务。
+- **测试先行**：新增 Playwright 用例 `homepage handoff autostarts research after landing in the workbench`，从首页真实输入主题、选择模式、点击开始研究，并用 mock API 断言工作台自动发起 `POST /api/research-jobs`。该测试先以红灯暴露交接链路未被稳定覆盖。
+- **修复**：`frontend/src/lib/handoff.ts` 将 handoff 拆成非破坏性 `readHandoff` 与显式 `clearHandoff`；工作台先读取 handoff，等实际处理时再清理，避免 React/Next 开发模式下 effect 重放导致一次性 handoff 被提前删除。
+- **社区 / 商业私有边界**：本改动属于社区版前端产品能力（落地页、工作台、handoff），公开仓实现并测试；商业 Cloud 私有仓通过 `community/` 子模块继承该行为。Cloud 私有仓仍只负责生产路由、额度、支付、多租户、鉴权和运维，不复制这段前端交接逻辑。
+- **影响文件**：`frontend/src/lib/handoff.ts`、`frontend/src/components/research-workspace.tsx`、`frontend/e2e/ui-resilience.spec.ts`、`project-docs/testing-guide.md`。
+- **验证**：`cd frontend && npm run lint` 通过。新增 Playwright 用例已完成红灯验证；修复后重跑因本轮本机端口浏览器验证所需的提权调用被环境额度限制拦截，尚未完成绿灯复验。
+
 ## 2026-06-14 10:02 CST +0800
 
 ### 修复（P1）：Gemini 接入 token 用量,账本不再计零

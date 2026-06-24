@@ -49,7 +49,7 @@ import {
   retryResearchJob,
 } from "@/lib/api";
 import type { ResearchCredentials, ResearchEventStream } from "@/lib/api";
-import { consumeHandoff } from "@/lib/handoff";
+import { clearHandoff, readHandoff } from "@/lib/handoff";
 import { useI18n } from "@/lib/i18n";
 import { downloadBlobFile, downloadMarkdownReport } from "@/lib/markdown-export";
 import type { ModelOption, ProviderName, ResearchEvent, ResearchJob, ResearchMode } from "@/lib/types";
@@ -506,10 +506,11 @@ export function ResearchWorkspace() {
     if (!isAuthLoaded) return;
     let ignore = false;
 
-    const handoff = consumeHandoff();
+    const handoff = readHandoff();
     if (handoff) {
       const timer = window.setTimeout(() => {
         if (ignore) return;
+        clearHandoff();
         setQuery(handoff.query);
         setMode(handoff.mode);
         setIsRestoring(false);

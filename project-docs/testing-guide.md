@@ -49,6 +49,7 @@
 - 前端能通过 lint 和 build。
 - 前端能渲染 Markdown 格式研究报告。
 - Playwright 能在真实 Chromium 中验证任务取消、刷新续跑和完成后报告恢复。
+- Playwright 能验证营销首页输入研究主题后，点击开始研究会携带主题和模式进入工作台，并自动创建研究任务。
 - SQLite 存储能跨 Store 实例恢复任务、事件和报告草稿。
 - 历史列表和任务详情必须按匿名访客或未来账号归属隔离。
 - Clerk 会话 JWT 必须验证签名、有效期、`sub` 和 authorized party；无 token 时继续使用访客模式。
@@ -61,6 +62,7 @@
 - `/api/readiness` 必须返回当前 `edition`。
 - BYOK（社区版自带 Key）：模型、SerpAPI 和 Jina 凭据均为请求级覆盖并标记 `exclude=True`；序列化、持久化、日志和 SSE 不得出现凭据；创建、重跑和失败重试必须接受重新输入的临时凭据，Cloud 版必须剥离全部客户端凭据。
 - 前端 BYOK：选择启用（`selection_enabled=true`，即社区版）时高级选项展示模型、SerpAPI 和 Jina 密钥输入；凭据只存于组件内存，不得写入 localStorage/sessionStorage，并在创建、重跑或重试请求结束后清空（Playwright `ui-resilience.spec.ts` 覆盖）。
+- 首页到工作台 handoff：营销首页的提问入口使用一次性 handoff，把研究主题、模式和 autostart 意图传给工作台；工作台应在消费 handoff 后直接创建研究任务，且该行为属于社区前端能力，Cloud 商业版通过 `community/` 子模块继承，不在 Cloud 后端重复实现。
 - 用量账本：每任务持久化用量聚合（输入/输出 token、LLM 调用数、工具调用数，**不含成本/定价**——定价属于私有 Cloud）；`record_usage`/`aggregate_usage` 跨数据库重连保留并按访客/账号归属聚合隔离；`/api/usage` 返回归属内聚合且响应不出现 cost/price/usd；mock 任务完成后必须记录到 LLM 与工具调用数。
 - 本地手动端到端流程可以跑通。
 

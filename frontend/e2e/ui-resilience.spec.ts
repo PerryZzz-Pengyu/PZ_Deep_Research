@@ -3,6 +3,8 @@ import { expect, test, type Page } from "@playwright/test";
 const CLERK_REQUEST = /clerk\.accounts\.dev/;
 const WORKBENCH_QUERY = /输入一个研究问题|Ask a research question/;
 const isolatedBackendPort = process.env.PLAYWRIGHT_BACKEND_PORT;
+const frontendPort = process.env.PLAYWRIGHT_FRONTEND_PORT || "3000";
+const homeUrl = process.env.PLAYWRIGHT_REUSE_SERVERS === "1" ? `http://localhost:${frontendPort}/` : "/";
 
 async function blockClerk(page: Page) {
   await page.route(CLERK_REQUEST, (route) => route.abort("internetdisconnected"));
@@ -39,6 +41,85 @@ test("workbench falls back to guest mode when Clerk cannot initialize", async ({
   const expertMode = page.getByRole("tab", { name: /专家|Expert/, exact: true });
   await expertMode.click();
   await expect(expertMode).toHaveAttribute("aria-selected", "true");
+});
+
+test("homepage handoff autostarts research after landing in the workbench", async ({ page }) => {
+  await blockClerk(page);
+  const handoffQuery = "Verify homepage autostart handoff";
+  let capturedBody: Record<string, unknown> = {};
+
+  await page.addInitScript(() => {
+    window.localStorage.setItem("pz-deep-research-locale", "en");
+    window.localStorage.removeItem("pz-deep-research-active-job");
+    window.localStorage.removeItem("pz-deep-research-handoff");
+  });
+
+  await page.route("**/api/models", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        selection_enabled: false,
+        routing_version: "test-route",
+        providers: {
+          mock: [{ id: "", label: "Dev mode" }],
+          openai: [{ id: "gpt-5.4-mini", label: "gpt-5.4-mini" }],
+          anthropic: [{ id: "claude-sonnet-4-6", label: "claude-sonnet-4-6" }],
+          gemini: [{ id: "gemini-3.5-flash", label: "gemini-3.5-flash" }],
+        },
+        defaults: { provider: "openai", openai: "gpt-5.4-mini", anthropic: null, gemini: null },
+      }),
+    });
+  });
+  await page.route("**/api/research-jobs", async (route) => {
+    if (route.request().method() !== "POST") return route.continue();
+    capturedBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        id: "handoff-job",
+        rerun_of_job_id: null,
+        query: capturedBody.query,
+        mode: capturedBody.mode,
+        provider: "openai",
+        model: "gpt-5.4-mini",
+        status: "queued",
+        draft_report: "",
+        final_report: null,
+        error: null,
+        error_code: null,
+        error_retryable: false,
+        error_stage: null,
+        created_at: "2026-06-24T07:00:00Z",
+        updated_at: "2026-06-24T07:00:00Z",
+      }),
+    });
+  });
+  await page.route("**/api/research-jobs/handoff-job/stream**", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: `data: ${JSON.stringify({
+        id: "handoff-completed",
+        job_id: "handoff-job",
+        type: "completed",
+        message: "Report ready",
+        payload: { final_report: "## 核心结论\n\nHomepage handoff started automatically." },
+        created_at: "2026-06-24T07:00:01Z",
+      })}\n\n`,
+    });
+  });
+
+  await page.goto(homeUrl);
+  await page.locator(".hero-ask").getByRole("tab", { name: /快速|Quick/, exact: true }).click();
+  await page.getByPlaceholder(/输入一个研究问题|Ask a research question/).fill(handoffQuery);
+  await page.locator(".hero-ask").getByRole("button", { name: /开始研究|Start research/, exact: true }).click();
+
+  await expect(page).toHaveURL(/\/workbench$/);
+  await expect.poll(() => capturedBody.query, { timeout: 15_000 }).toBe(handoffQuery);
+  expect(capturedBody.mode).toBe("quick");
+  await expect(page.locator(".job-status")).toHaveText("Completed", { timeout: 10_000 });
 });
 
 test("a hanging job restore cannot permanently lock research submission", async ({ page }) => {
