@@ -250,9 +250,12 @@ Frontend:
 ```bash
 cd frontend
 npm run lint
+npm run test
 npm run build
 npm run test:e2e
 ```
+
+`npm run test` runs the Vitest component unit tests; `npm run test:e2e` runs the Playwright end-to-end suite.
 
 See the [testing guide](project-docs/testing-guide.md) for the complete test strategy and manual acceptance flow. Project documentation is currently maintained in Chinese.
 

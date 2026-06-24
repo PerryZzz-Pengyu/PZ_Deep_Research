@@ -224,15 +224,18 @@ backend/.venv/bin/python -m pip install -r backend/requirements-lock.txt
 frontend/
 ```
 
-前端使用 Next.js lint/build 做静态检查，并使用 Playwright 做核心浏览器端到端测试：
+前端使用 Next.js lint/build 做静态检查，使用 Vitest 做组件单元测试，并使用 Playwright 做核心浏览器端到端测试：
 
 ```bash
 cd frontend
 nvm use
 npm run lint
+npm run test
 npm run build
 npm run test:e2e
 ```
+
+`npm run test`（Vitest + React Testing Library）覆盖 Playwright 难以触达的、需要真实 Clerk 登录态才能触发的组件分支。例如 `clerk-controls.test.tsx` 通过 mock `@clerk/nextjs` 的 `useAuth`，断言首页导航的登录控件在**已登录时渲染 `UserButton` 头像菜单**、未登录时才渲染登录弹窗触发按钮——避免单 session 模式下点击登录抛出 `cannot_render_single_session_enabled`。E2E 套件统一用 `blockClerk()` 掐断 Clerk 网络、从不进入真实登录态，因此这条分支只能由单元测试覆盖。
 
 这些检查覆盖：
 

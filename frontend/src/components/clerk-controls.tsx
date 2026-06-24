@@ -105,13 +105,21 @@ export function ClerkAccountControl({
 }
 
 function ClerkSignInContent({ label, onReady }: { label: string; onReady: () => void }) {
-  const { isLoaded } = useAuth();
+  const { isLoaded, isSignedIn } = useAuth();
 
   useEffect(() => {
     if (isLoaded) onReady();
   }, [isLoaded, onReady]);
 
   if (!isLoaded) return null;
+
+  // Already signed in: render the avatar menu instead of a sign-in modal. In
+  // single-session mode Clerk refuses to open <SignIn/> while a session exists,
+  // which would otherwise throw cannot_render_single_session_enabled.
+  if (isSignedIn) {
+    return <UserButton />;
+  }
+
   return (
     <SignInButton mode="modal">
       <Button className="nav-signin" size="sm" variant="ghost">

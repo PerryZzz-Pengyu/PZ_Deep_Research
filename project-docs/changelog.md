@@ -16,6 +16,17 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-24 16:05 CST +0800
+
+### 修复：已登录用户点击首页导航“登录”按钮抛 Clerk 单 session 错误
+
+- **问题**：营销首页（`/`）导航栏的“登录”控件（`ClerkSignInContent`）只判断 `isLoaded`、不判断 `isSignedIn`，无论是否已登录都渲染 `SignInButton mode="modal"`。在 Clerk 单 session 模式下，已登录用户点击它会触发 `cannot_render_single_session_enabled`（`<SignIn/>` 拒绝在已有 session 时渲染）。旁边的账户控件 `ClerkAccountContent` 本就有 `isSignedIn` 判断，此处遗漏。
+- **测试先行**：项目此前只有 Playwright e2e，且全部用 `blockClerk()` 掐断 Clerk 网络、从不进入真实登录态，无法覆盖该分支。新增 Vitest + React Testing Library 单元测试栈（`vitest.config.ts`、`vitest.setup.ts`），并写 `frontend/src/components/clerk-controls.test.tsx`：mock `@clerk/nextjs` 的 `useAuth`，断言已登录渲染 `UserButton`、未登录渲染登录弹窗触发按钮。已登录用例在修复前红灯、修复后绿灯。
+- **修复**：`frontend/src/components/clerk-controls.tsx` 的 `ClerkSignInContent` 增加 `isSignedIn` 判断——已登录时渲染 `UserButton`（头像菜单，含邮箱与退出登录），未登录时才渲染登录弹窗触发按钮。
+- **社区 / 商业私有边界**：本改动属社区版前端产品能力（落地页登录控件），公开仓实现并测试；Cloud 私有仓通过 `community/` 子模块继承，不重复实现。
+- **影响文件**：`frontend/src/components/clerk-controls.tsx`、`frontend/src/components/clerk-controls.test.tsx`、`frontend/vitest.config.ts`、`frontend/vitest.setup.ts`、`frontend/package.json`（新增 `test` / `test:watch` 脚本与 Vitest 相关 devDependencies）、`README.md`、`project-docs/testing-guide.md`。
+- **验证**：`cd frontend && npm run test` 2 个单元用例通过；`npm run lint` 与 `npx tsc --noEmit` 均通过。
+
 ## 2026-06-24 15:44 CST +0800
 
 ### 修复：营销首页提问进入工作台后自动开始研究
