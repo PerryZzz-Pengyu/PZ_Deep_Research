@@ -24,6 +24,7 @@ from app.error_handling import classify_failure, redact_sensitive, sanitize_fail
 from app.reporting import PdfExportError, PdfExporter, pdf_export_filename
 from app.research import DomainRegistry
 from app.research.domains.academic import AcademicRuntime, build_academic_tool_registry
+from app.research.domains.finance import build_finance_runtime
 from app.storage import SqlJobStore, upgrade_database
 
 
@@ -63,7 +64,12 @@ runtime = AcademicRuntime(
     evidence_extraction_concurrency=settings.visit_max_concurrency,
     report_model=settings.openai_report_model,
 )
-domain_registry = DomainRegistry({"academic": lambda: runtime})
+domain_registry = DomainRegistry(
+    {
+        "academic": lambda: runtime,
+        "finance": lambda: build_finance_runtime(settings),
+    }
+)
 pdf_exporter = PdfExporter(
     timeout_seconds=settings.pdf_export_timeout_seconds,
     max_concurrency=settings.pdf_export_max_concurrency,

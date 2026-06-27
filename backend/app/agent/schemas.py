@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 
 ResearchMode = Literal["quick", "deep", "expert"]
-ResearchDomain = Literal["academic"]
+ResearchDomain = Literal["academic", "finance"]
 ResearchStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 ProviderName = Literal["mock", "openai", "anthropic", "gemini"]
 

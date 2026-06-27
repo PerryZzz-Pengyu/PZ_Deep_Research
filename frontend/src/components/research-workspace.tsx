@@ -52,7 +52,7 @@ import type { ResearchCredentials, ResearchEventStream } from "@/lib/api";
 import { clearHandoff, readHandoff } from "@/lib/handoff";
 import { useI18n } from "@/lib/i18n";
 import { downloadBlobFile, downloadMarkdownReport } from "@/lib/markdown-export";
-import type { ModelOption, ProviderName, ResearchEvent, ResearchJob, ResearchMode } from "@/lib/types";
+import type { ModelOption, ProviderName, ResearchDomain, ResearchEvent, ResearchJob, ResearchMode } from "@/lib/types";
 
 const ACTIVE_JOB_STORAGE_KEY = "pz-deep-research-active-job";
 const RESTORE_TIMEOUT_MS = 4_000;
@@ -151,6 +151,7 @@ export function ResearchWorkspace() {
   );
 
   const [query, setQuery] = useState("");
+  const [domain, setDomain] = useState<ResearchDomain>("academic");
   const [mode, setMode] = useState<ResearchMode>("deep");
   const [provider, setProvider] = useState<ProviderName>("mock");
   const [model, setModel] = useState("");
@@ -458,6 +459,7 @@ export function ResearchWorkspace() {
         const job = await createResearchJob({
           query: trimmed,
           mode: modeValue,
+          domain,
           ...(modelSelectionEnabled ? { provider, model: selectedModel || undefined } : {}),
           ...(modelSelectionEnabled && provider !== "mock" ? credentials : {}),
         });
@@ -481,6 +483,7 @@ export function ResearchWorkspace() {
       clearCredentials,
       connectToJob,
       currentCredentials,
+      domain,
       modelSelectionEnabled,
       provider,
       selectedModel,
@@ -922,6 +925,16 @@ export function ResearchWorkspace() {
               variant="secondary"
             />
             <div className="ask-foot">
+              <select
+                className="domain-select"
+                value={domain}
+                disabled={isRunning || isRestoring}
+                onChange={(event) => setDomain(event.target.value as ResearchDomain)}
+                aria-label={locale === "zh" ? "研究领域" : "Research domain"}
+              >
+                <option value="academic">{locale === "zh" ? "学术" : "Academic"}</option>
+                <option value="finance">{locale === "zh" ? "美股金融" : "US Finance"}</option>
+              </select>
               <ResearchModeTabs
                 ariaLabel={t.nav.modes}
                 disabled={isRunning || isRestoring}

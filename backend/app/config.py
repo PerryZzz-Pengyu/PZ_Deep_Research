@@ -110,6 +110,9 @@ class Settings:
     # Default false keeps local-LLM endpoints (e.g. Ollama at localhost) usable
     # for single-user self-hosting; link-local/metadata is blocked regardless.
     byok_restrict_base_url: bool = False
+    # SEC EDGAR requires a descriptive User-Agent header (e.g. "MyApp admin@example.com").
+    # This is not a secret key; it's just an identifying string required by SEC fair-use policy.
+    sec_user_agent: str = ""
 
 
 @dataclass(frozen=True)
@@ -352,6 +355,7 @@ def get_settings() -> Settings:
         pdf_export_max_concurrency=_get_int_env("PDF_EXPORT_MAX_CONCURRENCY", 2),
         pdf_chromium_executable_path=_get_env("PDF_CHROMIUM_EXECUTABLE_PATH", ""),
         byok_restrict_base_url=_get_bool_env("BYOK_RESTRICT_BASE_URL", False),
+        sec_user_agent=_get_env("SEC_USER_AGENT", ""),
     )
 
 

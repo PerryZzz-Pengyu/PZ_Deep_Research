@@ -1,5 +1,5 @@
 export type ResearchMode = "quick" | "deep" | "expert";
-export type ResearchDomain = "academic";
+export type ResearchDomain = "academic" | "finance";
 export type ProviderName = "mock" | "openai" | "anthropic" | "gemini";
 export type ProductErrorCode =
   | "network_error"

@@ -1,6 +1,7 @@
 import type {
   ModelOptionsResponse,
   ProviderName,
+  ResearchDomain,
   ResearchEvent,
   ResearchJob,
   ResearchMode,
@@ -109,6 +110,7 @@ async function requestJson<T>(
 export async function createResearchJob(input: {
   query: string;
   mode: ResearchMode;
+  domain?: ResearchDomain;
   provider?: ProviderName;
   model?: string;
 } & ResearchCredentials): Promise<ResearchJob> {

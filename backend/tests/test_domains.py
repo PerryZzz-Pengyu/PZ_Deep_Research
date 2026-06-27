@@ -42,11 +42,22 @@ def test_research_request_accepts_explicit_academic_domain() -> None:
     assert request.domain == "academic"
 
 
+def test_research_request_accepts_finance_domain() -> None:
+    request = ResearchRequest(
+        domain="finance",
+        query="Apple stock analysis",
+        mode="quick",
+        provider="mock",
+    )
+
+    assert request.domain == "finance"
+
+
 def test_research_request_rejects_unimplemented_domain() -> None:
     with pytest.raises(ValidationError):
         ResearchRequest(
-            domain="finance",
-            query="finance is not implemented yet",
+            domain="social",
+            query="social domain is not implemented yet",
             mode="quick",
             provider="mock",
         )
@@ -91,5 +102,5 @@ def test_domain_registry_resolves_registered_runtime_lazily() -> None:
 def test_domain_registry_rejects_unregistered_domain() -> None:
     registry = DomainRegistry({"academic": StubRuntime})
 
-    with pytest.raises(UnsupportedResearchDomainError, match="finance"):
-        registry.resolve("finance")
+    with pytest.raises(UnsupportedResearchDomainError, match="social"):
+        registry.resolve("social")

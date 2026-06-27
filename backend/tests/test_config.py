@@ -257,3 +257,17 @@ def test_openai_report_model_reads_from_env(monkeypatch) -> None:
     settings = get_settings()
 
     assert settings.openai_report_model == "gpt-5.5"
+
+
+def test_sec_user_agent_defaults_to_empty() -> None:
+    settings = Settings()
+
+    assert settings.sec_user_agent == ""
+
+
+def test_sec_user_agent_reads_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("SEC_USER_AGENT", "PZ-Research bot@pz.ai")
+
+    settings = get_settings()
+
+    assert settings.sec_user_agent == "PZ-Research bot@pz.ai"

@@ -16,6 +16,27 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-28 14:00 CST +0800
+
+### 功能：美股金融领域 MVP（阶段 D）——填入 API Key 即可端到端运行
+
+- **阶段 D 目标**：`FinanceRuntime.run()` 成为可注册到 `DomainRegistry` 的 SSE 事件生成器；mock provider 下零 API Key 即可验证事件流；填入 `OPENAI_API_KEY` + `SERPAPI_API_KEY` 后可完整运行 Planner → 数据采集 → 报告流式输出。
+- **TDD 先行**：先新增 4 个红灯用例（`test_finance_runtime_run_mock_*`、`test_finance_runtime_resume_report_mock_completes`）和 2 个配置用例（`sec_user_agent`），再实现代码。
+- **`FinanceRuntime` 扩展**：
+  - 新增可选 `provider_factory` / `report_model` 参数（不传时 Stage C `research()` 接口不变）。
+  - `run(job_id, request)` —— async generator：mock 模式直接生成罐装报告；真实模式调用 Planner LLM（JSON 输出 `{"tickers": [...]}` ）→ 并行 `research()` → 流式 Report Writer。
+  - `resume_report(job_id, request, retry_context)` —— MVP 无检查点，重跑完整流水线。
+- **`build_finance_runtime(settings)`**：工厂函数，从 `settings` 中读取 `sec_user_agent`、`serpapi_api_key`、`openai_report_model`，装配真实连接器和 `CachedSecurityResolver`。
+- **配置**：`Settings` 新增 `sec_user_agent: str = ""`，从 `SEC_USER_AGENT` 读取（SEC EDGAR 使用需要标识性 User-Agent，非加密凭据）。
+- **Schema**：`ResearchDomain` 从 `Literal["academic"]` 扩展为 `Literal["academic", "finance"]`；`test_domains.py` 更新：已实现领域改用 "social" 做"不支持领域拒绝"的反例。
+- **路由层**：`routes.py` 的 `DomainRegistry` 注册 `"finance": lambda: build_finance_runtime(settings)`，延迟初始化真实连接器。
+- **前端**：
+  - `types.ts`：`ResearchDomain = "academic" | "finance"`。
+  - `api.ts`：`createResearchJob` 新增可选 `domain?` 参数。
+  - `research-workspace.tsx`：`ask-foot` 区域新增领域 `<select>`（学术 / 美股金融），状态绑定 `domain`，随 `createResearchJob` 透传。
+- **验证**：后端 pytest 211 项通过（含 7 个新测试）；前端 `tsc --noEmit` 通过。
+- **影响文件**：`backend/app/research/domains/finance/runtime.py`、`backend/app/research/domains/finance/__init__.py`、`backend/app/agent/schemas.py`、`backend/app/config.py`、`backend/app/api/routes.py`、`backend/tests/test_finance_runtime.py`、`backend/tests/test_config.py`、`backend/tests/test_domains.py`、`frontend/src/lib/types.ts`、`frontend/src/lib/api.ts`、`frontend/src/components/research-workspace.tsx`。
+
 ## 2026-06-28 11:30 CST +0800
 
 ### 修复：消除 SSE 流循环中每 token 一次的 DB 轮询（P0 性能）
