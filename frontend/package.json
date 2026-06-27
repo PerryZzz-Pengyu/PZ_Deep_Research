@@ -44,5 +44,12 @@
     "jsdom": "^25.0.1",
     "typescript": "^6.0.3",
     "vitest": "^3.2.6"
+  },
+  "allowScripts": {
+    "fsevents@2.3.2": true,
+    "fsevents@2.3.3": true,
+    "sharp@0.34.5": true,
+    "unrs-resolver@1.12.2": true,
+    "esbuild@0.27.7": true
   }
 }
