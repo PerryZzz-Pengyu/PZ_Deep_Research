@@ -163,6 +163,9 @@ export function ResearchWorkspace() {
   const [events, setEvents] = useState<ResearchEvent[]>([]);
   const [report, setReport] = useState("");
   const [liveModelText, setLiveModelText] = useState("");
+  const [isThinking, setIsThinking] = useState(false);
+  const liveTextBufferRef = useRef("");
+  const reportBufferRef = useRef("");
   const [jobId, setJobId] = useState("");
   const [jobStatus, setJobStatus] = useState<ResearchJob["status"] | "">("");
   const [isRunning, setIsRunning] = useState(false);
@@ -293,7 +296,8 @@ export function ResearchWorkspace() {
         if (nextEvent.type === "llm_delta") {
           const delta = nextEvent.payload.delta;
           if (typeof delta === "string") {
-            setLiveModelText((current) => current + delta);
+            setIsThinking(false);
+            liveTextBufferRef.current += delta;
           }
           return;
         }
@@ -301,9 +305,11 @@ export function ResearchWorkspace() {
           const delta = nextEvent.payload.delta;
           const draftReport = nextEvent.payload.draft_report;
           if (typeof draftReport === "string") {
+            setIsThinking(false);
             setReport(draftReport);
           } else if (typeof delta === "string") {
-            setReport((current) => current + delta);
+            setIsThinking(false);
+            reportBufferRef.current += delta;
           }
           return;
         }
@@ -315,7 +321,9 @@ export function ResearchWorkspace() {
 
         setEvents((current) => mergeEvent(current, nextEvent));
         if (nextEvent.type === "llm_start") {
+          liveTextBufferRef.current = "";
           setLiveModelText("");
+          setIsThinking(true);
         }
         if (nextEvent.type === "completed") {
           const finalReport = nextEvent.payload.final_report;
@@ -396,7 +404,10 @@ export function ResearchWorkspace() {
       setModel(job.model || "");
       setEvents(restoredEvents);
       setReport(job.final_report || job.draft_report || "");
+      liveTextBufferRef.current = "";
+      reportBufferRef.current = "";
       setLiveModelText("");
+      setIsThinking(false);
       setError(job.error || "");
       setErrorRetryable(Boolean(job.error_retryable));
       window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, job.id);
@@ -433,7 +444,10 @@ export function ResearchWorkspace() {
       setErrorRetryable(false);
       setEvents([]);
       setReport("");
+      liveTextBufferRef.current = "";
+      reportBufferRef.current = "";
       setLiveModelText("");
+      setIsThinking(false);
       setIsRunning(true);
       setJobStatus("queued");
       setView("run");
@@ -473,6 +487,22 @@ export function ResearchWorkspace() {
       t,
     ],
   );
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (liveTextBufferRef.current) {
+        const buffered = liveTextBufferRef.current;
+        liveTextBufferRef.current = "";
+        setLiveModelText((current) => current + buffered);
+      }
+      if (reportBufferRef.current) {
+        const buffered = reportBufferRef.current;
+        reportBufferRef.current = "";
+        setReport((current) => current + buffered);
+      }
+    }, 50);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -617,7 +647,10 @@ export function ResearchWorkspace() {
       setModel(rerunJob.model || "");
       setEvents([]);
       setReport("");
+      liveTextBufferRef.current = "";
+      reportBufferRef.current = "";
       setLiveModelText("");
+      setIsThinking(false);
       setIsRunning(true);
       setView("run");
       window.localStorage.setItem(ACTIVE_JOB_STORAGE_KEY, rerunJob.id);
@@ -648,7 +681,10 @@ export function ResearchWorkspace() {
       setModel(retryJob.model || "");
       setEvents([]);
       setReport("");
+      liveTextBufferRef.current = "";
+      reportBufferRef.current = "";
       setLiveModelText("");
+      setIsThinking(false);
       setError("");
       setErrorRetryable(false);
       setIsRunning(true);
@@ -691,7 +727,10 @@ export function ResearchWorkspace() {
     setSelectedJob(null);
     setEvents([]);
     setReport("");
+    liveTextBufferRef.current = "";
+    reportBufferRef.current = "";
     setLiveModelText("");
+    setIsThinking(false);
     setQuery("");
     setError("");
     setErrorRetryable(false);
@@ -1006,7 +1045,9 @@ export function ResearchWorkspace() {
             <div className="t-step" data-state="active">
               <div className="t-node"><Spinner color="current" size="sm" /></div>
               <div className="t-title">
-                <span className="shimmer">{liveModelText ? t.wb.liveOutput : t.wb.crumbResearching}</span>
+                <span className="shimmer">
+                  {isThinking ? t.wb.thinking : liveModelText ? t.wb.liveOutput : t.wb.crumbResearching}
+                </span>
               </div>
               {liveModelText ? (
                 <div className="t-detail">

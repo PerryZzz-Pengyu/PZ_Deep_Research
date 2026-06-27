@@ -34,6 +34,7 @@ class InMemoryJobStore:
         job = ResearchJob(
             rerun_of_job_id=rerun_of_job_id,
             routing_version=routing_version,
+            domain=request.domain,
             query=request.query,
             mode=request.mode,
             provider=provider,

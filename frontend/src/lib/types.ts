@@ -1,4 +1,5 @@
 export type ResearchMode = "quick" | "deep" | "expert";
+export type ResearchDomain = "academic";
 export type ProviderName = "mock" | "openai" | "anthropic" | "gemini";
 export type ProductErrorCode =
   | "network_error"
@@ -13,6 +14,7 @@ export type ResearchJob = {
   id: string;
   rerun_of_job_id?: string | null;
   routing_version?: string | null;
+  domain: ResearchDomain;
   query: string;
   mode: ResearchMode;
   provider: string;

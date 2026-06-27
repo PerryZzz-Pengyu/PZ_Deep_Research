@@ -16,6 +16,126 @@
 
 公开仓库安全规则：涉及具体定价、单位成本、利润、预算、额度参数、投放数据、增长假设或其他商业机密的修改，只能在 changelog 中记录高层能力边界，不得写入具体数字、公式或可反推出经营策略的细节。
 
+## 2026-06-28 11:30 CST +0800
+
+### 修复：消除 SSE 流循环中每 token 一次的 DB 轮询（P0 性能）
+
+- **根因**：`event_stream()` while 循环每次迭代（即每个 token）都调用 `job_store.get_job()`，Neon DB 实测 RTT 325ms，导致每个 token 至少多出 325ms 延迟。
+- **修复**：将 `get_job` 移到 `TimeoutError` 分支（队列 0.5s 空闲时）。正常流式输出时 while 循环不再触碰 DB；终止事件（`completed`/`failed`/`cancelled`）通过 queue 送达后直接 break，无需 DB 确认。
+- **预期效果**：每 token 延迟从 908ms 降至约 580ms（省去 325ms DB RTT）。剩余瓶颈为模型生成速率。
+- **测试**：新增 `test_sse_loop_does_not_call_get_job_per_live_event`，预填 10 个事件的队列后断言 `event_stream()` 内 `get_job` 调用 ≤2 次；不修改代码时该测试红灯（12 次）。
+- **影响文件**：`backend/app/api/routes.py`、`backend/tests/test_api.py`
+
+## 2026-06-28 03:22 CST +0800
+
+### 架构：多领域阶段 C 建立美股金融数据骨架
+
+- **官方契约核对**：按 SEC EDGAR API、SEC `company_tickers_exchange.json`、SerpApi Google Finance 和 Google News 当前文档确定最小输入/输出字段。
+- **TDD 红灯**：先新增金融 Schema、实体解析、连接器合同和 Runtime fixture 测试；首次运行因 `app.research.domains.finance` 不存在而 4 个测试模块收集失败。时区边界测试也先在 naive datetime 未被拒绝时红灯。
+- **版本化 Schema**：新增 `FinanceOptions`、`SecurityIdentifier`、SEC filing/fact、市场快照、新闻、`FinancialEvidence`、`CandidateResearch` 和 `FinanceResearchResult`。数值使用 `Decimal`，时效字段强制带时区，结果最多 3 支候选。
+- **证券主数据**：新增精确 Ticker/公司名解析、点号/连字符股份类别归一化、重名拒绝和有界内存 TTL 缓存。
+- **SEC 适配器**：新增证券目录、Submissions 和 Company Facts 客户端，强制识别性 User-Agent，过滤 MVP 不支持的 OTC，并将 columnar filings / XBRL units 归一化为领域模型。
+- **SerpApi 适配器**：Google Finance 输出归一化行情快照，Google News 输出归一化新闻条目；`search_metadata` 和供应商原始 JSON 不进入证据层。
+- **fixture Runtime**：`FinanceRuntime.research` 可对明确 Ticker 并行获取归一化数据，并组装 filing、fundamental、market 和 news 证据。当前只用于领域级离线验证，未注册到公开 API。
+- **验证**：金融新增 13 项用例通过；后端全套 pytest 203 项通过；前端 Vitest 2 项、TypeScript 和 ESLint 通过；`git diff --check` 通过。
+- **影响文件**：`backend/app/research/domains/finance/`、`backend/tests/test_finance_*.py`、`project-docs/finance-research-prd.md`、`project-docs/multi-domain-refactor-plan.md`、`project-docs/technical-architecture.md`、`project-docs/project-plan.md`、`project-docs/testing-guide.md`。
+
+## 2026-06-28 03:10 CST +0800
+
+### 架构：多领域阶段 B 完成学术领域物理归位
+
+- **TDD 红灯**：先新增 `test_academic_domain.py`，要求新路径成为 Runtime、Prompt、证据、选源、Scholar 搜索和工具组装的实现本体，同时保留旧导入兼容。首次运行因 `app.research.domains` 不存在而收集失败。
+- **学术实现归位**：新建 `app.research.domains.academic`，将 `AcademicRuntime`、Prompt 及中英模板、`EvidenceExtractor`、选源策略、Google Scholar `SearchTool` 和 `build_academic_tool_registry` 收敛到领域包。
+- **兼容层**：`app.agent.runtime/prompts/evidence/selection`、`app.agent.tools.search` 和旧 `build_default_tool_registry` 名称保留薄导出；`AgentRuntime` 直接指向 `AcademicRuntime`，现有测试和外部导入无需立即修改。
+- **正式组装**：API 不再从历史兼容路径构造 Runtime，而是直接注册 `AcademicRuntime` 和学术工具 builder。通用 `ToolRegistry` 已移除 Scholar 和学术配置语义。
+- **回归修正**：聚焦测试发现类内 6 处静态方法仍通过旧 `AgentRuntime` 名称自引用，机械替换为 `AcademicRuntime` 后 108 项聚焦用例通过。
+- **验证**：后端全套 pytest 190 项通过；前端 Vitest 2 项、TypeScript 和 ESLint 通过；`git diff --check` 通过。
+- **影响文件**：`backend/app/research/domains/academic/`、`backend/app/agent/runtime.py`、`backend/app/agent/prompts.py`、`backend/app/agent/evidence.py`、`backend/app/agent/selection.py`、`backend/app/agent/tools/`、`backend/app/api/routes.py`、`backend/tests/test_academic_domain.py`、`project-docs/`。
+
+## 2026-06-28 02:12 CST +0800
+
+### 架构：先完成多领域产品靶子，再以 TDD 建立领域路由接缝
+
+- **先文档后代码**：新增 `finance-research-prd.md`，定义美股 C 端基本面研究的产品定位、MVP 范围、数据优先级、Multi-Agent 边界、输出格式和上线门槛；新增 `multi-domain-refactor-plan.md`，将共享内核、学术归位、金融骨架、金融 MVP 和其他领域拆为有界阶段。
+- **本轮边界**：只完成领域化阶段 A，不接入 SEC、Google Finance、Google News 或金融 Agent，不改变现有学术研究行为。
+- **TDD 红灯**：新增 `test_domains.py` 和 SQL 迁移断言；首次运行因 `app.research` 不存在而收集失败，确认测试能约束目标行为。
+- **实现**：`ResearchRequest` / `ResearchJob` 新增默认 `academic` 的 `domain`；内存与 SQL 存储保留该字段；Alembic `20260628_06` 新增非空领域列并以 `academic` 兼容旧数据；重跑和失败重试保留原任务领域。
+- **领域注册表**：新增 `app.research.registry.DomainRegistry`，通过延迟 resolver 取得 Runtime；API 任务执行先按 `request.domain` 解析 Runtime。当前 Schema 仅公开 `academic`，避免暴露未完成的金融领域。
+- **前端契约**：`ResearchJob` TypeScript 类型新增 `domain: "academic"`，暂不开放金融入口。
+- **验证**：后端完整 pytest 186 项通过；前端 Vitest 2 项通过，`tsc --noEmit` 和 ESLint 通过。PDF Chromium 用例在默认沙箱内因 macOS Mach port 权限失败，按测试要求在沙箱外重跑后通过。
+- **影响文件**：`backend/app/agent/schemas.py`、`backend/app/research/`、`backend/app/api/routes.py`、`backend/app/storage/`、`backend/migrations/versions/20260628_06_add_research_domain.py`、`backend/tests/test_domains.py`、`backend/tests/test_sql_store.py`、`frontend/src/lib/types.ts`、`project-docs/`。
+
+## 2026-06-27 23:14 CST +0800
+
+### 修复：asyncio.to_thread + SQLAlchemy greenlet 死锁导致 uvicorn 启动挂起
+
+- **问题**：`backend/app/storage/migrations.py` 原来用 `asyncio.to_thread` 在后台线程运行 Alembic；但 SQLAlchemy sync engine 会导入 greenlet，greenlet 会污染父进程 asyncio 事件循环的 ASGI lifespan `startup_event`，导致 uvicorn 永远等不到启动完成信号，后端挂死不响应。此修复最初已在上一个工作目录实现但从未提交，重新克隆后丢失，本次补回。
+- **修复**：
+  - `backend/app/storage/migrations.py` 改为 `asyncio.create_subprocess_exec` 在完全独立的子进程中运行 `alembic upgrade head`，与父进程事件循环彻底隔离；子进程 stdout/stderr 合并捕获，非零退出码抛 `RuntimeError` 含完整输出。
+  - `backend/migrations/env.py` 修正迁移连接读取 `DATABASE_MIGRATION_URL`（而非 `DATABASE_URL`），确保子进程使用 direct URL 而非 pooled URL 执行迁移。
+- **附带**：`frontend/package.json` 新增 `allowScripts` 策略，允许 fsevents、sharp、esbuild、unrs-resolver 安装脚本，解决全新克隆后 `npm ci` 需要手动审批的问题。
+- **验证**：后端冷启动正常，`/api/readiness` 返回 `ready=true`，Neon 迁移正常执行。
+- **影响文件**：`backend/app/storage/migrations.py`、`backend/migrations/env.py`、`frontend/package.json`。
+
+## 2026-06-27 21:00 CST +0800
+
+### 性能修复（P0）：每个流式 token 触发 3 次 Neon DB 调用导致报告输出 1-2 秒/字
+
+- **问题**：`run_research_job` 对每个 `report_delta` 事件执行了三次远程 DB 调用：① `get_job`（取消检查）② `append_report_delta`（写 DB）③ `get_job`（取回完整草稿附到事件）。Neon 在新加坡，RTT ~100ms；三次 = ~300ms/token，导致 2000 字报告肉眼可见 1-2 秒/字，而 OpenAI API 原始速率为 341 字/秒。
+- **测试先行（TDD）**：
+  - `test_report_delta_batches_db_writes`：60 个 delta 事件，验证 `append_report_delta` 被合批调用（调用次数 < delta 数量），且总写入内容等于所有 delta 的拼接。先红后绿。
+  - `test_report_delta_events_have_no_draft_report_in_payload`：验证发布到 SSE 的 `report_delta` 事件不携带 `draft_report` 字段（前端自行通过 `delta` 字段拼接，不需要每次收到完整草稿）。先红后绿。
+- **修复**（`backend/app/api/routes.py`）：
+  - 新增模块常量 `_DRAFT_FLUSH_CHARS = 500`：delta 字符在内存中积累，达到 500 字符后一次性写入 DB（~1.5 秒写一次，而非每 token 写一次）。
+  - 移除每个 `report_delta` 后的 `get_job` + `event.payload["draft_report"] = ...`：前端已通过 `delta` 字段拼接报告，不依赖 SSE 事件携带完整草稿；断线重连走 `job_snapshot` 路径，仍可从 DB 恢复 `draft_report`。
+  - 跳过 `llm_delta`/`report_delta` 高频事件的每事件 `get_job` 取消检查：取消由 `cancel` 端点的 `task.cancel()` 触发 `asyncio.CancelledError`，无需 DB 轮询。
+  - `CancelledError` 和 `Exception` 处理器中补全 `draft_buffer` 刷新，确保异常路径不丢失已生成的草稿。
+- **预期效果**：流式输出延迟从 ~300ms/token → 接近零（每 1.5 秒一次批量写，不阻塞 SSE 推送）。
+- **验证**：后端全套 pytest 177 项通过（含新增 2 项测试）。
+- **影响文件**：`backend/app/api/routes.py`、`backend/tests/test_api.py`。
+
+## 2026-06-27 20:30 CST +0800
+
+### 工作流：CLAUDE.md 新增 TDD 强制规则
+
+- 在 `CLAUDE.md` 新增第 5 条规则「TDD and Delivery Checklist」，明确每次非琐碎代码改动必须按序执行：先写失败测试 → 实现 → 跑全套测试 → 更新 CHANGELOG.md → 更新相关文档。
+- 定义「非琐碎」范围：业务逻辑、新配置字段、新 API 参数、新 UI 状态、任何用户或测试可观察到的行为变化。
+- 列明豁免范围：纯格式修正、错别字、仅测试文件的改动。
+- 规则写入 CLAUDE.md 后每次对话均自动载入上下文，不依赖记忆。
+- **影响文件**：`CLAUDE.md`。
+
+## 2026-06-27 20:15 CST +0800
+
+### 改进：前端流式输出 UX——深度思考指示器 + delta 合批渲染
+
+- **背景**：gpt-5.5 为推理模型，输出第一个 token 前有内部思考延迟；delta 每次 1–2 个字符，加上网络延迟表现为"一个字一个字往外蹦"。
+- **思考指示器**：
+  - `research-workspace.tsx` 新增 `isThinking` 状态：收到 `llm_start` 事件时设为 `true`，收到第一个 `llm_delta` 或 `report_delta` 时立即设为 `false`。
+  - Timeline 活跃步骤的 shimmer 文案优先级：`isThinking → t.wb.thinking`（"正在深度思考…"）＞ `liveModelText → t.wb.liveOutput` ＞ `t.wb.crumbResearching`。
+  - `lib/i18n.tsx` 两语种各新增 `thinking` 键（中：`"正在深度思考…"`，英：`"Deep thinking…"`）。
+- **delta 合批渲染**：新增 `liveTextBufferRef` 与 `reportBufferRef` 两个 ref，SSE 事件处理函数只将 delta 写入 buffer，不直接 setState；独立 `useEffect` 每 50ms flush 一次——字符以小批次出现，比逐字 setState 更顺滑，React 渲染次数显著降低。
+- **重置一致性**：所有 reset/rerun/retry/cancel 路径均同步清空 buffer 与 `isThinking`，防止状态残留。
+- **验证**：`npx tsc --noEmit` 零错误；前端 dev server 热更新生效。
+- **影响文件**：`frontend/src/components/research-workspace.tsx`、`frontend/src/lib/i18n.tsx`。
+
+## 2026-06-27 20:00 CST +0800
+
+### 修复：gpt-5.5 推理模型拒绝 temperature 参数导致 400 错误，并实现分阶段模型路由
+
+- **问题**：gpt-5.5 等推理模型（reasoning model）不接受 `temperature` 参数，创建研究任务时 OpenAI 返回 400，任务立即失败。
+- **测试先行（TDD）**：
+  - 新建 `backend/tests/test_openai_provider.py`：16 个参数化测试覆盖 `_supports_temperature()` 全部分支（标准模型返回 True、推理模型/大小写变体返回 False），先红后绿。
+  - `backend/tests/test_config.py` 新增 `openai_report_model` 字段的默认值（空字符串）和从环境变量读取两个测试，先红后绿。
+  - `backend/tests/test_agent_runtime.py` 新增 `ModelTrackingProvider` 辅助类与 `test_report_model_is_used_for_report_stage_and_not_search`：验证 search 轮用 `request.model`，report 轮用 `report_model`，先红后绿。
+- **修复**：
+  - `backend/app/agent/providers/openai_provider.py` 新增 `_supports_temperature(model)` 函数，o1/o3/o4 前缀及 `gpt-5.5` 等 no-temp 精确集返回 False，其余返回 True；`generate` 与 `stream_generate` 均条件传递 `temperature`。
+  - `backend/app/config.py` 新增 `openai_report_model: str = ""` 字段，从 `OPENAI_REPORT_MODEL` 环境变量读取。
+  - `backend/app/agent/runtime.py` `AgentRuntime.__init__` 新增 `report_model: str = ""` 参数，`_model_round` 按 `stage` 选 `effective_model`：`stage=="report"` 时用 `self.report_model`（若有）否则回退 `request.model`；其他 stage 始终用 `request.model`。
+  - `backend/app/api/routes.py` 创建 `AgentRuntime` 时传入 `report_model=settings.openai_report_model`。
+- **配置**（`.env`，不入库）：`OPENAI_MODEL=gpt-5.4`（搜索轮）、`OPENAI_REPORT_MODEL=gpt-5.5`（报告轮）、`EVIDENCE_EXTRACTION_MODEL=gpt-5-nano`。
+- **验证**：后端全套 pytest 175 项通过（含新增测试）。
+- **影响文件**：`backend/app/agent/providers/openai_provider.py`、`backend/app/agent/runtime.py`、`backend/app/config.py`、`backend/app/api/routes.py`、`backend/tests/test_openai_provider.py`（新建）、`backend/tests/test_config.py`、`backend/tests/test_agent_runtime.py`、`.env`（本地，不提交）。
+
 ## 2026-06-24 16:41 CST +0800
 
 ### 修复：deep/expert 研究任务在报告阶段反复触发字数质检后失败

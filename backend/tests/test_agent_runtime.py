@@ -1379,3 +1379,66 @@ def test_report_rewrite_uses_bounded_fresh_context() -> None:
     assert "可引用来源（证据卡片）" not in rewrite_messages[1].content
     assert "full text evidence" not in rewrite_messages[1].content
     assert rewrite_messages[1].content.count("<previous_report>") == 1
+
+
+class ModelTrackingProvider(LLMProvider):
+    """Records the effective model arg passed to each generate() call."""
+
+    name = "openai"
+
+    def __init__(self, results: list[LLMResult]) -> None:
+        self.results = results
+        self.calls = 0
+        self.models_used: list[Optional[str]] = []
+
+    async def generate(
+        self,
+        messages: list[LLMMessage],
+        *,
+        model: Optional[str] = None,
+        temperature: float = 0.3,
+        max_tokens: int = 4096,
+    ) -> LLMResult:
+        self.models_used.append(model)
+        result = self.results[min(self.calls, len(self.results) - 1)]
+        self.calls += 1
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+def test_report_model_is_used_for_report_stage_and_not_search() -> None:
+    async def run_runtime():
+        provider = ModelTrackingProvider(
+            [
+                LLMResult(
+                    content='<tool_call>\n{"name":"search","arguments":{"query":["GLP-1 obesity trial"]}}\n</tool_call>',
+                    model="search-model",
+                ),
+                LLMResult(
+                    content=make_valid_answer("报告", "quick"),
+                    model="report-model",
+                ),
+            ]
+        )
+        runtime = AgentRuntime(
+            provider_factory=FixedProviderFactory(provider),
+            tool_registry=ToolRegistry(
+                [
+                    FixedTool("search", ToolResult(name="search", content="搜索结果", sources=make_sources(5))),
+                    EchoVisitTool(),
+                ]
+            ),
+            report_model="report-model",
+        )
+        request = ResearchRequest(query="GLP-1 for obesity", mode="quick", provider="openai", model="search-model")
+        events = [event async for event in runtime.run("routing-job", request)]
+        return provider, events
+
+    provider, events = asyncio.run(run_runtime())
+
+    assert events[-1].type == "completed"
+    # First call is the search round — must use the request model, not report_model.
+    assert provider.models_used[0] == "search-model"
+    # Last call is the report round — must use report_model.
+    assert provider.models_used[-1] == "report-model"

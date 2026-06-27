@@ -65,10 +65,13 @@
 - 首页到工作台 handoff：营销首页的提问入口使用一次性 handoff，把研究主题、模式和 autostart 意图传给工作台；工作台应在消费 handoff 后直接创建研究任务，且该行为属于社区前端能力，Cloud 商业版通过 `community/` 子模块继承，不在 Cloud 后端重复实现。
 - 用量账本：每任务持久化用量聚合（输入/输出 token、LLM 调用数、工具调用数，**不含成本/定价**——定价属于私有 Cloud）；`record_usage`/`aggregate_usage` 跨数据库重连保留并按访客/账号归属聚合隔离；`/api/usage` 返回归属内聚合且响应不出现 cost/price/usd；mock 任务完成后必须记录到 LLM 与工具调用数。
 - 本地手动端到端流程可以跑通。
+- 研究请求未传 `domain` 时必须兼容为 `academic`，显式 `academic` 必须通过，未实现领域必须在 Schema 层拒绝。
+- `DomainRegistry` 必须延迟解析已注册 Runtime，并对未注册领域返回明确错误。
+- 内存与 SQL 存储都必须保留任务 `domain`，Alembic 必须将旧任务兼容为 `academic`。
 
 暂时不引入复杂测试体系，避免过早增加维护成本。
 
-截至 2026-06-13，后端 pytest 共 148 个用例通过，前端 Playwright Chromium 共 12 个端到端用例通过（默认端口 3000/8000；测试覆盖访客降级、任务恢复、BYOK 和移动端来源弹窗）。Alembic 最新迁移头为 `20260613_05`（新增每任务用量聚合列）。
+截至 2026-06-28，后端 pytest 共 203 个用例通过，前端 Vitest 共 2 个用例通过，TypeScript 与 ESLint 检查通过；前端 Playwright Chromium 已有 12 个端到端用例（默认端口 3000/8000）。Alembic 最新迁移头为 `20260628_06`（新增研究领域列，默认 `academic`）。
 
 ## 测试优先开发原则
 
@@ -104,6 +107,28 @@ backend/tests/
 ```
 
 当前测试用例：
+
+- `test_academic_domain.py`
+  - `AcademicRuntime` 和学术工具组装的新所有权路径。
+  - Runtime、Prompt、证据、选源、Scholar 工具及工具 builder 的旧路径兼容。
+  - API `DomainRegistry` 实际解析到学术领域实现。
+
+- `test_domains.py`
+  - 请求默认和显式 `academic` 领域。
+  - 未实现领域的 Schema 拒绝。
+  - 内存存储的领域持久化。
+  - `DomainRegistry` 延迟解析与未注册领域错误。
+
+- `test_finance_schemas.py`
+  - 金融选项默认边界、Ticker/CIK 归一化、`Decimal` 与来源时间保留。
+  - 结果/方法版本、最多 3 支候选和时区强制。
+- `test_finance_security.py`
+  - 精确 Ticker/公司名解析、股份类别标准化、重名拒绝和 TTL 缓存。
+- `test_finance_connectors.py`
+  - SEC 证券目录字段映射、交易所过滤、识别性 User-Agent、Submissions 和 XBRL facts 归一化。
+  - Google Finance 行情时间/价格与 Google News ISO 时间/来源归一化，供应商原始元数据不渗透。
+- `test_finance_runtime.py`
+  - 明确 Ticker 的离线 fixture 闭环产生 filing、fundamental、market 和 news 证据包。
 
 - `test_agent_runtime.py`
   - mock Agent Runtime 能完成研究流程。

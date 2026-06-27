@@ -44,20 +44,27 @@ PZ_Deep_Research/
   backend/
     app/
       agent/
-        runtime.py
-        prompts.py
         schemas.py
-        evidence.py
-        selection.py
-        prompt_templates/
         providers/
           base.py
           openai_provider.py
           anthropic_provider.py
           gemini_provider.py
         tools/
-          search.py
+          registry.py
           visit.py
+      research/
+        registry.py
+        domains/
+          academic/
+            runtime.py
+            prompts.py
+            evidence.py
+            selection.py
+            search.py
+            tools.py
+            prompt_templates/
+          finance/       # 下一阶段
       api/
         routes.py
       storage/
@@ -267,6 +274,7 @@ PZ_Deep_Research/
 | 阶段 3：工具层 | MVP 完成 | SerpAPI + Jina 主链路可用；备用读取链路和学术元数据增强未完成 |
 | 阶段 4：网页端 MVP | 部分完成 | SQLite/PostgreSQL 重启恢复、Community 多模型 BYOK、取消/恢复/历史/重跑、错误恢复和导出已完成；已接入 HeroUI/Prism 设计系统、营销落地页与中英多语言；Cloud 路由和生产数据库运维转入私有仓库，质量测试与视觉回归待完成 |
 | 阶段 5：产品化 | 已开始 | Clerk 登录、匿名历史归并和账号隔离已完成；额度、支付、队列、安全、监控和部署仍待实施 |
+| 阶段 6：多领域 | 金融骨架完成 | 学术归位已完成；美股金融 Schema、实体解析、SEC/Google Finance/Google News 适配器和 fixture Runtime 已建立；尚未开放金融 API |
 
 ## 下一实施里程碑
 
@@ -274,7 +282,8 @@ PZ_Deep_Research/
 
 1. 增加关键视口视觉回归，并在其余退出条件完成后关闭阶段 4。
 2. 增加账号额度、限流和服务端成本保护的数据模型。
-3. 在内部规则和账务一致性验证通过后实施支付能力；模型质量测试继续暂缓。
+3. 按 `multi-domain-refactor-plan.md` 实现美股 Planner、候选漏斗、确定性财务计算、Verifier 和领域事件流。
+4. 在内部规则和账务一致性验证通过后实施支付能力；模型质量测试继续暂缓。
 
 ## 工程原则
 

@@ -94,6 +94,7 @@ def test_sql_store_persists_jobs_events_and_report_drafts(tmp_path) -> None:
     assert restored_job.id == job.id
     assert restored_job.status == "running"
     assert restored_job.draft_report == "第一段"
+    assert restored_job.domain == "academic"
     assert restored_job.routing_version == "manual"
     assert [item.id for item in restored_events] == [event.id]
     assert [item.id for item in history] == [job.id]
@@ -304,17 +305,28 @@ def test_alembic_upgrade_creates_versioned_product_schema(tmp_path) -> None:
         await upgrade_database(database_url)
         store = SqlJobStore(database_url, auto_create_schema=False)
         await store.initialize()
-        request = ResearchRequest(query="迁移后创建任务", mode="quick", provider="mock")
+        request = ResearchRequest(
+            domain="academic",
+            query="迁移后创建任务",
+            mode="quick",
+            provider="mock",
+        )
         job = await store.create_job(request, provider="mock", anonymous_id=VISITOR_A)
         async with store.engine.connect() as connection:
             version = await connection.scalar(text("SELECT version_num FROM alembic_version"))
+            domain = await connection.scalar(
+                text("SELECT domain FROM research_jobs WHERE id = :job_id"),
+                {"job_id": job.id},
+            )
         await store.dispose()
-        return job, version
+        return job, version, domain
 
-    job, version = asyncio.run(run_scenario())
+    job, version, domain = asyncio.run(run_scenario())
 
     assert job.query == "迁移后创建任务"
-    assert version == "20260613_05"
+    assert job.domain == "academic"
+    assert domain == "academic"
+    assert version == "20260628_06"
 
 
 def test_alembic_upgrade_baselines_matching_unversioned_schema(tmp_path) -> None:
@@ -333,4 +345,4 @@ def test_alembic_upgrade_baselines_matching_unversioned_schema(tmp_path) -> None
         await migrated_store.dispose()
         return version
 
-    assert asyncio.run(run_scenario()) == "20260613_05"
+    assert asyncio.run(run_scenario()) == "20260628_06"

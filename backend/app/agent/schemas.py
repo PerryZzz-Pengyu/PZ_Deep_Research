@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 
 ResearchMode = Literal["quick", "deep", "expert"]
+ResearchDomain = Literal["academic"]
 ResearchStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 ProviderName = Literal["mock", "openai", "anthropic", "gemini"]
 
@@ -17,6 +18,7 @@ def utc_now() -> datetime:
 
 
 class ResearchRequest(BaseModel):
+    domain: ResearchDomain = "academic"
     query: str = Field(min_length=2, max_length=8000)
     mode: ResearchMode = "deep"
     provider: Optional[ProviderName] = None
@@ -49,6 +51,7 @@ class ResearchJob(BaseModel):
     id: str = Field(default_factory=lambda: uuid4().hex)
     rerun_of_job_id: Optional[str] = None
     routing_version: Optional[str] = None
+    domain: ResearchDomain = "academic"
     query: str
     mode: ResearchMode
     provider: str

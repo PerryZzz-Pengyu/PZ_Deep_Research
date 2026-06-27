@@ -35,6 +35,49 @@ Agent Runtime
 
 额度、支付和成本保护属于后续产品化能力。公开架构只保留接口边界；具体定价、额度参数、成本阈值、供应商预算和结算策略在本地私有文档中维护，不写入公开仓库。
 
+## 多领域架构
+
+随着美股金融、社媒、行业分析和法律等领域加入，项目将保持模块化单体，并从单一学术 Runtime 演进为“共享研究内核 + 领域注册表 + 领域实现”。当前不拆微服务，不引入通用工作流 DSL。
+
+```text
+前端共享工作台
+  ↓ HTTP / SSE
+任务、鉴权、存储、Provider、事件和导出内核
+  ↓
+DomainRegistry
+  ├─ academic：Scholar 检索、论文证据、文献综述
+  ├─ finance：SEC、市场数据、新闻、筛选和验证
+  ├─ social：平台内容、传播、情绪和偏差
+  ├─ industry：市场规模、产业链和竞争格局
+  └─ legal：法域、法条、判例、效力与时效
+```
+
+实施顺序和兼容边界见 `project-docs/multi-domain-refactor-plan.md`；美股领域产品边界见 `project-docs/finance-research-prd.md`。
+
+当前已完成第一阶段领域接缝：
+
+- `ResearchRequest` 和 `ResearchJob` 新增 `domain`，未传时默认 `academic`。
+- `research_jobs.domain` 通过 Alembic `20260628_06` 持久化，历史任务回填为 `academic`。
+- `app.research.registry.DomainRegistry` 以延迟 resolver 解析领域 Runtime；路由层不再在执行时直接假定全局 Runtime。
+- 当前请求 Schema 只接受 `academic`；`finance` 在 Runtime、数据和验证就绪前不会提前暴露半成品 API。
+- 学术 Runtime、Prompt、证据抽取、选源策略、Scholar 搜索和工具组装已归入 `app.research.domains.academic`。`app.agent.runtime/prompts/evidence/selection` 和 `app.agent.tools.search` 仅保留兼容导出。
+
+### 美股金融领域骨架
+
+位置：`backend/app/research/domains/finance/`
+
+当前阶段 C 只建立领域数据契约和离线闭环，不注册公开 API：
+
+- `schemas.py`：定义美股选项、Ticker/Exchange/CIK、SEC filing/fact、市场快照、新闻、金融证据、候选卡和版本化结果。数值使用 `Decimal`，所有时效时间必须带时区。
+- `security.py`：只做精确 Ticker/公司名解析，标准化点号/连字符股份类别，对重名报错，并以有界 TTL 缓存 SEC 证券目录。
+- `connectors/sec.py`：适配 SEC `company_tickers_exchange.json`、Submissions 和 Company Facts；请求必须提供识别性 `User-Agent`。
+- `connectors/google_finance.py` / `google_news.py`：将 SerpApi JSON 收敛为领域模型，不将供应商元数据渗透到 Runtime 或证据层。
+- `runtime.py`：当前只支持明确证券的 fixture 级证据组装，输出 filing、fundamental、market 和 news 证据。它不包含 Planner、候选筛选、估值、排名或投资结论。
+
+实现依据：[SEC EDGAR APIs](https://www.sec.gov/search-filings/edgar-application-programming-interfaces)、[SEC 证券目录](https://www.sec.gov/files/company_tickers_exchange.json)、[SerpApi Google Finance](https://serpapi.com/google-finance-api) 和 [SerpApi Google News](https://serpapi.com/google-news-api)。
+
+当前 `ResearchDomain` 和 `DomainRegistry` 仍只接受/注册 `academic`。等阶段 D 完成研究漏斗、验证和产品输出后，才会开放 `finance`。
+
 ## 项目目录说明
 
 ```text
@@ -191,7 +234,9 @@ PDF 导出位置：
 
 ### 使用模型无关 Runtime
 
-位置：`backend/app/agent/runtime.py`
+实现位置：`backend/app/research/domains/academic/runtime.py`
+
+兼容位置：`backend/app/agent/runtime.py`，仅将历史 `AgentRuntime` 名称指向 `AcademicRuntime`。
 
 当前方案：Agent Runtime 不直接依赖 Qwen、OpenAI、Claude 或 Gemini，而是通过 ProviderFactory 获取模型 Provider。
 
@@ -279,8 +324,8 @@ PDF 导出位置：
 提示词文件位置：
 
 ```text
-backend/app/agent/prompt_templates/system_prompt.en.md      # 英文生产和测试提示词，Runtime 实际使用
-backend/app/agent/prompt_templates/system_prompt.zh-CN.md   # 中文对照提示词，仅用于人工审阅
+backend/app/research/domains/academic/prompt_templates/system_prompt.en.md      # 英文生产和测试提示词
+backend/app/research/domains/academic/prompt_templates/system_prompt.zh-CN.md   # 中文对照提示词，仅用于人工审阅
 ```
 
 选择英文生产提示词的原因：
@@ -419,7 +464,9 @@ Runtime 收到搜索词后会自行调用 `search`，并根据候选结果调用
 
 ### search 工具
 
-位置：`backend/app/agent/tools/search.py`
+实现位置：`backend/app/research/domains/academic/search.py`
+
+学术工具组装：`backend/app/research/domains/academic/tools.py`。`backend/app/agent/tools/search.py` 和旧 `build_default_tool_registry` 名称仅作兼容导出。
 
 当前方案：使用 SerpAPI 的 Google Scholar API 做学术搜索。
 
@@ -677,10 +724,10 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 
 - 后端 Python 语法检查通过。
 - 后端 app 导入通过。
-- 后端 pytest 自动化测试通过，当前为 122 个用例。
+- 后端 pytest 自动化测试通过，当前为 203 个用例。
 - 前端 lint 通过。
 - 前端 build 通过。
-- Playwright Chromium 端到端测试通过，当前为 7 个用例，覆盖任务取消、刷新续跑、完成后报告恢复、历史报告详情、重新运行、产品化错误重试、Markdown 下载和正式 PDF 下载。
+- Playwright Chromium 已建立 12 个端到端用例，覆盖任务取消、刷新续跑、完成后报告恢复、历史报告详情、重新运行、产品化错误重试、BYOK、移动端来源弹窗、Markdown 下载和正式 PDF 下载。
 - SQLite 跨 Store 持久化、访客隔离、重启中断处理和匿名历史账号归并测试通过。
 - Alembic 三个版本迁移已在 SQLite 执行通过，包含任务历史、重跑血缘、产品错误和报告检查点字段。
 - FastAPI 本地服务启动成功。

@@ -10,9 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 from fastapi.responses import Response, StreamingResponse
 
 from app.agent.providers import ProviderFactory
-from app.agent.runtime import AgentRuntime
 from app.agent.schemas import ResearchCredentials, ResearchEvent, ResearchJob, ResearchRequest
-from app.agent.tools import build_default_tool_registry
 from app.auth import AuthenticationError, ClerkAuthenticator, RequestIdentity
 from app.config import (
     get_settings,
@@ -24,6 +22,8 @@ from app.config import (
 )
 from app.error_handling import classify_failure, redact_sensitive, sanitize_failed_event
 from app.reporting import PdfExportError, PdfExporter, pdf_export_filename
+from app.research import DomainRegistry
+from app.research.domains.academic import AcademicRuntime, build_academic_tool_registry
 from app.storage import SqlJobStore, upgrade_database
 
 
@@ -43,10 +43,10 @@ job_store = SqlJobStore(
     pool_timeout_seconds=settings.database_pool_timeout_seconds,
     pool_recycle_seconds=settings.database_pool_recycle_seconds,
 )
-runtime = AgentRuntime(
+runtime = AcademicRuntime(
     provider_factory=ProviderFactory(settings),
-    tool_registry=build_default_tool_registry(settings),
-    tool_registry_factory=lambda request: build_default_tool_registry(
+    tool_registry=build_academic_tool_registry(settings),
+    tool_registry_factory=lambda request: build_academic_tool_registry(
         settings,
         search_api_key_override=request.search_api_key,
         reader_api_key_override=request.reader_api_key,
@@ -63,6 +63,7 @@ runtime = AgentRuntime(
     evidence_extraction_concurrency=settings.visit_max_concurrency,
     report_model=settings.openai_report_model,
 )
+domain_registry = DomainRegistry({"academic": lambda: runtime})
 pdf_exporter = PdfExporter(
     timeout_seconds=settings.pdf_export_timeout_seconds,
     max_concurrency=settings.pdf_export_max_concurrency,
@@ -72,6 +73,10 @@ live_event_queues: dict[str, set[asyncio.Queue[ResearchEvent]]] = {}
 live_event_lock = asyncio.Lock()
 running_tasks: dict[str, asyncio.Task[None]] = {}
 running_tasks_lock = asyncio.Lock()
+# Flush draft_report to DB after accumulating this many characters rather than
+# once per delta event. Each delta is ~2 chars; Neon RTT is ~100ms — per-delta
+# writes caused 1-2 s/char visible latency. 500 chars ≈ one flush per ~1.5 s.
+_DRAFT_FLUSH_CHARS = 500
 
 
 async def register_live_event_queue(job_id: str) -> asyncio.Queue[ResearchEvent]:
@@ -511,6 +516,7 @@ async def rerun_research_job(
         )
 
     request = ResearchRequest(
+        domain=source_job.domain,
         query=source_job.query,
         mode=source_job.mode,
         provider=source_job.provider,
@@ -566,6 +572,7 @@ async def retry_failed_research_job(
         raise HTTPException(status_code=503, detail="研究服务暂时不可用，请稍后重试")
 
     request = ResearchRequest(
+        domain=source_job.domain,
         query=source_job.query,
         mode=source_job.mode,
         provider=source_job.provider,
@@ -686,12 +693,14 @@ async def stream_research_events(
                 yield format_sse(event)
 
             while True:
-                current_job = await job_store.get_job(job_id)
-                if current_job and current_job.status in {"completed", "failed", "cancelled"} and queue.empty():
-                    break
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=0.5)
                 except TimeoutError:
+                    # Only consult the DB when the queue has been idle for 0.5 s.
+                    # Checking on every iteration adds ~325 ms per token against Neon.
+                    current_job = await job_store.get_job(job_id)
+                    if current_job and current_job.status in {"completed", "failed", "cancelled"} and queue.empty():
+                        break
                     continue
                 if event.id in sent_event_ids:
                     continue
@@ -726,19 +735,26 @@ async def run_research_job(
     task = asyncio.current_task()
     if task:
         await register_running_task(job_id, task)
+    draft_buffer = ""
     try:
         if not await job_store.start_job(job_id):
             return
+        domain_runtime = domain_registry.resolve(request.domain)
         event_stream = (
-            runtime.resume_report(job_id, request, retry_context)
+            domain_runtime.resume_report(job_id, request, retry_context)
             if retry_context
-            else runtime.run(job_id, request)
+            else domain_runtime.run(job_id, request)
         )
         usage_input = usage_output = usage_llm_calls = usage_tool_calls = 0
         async for event in event_stream:
-            current_job = await job_store.get_job(job_id)
-            if not current_job or current_job.status == "cancelled":
-                return
+            # Skip the per-event DB cancellation check for high-frequency streaming
+            # events. Cancellation is handled via asyncio.CancelledError from
+            # task.cancel() in the cancel endpoint; a DB round-trip per token would
+            # add ~100 ms/char latency against a remote database.
+            if event.type not in {"llm_delta", "report_delta"}:
+                current_job = await job_store.get_job(job_id)
+                if not current_job or current_job.status == "cancelled":
+                    return
             if event.type in {"llm_result", "tool_result"}:
                 if event.type == "llm_result":
                     usage_llm_calls += 1
@@ -773,14 +789,23 @@ async def run_research_job(
             if event.type == "report_delta":
                 delta = event.payload.get("delta")
                 if isinstance(delta, str):
-                    await job_store.append_report_delta(job_id, delta)
-                    draft_job = await job_store.get_job(job_id)
-                    if draft_job:
-                        event.payload["draft_report"] = draft_job.draft_report
+                    draft_buffer += delta
+                    if len(draft_buffer) >= _DRAFT_FLUSH_CHARS:
+                        await job_store.append_report_delta(job_id, draft_buffer)
+                        draft_buffer = ""
+                # Do not attach draft_report to the live event; the frontend
+                # accumulates via the delta field. Attaching it required an extra
+                # get_job DB round-trip per token (~100 ms each against Neon).
             elif event.type != "llm_delta":
+                if draft_buffer:
+                    await job_store.append_report_delta(job_id, draft_buffer)
+                    draft_buffer = ""
                 await job_store.add_event(event)
             await publish_live_event(job_id, event)
     except asyncio.CancelledError:
+        if draft_buffer:
+            await job_store.append_report_delta(job_id, draft_buffer)
+            draft_buffer = ""
         current_job = await job_store.get_job(job_id)
         if current_job and current_job.status not in {"completed", "failed", "cancelled"}:
             _, changed = await job_store.request_cancel(job_id)
@@ -795,6 +820,9 @@ async def run_research_job(
                 await publish_live_event(job_id, cancelled_event)
         return
     except Exception as exc:
+        if draft_buffer:
+            await job_store.append_report_delta(job_id, draft_buffer)
+            draft_buffer = ""
         logger.error(
             "research_job_unhandled_error job_id=%s provider=%s model=%s error=%s traceback=%s",
             job_id,

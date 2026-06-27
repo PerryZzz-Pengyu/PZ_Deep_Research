@@ -1005,3 +1005,186 @@ def test_pdf_export_returns_service_unavailable_when_renderer_fails(monkeypatch)
 
     assert response.status_code == 503
     assert response.json()["detail"] == "PDF 生成失败，请稍后重试"
+
+
+def test_report_delta_batches_db_writes(monkeypatch) -> None:
+    """append_report_delta must NOT be called per-delta; final draft_report must be correct."""
+
+    MANY_DELTAS = 60  # well above the flush threshold (500 chars at ~10 chars each = 600 > 500)
+
+    class ManyDeltaRuntime:
+        async def run(self, job_id: str, request: ResearchRequest):
+            for i in range(MANY_DELTAS):
+                yield ResearchEvent(
+                    job_id=job_id,
+                    type="report_delta",
+                    message="报告流式输出",
+                    payload={"delta": f"片段{i:03d}"},
+                )
+            yield ResearchEvent(
+                job_id=job_id,
+                type="completed",
+                message="研究报告已生成",
+                payload={"final_report": "完成", "sources": []},
+            )
+
+    class CountingStore(InMemoryJobStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.append_calls = 0
+            self.appended_content = ""
+
+        async def append_report_delta(self, job_id: str, delta: str) -> None:
+            self.append_calls += 1
+            self.appended_content += delta
+            await super().append_report_delta(job_id, delta)
+
+    async def run_job():
+        store = CountingStore()
+        request = ResearchRequest(query="测试 delta 合批写入", mode="quick", provider="mock")
+        job = await store.create_job(
+            request,
+            provider="mock",
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+        )
+        monkeypatch.setattr(routes, "job_store", store)
+        monkeypatch.setattr(routes, "runtime", ManyDeltaRuntime())
+        await routes.run_research_job(job.id, request)
+        return store.append_calls, store.appended_content
+
+    append_calls, appended_content = asyncio.run(run_job())
+
+    expected_draft = "".join(f"片段{i:03d}" for i in range(MANY_DELTAS))
+    assert appended_content == expected_draft, "total appended content must equal concatenated deltas"
+    assert append_calls < MANY_DELTAS, (
+        f"append_report_delta was called {append_calls} times for {MANY_DELTAS} deltas — "
+        "must be batched, not per-delta"
+    )
+
+
+def test_report_delta_events_have_no_draft_report_in_payload(monkeypatch) -> None:
+    """Live report_delta SSE events must not carry draft_report — frontend accumulates via delta."""
+
+    class SingleDeltaRuntime:
+        async def run(self, job_id: str, request: ResearchRequest):
+            yield ResearchEvent(
+                job_id=job_id,
+                type="report_delta",
+                message="报告流式输出",
+                payload={"delta": "片段"},
+            )
+            yield ResearchEvent(
+                job_id=job_id,
+                type="completed",
+                message="研究报告已生成",
+                payload={"final_report": "完成", "sources": []},
+            )
+
+    published: list[ResearchEvent] = []
+
+    async def fake_publish(job_id: str, event: ResearchEvent) -> None:
+        published.append(event)
+
+    async def run_job():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="测试 delta payload", mode="quick", provider="mock")
+        job = await store.create_job(
+            request,
+            provider="mock",
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+        )
+        monkeypatch.setattr(routes, "job_store", store)
+        monkeypatch.setattr(routes, "runtime", SingleDeltaRuntime())
+        monkeypatch.setattr(routes, "publish_live_event", fake_publish)
+        await routes.run_research_job(job.id, request)
+
+    asyncio.run(run_job())
+
+    delta_events = [e for e in published if e.type == "report_delta"]
+    assert delta_events, "expected at least one report_delta event"
+    for event in delta_events:
+        assert "draft_report" not in event.payload, (
+            "report_delta payload must not contain draft_report — "
+            "attaching it requires an extra DB round-trip per token"
+        )
+
+
+def test_sse_loop_does_not_call_get_job_per_live_event(monkeypatch) -> None:
+    """SSE while-loop must NOT call get_job for every queued event.
+
+    With Neon RTT at ~325ms each call, one get_job per event adds ~325ms of
+    latency to every streaming token. The loop should only consult the DB when
+    the queue times out (no events for 0.5 s), not on every normal dequeue.
+    """
+    LIVE_EVENTS = 10
+
+    async def run():
+        store = InMemoryJobStore()
+        request = ResearchRequest(query="SSE 不频繁查数据库", mode="quick", provider="mock")
+        job = await store.create_job(
+            request, provider="mock",
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+        )
+        await store.start_job(job.id)
+
+        # Pre-populate the live queue so every queue.get() is instant (no timeouts).
+        live_q: asyncio.Queue[ResearchEvent] = asyncio.Queue()
+        for i in range(LIVE_EVENTS):
+            live_q.put_nowait(ResearchEvent(
+                job_id=job.id, type="report_delta", message="", payload={"delta": f"片段{i}"},
+            ))
+        live_q.put_nowait(ResearchEvent(
+            job_id=job.id, type="completed", message="完成",
+            payload={"final_report": "报告", "sources": []},
+        ))
+
+        # Count every get_job call against this store.
+        db_calls: list[str] = []
+        orig_get_job = store.get_job
+
+        async def tracking_get_job(job_id, **kw):
+            db_calls.append(job_id)
+            return await orig_get_job(job_id, **kw)
+
+        store.get_job = tracking_get_job
+        monkeypatch.setattr(routes, "job_store", store)
+
+        async def mock_register(jid):
+            return live_q
+
+        async def mock_unregister(jid, q):
+            pass
+
+        monkeypatch.setattr(routes, "register_live_event_queue", mock_register)
+        monkeypatch.setattr(routes, "unregister_live_event_queue", mock_unregister)
+
+        identity = RequestIdentity(
+            anonymous_id=VISITOR_HEADERS["X-PZ-Visitor-ID"],
+            user_id=None,
+        )
+
+        # One get_job for the auth check in stream_research_events itself.
+        response = await routes.stream_research_events(
+            job_id=job.id, after=None, last_event_id=None, identity=identity,
+        )
+        auth_calls = len(db_calls)  # should be 1
+
+        # Drain the SSE generator — this is where the while-loop runs.
+        async for _ in response.body_iterator:
+            pass
+
+        return db_calls, auth_calls, LIVE_EVENTS
+
+    db_calls, auth_calls, n = asyncio.run(run())
+
+    # Inside event_stream():
+    #   1 call for snapshot (always)
+    #   N+1 calls in the while-loop (current broken code: once per event)
+    #   0 calls in the while-loop (fixed code: only on TimeoutError)
+    # With all events pre-loaded, queue.get() never times out → 0 while-loop calls expected.
+    inside_generator_calls = len(db_calls) - auth_calls
+    assert inside_generator_calls <= 2, (
+        f"expected ≤2 get_job calls inside event_stream (snapshot + at most 1 timeout check) "
+        f"for {n} live events; got {inside_generator_calls}. "
+        "The SSE while-loop must not call get_job on every dequeue."
+    )

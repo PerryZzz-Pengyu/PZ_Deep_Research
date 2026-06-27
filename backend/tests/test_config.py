@@ -241,3 +241,19 @@ def test_missing_provider_requirements_accepts_ready_provider(monkeypatch) -> No
     settings = get_settings()
 
     assert missing_provider_requirements(settings, "anthropic") == []
+
+
+def test_openai_report_model_defaults_to_empty(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_REPORT_MODEL", "")
+
+    settings = get_settings()
+
+    assert settings.openai_report_model == ""
+
+
+def test_openai_report_model_reads_from_env(monkeypatch) -> None:
+    monkeypatch.setenv("OPENAI_REPORT_MODEL", "gpt-5.5")
+
+    settings = get_settings()
+
+    assert settings.openai_report_model == "gpt-5.5"

@@ -235,6 +235,7 @@ const zh = {
     running: "运行中",
     sourcesTarget: "个来源（目标）",
     cancel: "取消研究",
+    thinking: "正在深度思考…",
     liveOutput: "模型实时输出",
 
     reportLabelSuffix: "研究 · 学术 · 最终报告",
@@ -524,6 +525,7 @@ const en: Dict = {
     running: "Running",
     sourcesTarget: "sources target",
     cancel: "Cancel research",
+    thinking: "Deep thinking…",
     liveOutput: "Live model output",
 
     reportLabelSuffix: "research · Scholar · final report",
