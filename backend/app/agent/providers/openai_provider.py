@@ -8,6 +8,14 @@ from app.agent.providers.base import LLMProvider
 from app.agent.schemas import LLMMessage, LLMResult, LLMStreamEvent
 
 
+def _supports_temperature(model: str) -> bool:
+    # Reasoning models (o1/o3 family, gpt-5.5+) reject the temperature param.
+    prefixes = ("o1", "o3", "o4")
+    no_temp_exact = {"gpt-5.5"}
+    m = model.lower()
+    return m not in no_temp_exact and not any(m.startswith(p) for p in prefixes)
+
+
 class OpenAIProvider(LLMProvider):
     name = "openai"
 
@@ -42,13 +50,15 @@ class OpenAIProvider(LLMProvider):
 
         system_parts, input_messages = self._build_response_input(messages)
 
-        response = await client.responses.create(
-            model=selected_model,
-            instructions="\n\n".join(system_parts) or None,
-            input=input_messages,
-            temperature=temperature,
-            max_output_tokens=max_tokens,
-        )
+        create_kwargs: dict[str, Any] = {
+            "model": selected_model,
+            "instructions": "\n\n".join(system_parts) or None,
+            "input": input_messages,
+            "max_output_tokens": max_tokens,
+        }
+        if _supports_temperature(selected_model):
+            create_kwargs["temperature"] = temperature
+        response = await client.responses.create(**create_kwargs)
         content = getattr(response, "output_text", "") or self._extract_response_text(response)
         usage = getattr(response, "usage", None)
         return LLMResult(
@@ -88,14 +98,16 @@ class OpenAIProvider(LLMProvider):
             raise RuntimeError("OPENAI_MODEL 未配置")
 
         system_parts, input_messages = self._build_response_input(messages)
-        stream = await client.responses.create(
-            model=selected_model,
-            instructions="\n\n".join(system_parts) or None,
-            input=input_messages,
-            temperature=temperature,
-            max_output_tokens=max_tokens,
-            stream=True,
-        )
+        create_kwargs = {
+            "model": selected_model,
+            "instructions": "\n\n".join(system_parts) or None,
+            "input": input_messages,
+            "max_output_tokens": max_tokens,
+            "stream": True,
+        }
+        if _supports_temperature(selected_model):
+            create_kwargs["temperature"] = temperature
+        stream = await client.responses.create(**create_kwargs)
 
         text_parts: list[str] = []
         final_result: LLMResult | None = None

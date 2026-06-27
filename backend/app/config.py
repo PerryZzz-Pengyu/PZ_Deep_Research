@@ -76,6 +76,7 @@ class Settings:
     openai_api_key: str = ""
     openai_base_url: str = DEFAULT_OPENAI_BASE_URL
     openai_model: str = ""
+    openai_report_model: str = ""
     openai_model_options: tuple[str, ...] = DEFAULT_OPENAI_MODEL_OPTIONS
     anthropic_api_key: str = ""
     anthropic_model: str = ""
@@ -291,6 +292,7 @@ def get_settings() -> Settings:
         openai_api_key=_get_env("OPENAI_API_KEY", ""),
         openai_base_url=_get_env("OPENAI_BASE_URL", DEFAULT_OPENAI_BASE_URL),
         openai_model=_get_env("OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
+        openai_report_model=_get_env("OPENAI_REPORT_MODEL", ""),
         openai_model_options=_get_csv_env("OPENAI_MODEL_OPTIONS", DEFAULT_OPENAI_MODEL_OPTIONS),
         anthropic_api_key=_get_env("ANTHROPIC_API_KEY", ""),
         anthropic_model=_get_env("ANTHROPIC_MODEL", DEFAULT_ANTHROPIC_MODEL),

@@ -130,6 +130,7 @@ class AgentRuntime:
         evidence_extraction_model: str = "gpt-5-nano",
         evidence_extraction_models: Optional[dict[str, str]] = None,
         evidence_extraction_concurrency: int = 5,
+        report_model: str = "",
     ) -> None:
         self.provider_factory = provider_factory
         self.tool_registry = tool_registry
@@ -143,6 +144,7 @@ class AgentRuntime:
             **(evidence_extraction_models or {}),
         }
         self.evidence_extraction_concurrency = max(1, evidence_extraction_concurrency)
+        self.report_model = report_model
 
     async def run(self, job_id: str, request: ResearchRequest) -> AsyncIterator[ResearchEvent]:
         provider = self.provider_factory.create(
@@ -601,7 +603,12 @@ class AgentRuntime:
             answer_stream = TagContentStream("<answer>", "</answer>")
             attempt_streamed_report = False
             try:
-                stream = provider.stream_generate(messages, model=request.model)
+                effective_model = (
+                    (self.report_model or request.model)
+                    if stage == "report"
+                    else request.model
+                )
+                stream = provider.stream_generate(messages, model=effective_model)
                 while True:
                     try:
                         stream_event = await asyncio.wait_for(stream.__anext__(), timeout=self.llm_timeout_seconds)

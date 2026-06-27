@@ -61,6 +61,7 @@ runtime = AgentRuntime(
         "gemini": settings.gemini_evidence_model,
     },
     evidence_extraction_concurrency=settings.visit_max_concurrency,
+    report_model=settings.openai_report_model,
 )
 pdf_exporter = PdfExporter(
     timeout_seconds=settings.pdf_export_timeout_seconds,
